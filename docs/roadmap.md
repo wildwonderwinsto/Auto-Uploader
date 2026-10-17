@@ -135,3 +135,8 @@ weakening enrollment/upload verification. All 708 tests and native regressions p
 is closed; live folder-to-YouTube verification remains pending personal in-app approval/activation.
 No production service or live migration was performed. Stop after Stage 17. No Stage 18, packaging,
 distribution or new platform integration.
+
+Stage 18 was a maintenance stage: English interface on non-English macOS Regions, regenerable
+cache cleanup, a classified `artifacts/` inventory with a cleanup proposal awaiting approval, and
+`CLAUDE.md` / `current-status.md` / `development.md`. No feature, schema or publishing change.
+See [Stage 18 verification](stage-18-verification.md). Next work needs explicit instruction.

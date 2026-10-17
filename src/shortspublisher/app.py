@@ -17,6 +17,7 @@ from .library import Library, LibraryService
 from .media import Inspector
 from .scheduling import ScheduleService
 from .ui import theme
+from .ui.formatting import use_english_interface
 from .ui.window import MainWindow
 from .upload_store import UploadStore
 from .uploads import UploadService
@@ -35,6 +36,7 @@ def build(
     app.setApplicationName("ShortsPublisher")
     app.setOrganizationName("ShortsPublisher")
     app.setApplicationDisplayName("ShortsPublisher")
+    use_english_interface()
     theme.apply(app)
     directory = data_dir or Path(
         QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppLocalDataLocation)

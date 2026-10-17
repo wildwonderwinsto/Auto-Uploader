@@ -1,19 +1,22 @@
 import os
+import re
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QLocale, Qt
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QLabel, QPushButton
+from PySide6.QtWidgets import QAbstractButton, QComboBox, QLabel, QPushButton
 from support import settle
 
 from shortspublisher.app import build
 from shortspublisher.diagnostics import configure_logging
+from shortspublisher.ui import formatting
 from shortspublisher.ui.window import PAGES
 
 
@@ -103,6 +106,27 @@ class ShellTests(unittest.TestCase):
         settle(self.app, self.window.background)
         self.assertTrue(self.window.close())
         self.assertFalse(self.window.isVisible())
+
+    def test_chinese_region_renders_english_interface(self):
+        original = QLocale()
+        self.addCleanup(QLocale.setDefault, original)
+        self.tearDown()
+        with patch.object(formatting, "_region", None):
+            QLocale.setDefault(QLocale("zh_CN"))
+            self.app, self.window = build(Path(self.temp.name))
+            self.assertEqual(QLocale().language(), QLocale.Language.English)
+            self.assertEqual(formatting.time_pattern(), "HH:mm")
+        self.window.show()
+        unexpected = re.compile(r"[⺀-鿿　-〿＀-￯�]")
+        for page in PAGES:
+            self.window.navigate(page.key)
+            self.app.processEvents()
+            page_widget = self.window.stack.currentWidget()
+            texts = [w.text() for w in page_widget.findChildren(QLabel)]
+            texts += [w.text() for w in page_widget.findChildren(QAbstractButton)]
+            texts += [w.currentText() for w in page_widget.findChildren(QComboBox)]
+            self.assertEqual([t for t in texts if unexpected.search(t)], [], page.key)
+        settle(self.app, self.window.videos)
 
     def test_real_entry_point_without_credentials(self):
         with tempfile.TemporaryDirectory() as directory:

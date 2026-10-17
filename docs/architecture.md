@@ -1,4 +1,10 @@
-# Stage 10 boundaries
+# ShortsPublisher architecture
+
+Authoritative design decisions, recorded by stage. For a quick map see `CLAUDE.md`; for
+current capabilities see `current-status.md`. Sections below describe the stage that introduced
+them; later sections refine earlier ones.
+
+## Stage 10 boundaries
 
 The completed local workflow is import → inspection → library → publishing draft → explicit review.
 Stage 4 adds Google desktop OAuth and read-only channel verification. Stage 5 adds explicit
@@ -32,7 +38,7 @@ The production database is in Qt's OS application-data directory, outside instal
 account restoration at startup; new databases initialize on opening Videos or Accounts. No whole-library file scan runs.
 
 Each service operation opens/closes its own connections on the worker thread. SQLite connections
-never cross threads. Schema version 8 uses `PRAGMA user_version`; initialization runs inside
+never cross threads. The schema (version 11 since Stage 16) uses `PRAGMA user_version`; initialization runs inside
 `BEGIN IMMEDIATE`. Future migrations must be explicit, transactional upgrades; unknown future
 versions are refused. Corrupt/unwritable/locked databases produce errors, never silent resets.
 
@@ -684,3 +690,14 @@ The user-operated OS picker gap is closed for cancel/select and separate-process
 708 tests, controlled native foreground/background and prior native regressions pass. Live publishing
 remains pending the user's own exact approval and control activation. See
 [Stage 17 verification](stage-17-verification.md). Stop after Stage 17; no packaging or Stage 18.
+
+## Interface language (Stage 18)
+
+The application interface is English-only for now. Qt's default `QLocale` follows the macOS
+**Region** (not the interface language), so a Chinese Region rendered Qt-generated month/day names
+and AM/PM text — in `ui/formatting.timestamp`, `QDateEdit`/`QTimeEdit` and `QCalendarWidget` — in
+Chinese. `app.build` now calls `ui.formatting.use_english_interface()`, which keeps an English
+Region's locale (en_GB, en_IN…) and otherwise substitutes English for that territory (Qt falls
+back to en_US). The original Region is retained only to choose the 12/24-hour clock in
+`time_pattern()`. Time-zone conversion is unchanged. User data is never translated. Native macOS
+dialogs (file chooser) still follow the macOS language. See [Stage 18 verification](stage-18-verification.md).

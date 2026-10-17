@@ -6,14 +6,34 @@ from zoneinfo import ZoneInfo
 
 from PySide6.QtCore import QDate, QLocale, QTime, QTimeZone
 
+# The user's macOS Region, captured before the English default replaces it; supplies the clock.
+_region: QLocale | None = None
+
+
+def english_locale(region: QLocale) -> QLocale:
+    if region.language() == QLocale.Language.English:
+        return region
+    # Qt falls back to en_US for territories without an English variant (China, Taiwan).
+    return QLocale(QLocale.Language.English, region.territory())
+
+
+def use_english_interface() -> None:
+    """Qt's default locale follows the macOS Region, not the interface language: a Chinese
+    Region renders month/day names and AM/PM text in Chinese. Keep wording English while
+    preserving the Region's 12/24-hour convention through time_pattern()."""
+    global _region
+    if _region is None:
+        _region = QLocale()
+    QLocale.setDefault(english_locale(_region))
+
 
 def system_zone() -> str:
     return bytes(QTimeZone.systemTimeZoneId().data()).decode() or "UTC"
 
 
 def time_pattern(locale: QLocale | None = None, *, seconds: bool = False) -> str:
-    locale = locale or QLocale()
-    twelve = "AP" in locale.timeFormat(QLocale.FormatType.ShortFormat).upper()
+    clock = locale or _region or QLocale()
+    twelve = "AP" in clock.timeFormat(QLocale.FormatType.ShortFormat).upper()
     return ("h:mm" if twelve else "HH:mm") + (":ss" if seconds else "") + (" AP" if twelve else "")
 
 
@@ -39,7 +59,7 @@ def timestamp(
         )
         clock = language.toString(
             QTime(local.hour, local.minute, local.second),
-            time_pattern(language, seconds=bool(local.second)),
+            time_pattern(locale, seconds=bool(local.second)),
         )
         return f"{date} · {clock} {local.tzname()}"
     except (ValueError, KeyError, OverflowError):

@@ -1,14 +1,18 @@
-# ShortsPublisher — Stage 17 controlled acceptance
+# ShortsPublisher
 
-Stage 17 verifies the real user-operated macOS folder picker, simplifies Automatic Posting setup
-into four pages, and avoids repeated hashing while unchanged videos await human review. Fresh hashes
-remain required before enrollment and upload. **708 tests passed, zero failures or skips**; native
-foreground/background and prior regressions passed. See [Stage 17 verification](docs/stage-17-verification.md).
+A local-first macOS desktop application for preparing and publishing short vertical videos to
+YouTube — manually, on an approved schedule, from recurring queues, or automatically from watched
+folders under explicit standing approval. YouTube is the only implemented platform.
 
-**Live folder-to-YouTube publishing remains pending personal in-app approval and activation.** No real
-upload, account refresh, production service installation or live migration occurred. The live data
-and original videos were preserved; a verified backup and disposable source are ready for an optional
-separately authorized continuation. Packaging is not included.
+- Current capabilities and limitations: [docs/current-status.md](docs/current-status.md)
+- Developer commands and native checks: [docs/development.md](docs/development.md)
+- Architecture and safety decisions: [docs/architecture.md](docs/architecture.md)
+- AI-assistant handoff map: [CLAUDE.md](CLAUDE.md)
+- Latest stage: [Stage 18 verification](docs/stage-18-verification.md) (maintenance, English UI);
+  previous: [Stage 17](docs/stage-17-verification.md).
+
+**Live folder-to-YouTube publishing remains pending personal in-app approval and activation.**
+Packaging is not included.
 
 ## Automatic folder posting
 
@@ -540,7 +544,7 @@ location comes from Qt's application-data directory:
 
 `~/Library/Application Support/ShortsPublisher/ShortsPublisher/library.sqlite3`
 
-Schema version 8 is recorded in `PRAGMA user_version`. Existing libraries migrate
+Schema version 11 is recorded in `PRAGMA user_version`. Existing libraries migrate
 transactionally during startup; the desktop dispatcher also initializes new libraries. Existing video IDs and inspection metadata are preserved. Publishing details
 are separate platform-keyed records, and deleted IDs are never reused. Database failures
 never trigger deletion or reset. Close another running copy if the database is locked, then use
@@ -585,7 +589,10 @@ selection and removal-confirmation response; manual OS picker interaction is not
 - `media.py`: safe cancellable FFprobe inspection and metadata parsing.
 - `readiness.py`: versioned YouTube technical rules, independent of UI and storage.
 - `watching.py`, `watch_schema.py`, `ui/watching.py`: shared local scanner, persistent content registry, consent and import activity.
-- `library.py`: SQLite records, transactional schema migrations through version 9 and local library operations.
+- `library.py`: SQLite records, transactional schema migrations through version 11 and local library operations.
+- `recurring.py`, `cadence.py`, `automation.py` and their `*_schema.py` / `ui/*.py`: recurring queues, posting opportunities and automatic folder profiles.
+- `background.py`, `background_state.py`, `worker.py`, `worker_entry.py`, `ui/background.py`: optional LaunchAgent service.
+- `ui/formatting.py`: English, time-zone-aware display of dates, times, sizes and statuses.
 - `preparation.py`: YouTube draft validation, revision-aware saves and local review storage.
 - `auth.py`, `credentials.py`, `youtube.py`: Google desktop OAuth, explicit Keychain backend and read-only channel adapter.
 - `accounts.py`, `ui/accounts.py`: account persistence, serialized operations and Accounts presentation.

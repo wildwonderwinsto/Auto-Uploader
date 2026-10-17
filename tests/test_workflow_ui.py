@@ -1,15 +1,33 @@
 """Stage 13 navigation intent and shared human-readable presentation regressions."""
 
+import re
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 import test_uploads_ui as fixtures
-from PySide6.QtCore import QLocale, Qt
-from PySide6.QtWidgets import QFileDialog, QMessageBox
+from PySide6.QtCore import QDate, QLocale, Qt, QTime
+from PySide6.QtWidgets import (
+    QApplication,
+    QCalendarWidget,
+    QDateEdit,
+    QFileDialog,
+    QLineEdit,
+    QMessageBox,
+    QTimeEdit,
+)
 from support import settle
 
-from shortspublisher.ui.formatting import duration, file_size, timestamp, upload_status
+from shortspublisher.ui import formatting
+from shortspublisher.ui.formatting import (
+    duration,
+    english_locale,
+    file_size,
+    time_pattern,
+    timestamp,
+    upload_status,
+    use_english_interface,
+)
 
 
 class FormattingTests(unittest.TestCase):
@@ -73,6 +91,70 @@ class FormattingTests(unittest.TestCase):
     def test_processing_requires_verified_evidence(self):
         self.assertNotIn("Video processed", upload_status("Needs Reconciliation", "succeeded"))
         self.assertNotIn("Video processed", upload_status("Public Verified", "processing"))
+
+
+class EnglishInterfaceTests(unittest.TestCase):
+    """Stage 18: a Chinese macOS Region made Qt render dates and AM/PM text in Chinese."""
+
+    def setUp(self):
+        self.app = QApplication.instance() or QApplication([])
+        self.original = QLocale()
+        self.addCleanup(QLocale.setDefault, self.original)
+        self.addCleanup(setattr, formatting, "_region", formatting._region)
+
+    def region(self, name):
+        QLocale.setDefault(QLocale(name))
+        formatting._region = None
+        use_english_interface()
+
+    def assert_english(self, text):
+        self.assertIsNone(re.search(r"[⺀-鿿　-〿＀-￯�]", text), text)
+
+    def test_english_locale_choice(self):
+        self.assertEqual(english_locale(QLocale("en_GB")).name(), "en_GB")
+        self.assertEqual(english_locale(QLocale("zh_CN")).name(), "en_US")
+        self.assertEqual(english_locale(QLocale("zh_TW")).name(), "en_US")
+        self.assertEqual(english_locale(QLocale("de_DE")).name(), "en_DE")
+
+    def test_chinese_regions_keep_english_words_and_their_clock(self):
+        for name, clock in (("zh_CN", "15:30"), ("zh_TW", "3:30 PM")):
+            with self.subTest(region=name):
+                self.region(name)
+                self.assertEqual(QLocale().language(), QLocale.Language.English)
+                text = timestamp("2026-10-17T20:30:00Z", "America/Chicago", weekday=True)
+                self.assertEqual(text, f"Sat, Oct 17, 2026 · {clock} CDT")
+                editor = QTimeEdit(QTime(15, 30))
+                editor.setDisplayFormat(time_pattern())
+                self.assertEqual(editor.text(), clock)
+                date = QDateEdit(QDate(2026, 10, 17))
+                date.setDisplayFormat("MMM d, yyyy")
+                self.assertEqual(date.text(), "Oct 17, 2026")
+                calendar = QCalendarWidget()
+                self.assertEqual(calendar.locale().monthName(10), "October")
+                self.assertEqual(
+                    calendar.locale().dayName(6, QLocale.FormatType.ShortFormat), "Sat"
+                )
+                for widget in (editor, date, calendar):
+                    self.assert_english(widget.locale().toString(QDate(2026, 10, 17), "MMMM dddd"))
+                    widget.deleteLater()
+
+    def test_english_regions_unchanged(self):
+        for name, clock in (("en_US", "3:30 PM"), ("en_GB", "15:30")):
+            with self.subTest(region=name):
+                self.region(name)
+                self.assertEqual(QLocale().name(), name)
+                self.assertIn(clock, timestamp("2026-10-17T20:30:00Z", "America/Chicago"))
+
+    def test_repeated_activation_keeps_original_region_clock(self):
+        self.region("zh_CN")
+        use_english_interface()
+        self.assertEqual(time_pattern(), "HH:mm")
+
+    def test_user_unicode_is_not_translated(self):
+        self.region("zh_CN")
+        editor = QLineEdit("My 雪 #Shorts")
+        self.assertEqual(editor.text(), "My 雪 #Shorts")
+        editor.deleteLater()
         self.assertIn("Video processed", upload_status("Public Verified", "succeeded"))
         self.assertEqual(upload_status("Needs Reconciliation"), "Check upload result")
 
