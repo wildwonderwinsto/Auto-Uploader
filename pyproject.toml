@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "shortspublisher"
+version = "0.1.0"
+description = "Local-first short-form publishing desktop application"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "filelock>=3.16,<4",
+    "google-auth-oauthlib>=1.2,<2",
+    "keyring>=25,<26",
+    "PySide6>=6.7,<7",
+    "requests>=2.32,<3",
+]
+
+[project.optional-dependencies]
+dev = ["ruff>=0.14,<0.17", "mypy>=1.15,<2"]
+
+[project.scripts]
+shortspublisher = "shortspublisher.app:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.11"
+files = ["src"]
+check_untyped_defs = true
+disallow_untyped_defs = true
+

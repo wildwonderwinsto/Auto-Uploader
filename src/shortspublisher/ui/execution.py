@@ -1,0 +1,389 @@
+"""Desktop dispatcher and explicit activation UI. Workers own all I/O."""
+
+from __future__ import annotations
+
+from datetime import datetime
+from threading import Event
+from typing import TYPE_CHECKING, Any
+
+from PySide6.QtCore import QObject, QThread, QTimer, Signal
+from PySide6.QtWidgets import (
+    QCheckBox,
+    QDialog,
+    QDialogButtonBox,
+    QPlainTextEdit,
+    QPushButton,
+    QSpinBox,
+    QVBoxLayout,
+)
+
+from ..auth import AccountError
+from ..background_state import BACKGROUND_CONSENT
+from ..execution import CONSENT, AutomaticPublisher
+from ..scheduling import Job, ScheduleError
+from ..upload_store import Attempt
+from .components import Disclosure
+from .formatting import timestamp, upload_status
+from .scheduling import NOTICE, details, text
+
+if TYPE_CHECKING:
+    from .window import MainWindow
+
+
+class ActivationDialog(QDialog):
+    def __init__(self, job: Job, parent: MainWindow):
+        super().__init__(parent)
+        self.setWindowTitle("Authorize Automatic Public Publishing")
+        self.resize(580, 520)
+        layout = QVBoxLayout(self)
+        layout.addWidget(text("Authorize this exact PUBLIC upload?", "Heading"))
+        content = QPlainTextEdit()
+        content.setReadOnly(True)
+        content.setPlainText(
+            CONSENT
+            + "\n\n"
+            + details(
+                job.snapshot, job.channel_id, job.local_time, job.timezone, job.scheduled_utc
+            ).replace(
+                NOTICE,
+                "Global publishing must also be enabled. Pause prevents new starts; it does not undo an active transfer.",
+            )
+            + f"\nApproved plan revision: {job.revision}\nCategory: 22 (People & Blogs)"
+        )
+        summary = QPlainTextEdit()
+        summary.setReadOnly(True)
+        summary.setPlainText(
+            CONSENT
+            + "\n\n"
+            + details(
+                job.snapshot,
+                job.channel_id,
+                job.local_time,
+                job.timezone,
+                job.scheduled_utc,
+                diagnostics=False,
+            ).replace(
+                NOTICE,
+                "Global publishing must also be enabled. Pause prevents new starts; it does not undo an active transfer.",
+            )
+        )
+        layout.addWidget(summary)
+        diagnostics = Disclosure("Activation diagnostics")
+        content.appendPlainText(f"\nUTC: {job.scheduled_utc}\nLocal ISO: {job.local_time}")
+        diagnostics.body.addWidget(content)
+        layout.addWidget(diagnostics)
+        self.background = QCheckBox("Also allow this exact upload while the interface is closed")
+        self.background.setToolTip(BACKGROUND_CONSENT)
+        layout.addWidget(self.background)
+        layout.addWidget(text(BACKGROUND_CONSENT))
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText(
+            "Authorize Automatic PUBLIC Upload"
+        )
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setDefault(True)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+
+class ExecutionWorker(QThread):
+    result = Signal(object)
+    progress = Signal(object)
+
+    def __init__(self, service: AutomaticPublisher, action: str, argument: Any, parent: QObject):
+        super().__init__(parent)
+        self.service, self.action, self.argument = service, action, argument
+        self.cancel = Event()
+
+    def run(self) -> None:
+        try:
+            if self.action == "startup":
+                self.service.startup()
+            elif self.action == "dispatch":
+                self.result.emit(
+                    self.service.dispatch(self.cancel, self.progress.emit, self.result.emit)
+                )
+                return
+            elif self.action == "authorize":
+                self.service.authorize(
+                    self.argument[0],
+                    self.argument[1],
+                    self.cancel,
+                    background=bool(self.argument[2]) if len(self.argument) > 2 else False,
+                )
+            elif self.action == "control":
+                self.service.control(*self.argument)
+            self.result.emit(self.service.status())
+        except Exception as exc:
+            self.result.emit(
+                {
+                    "error": str(exc)
+                    if isinstance(exc, (ScheduleError, AccountError))
+                    else "Automatic publishing stopped safely. Reload and inspect the saved records."
+                }
+            )
+
+
+class ExecutionController(QObject):
+    idle = Signal()
+    recurring_updated = Signal(object)
+
+    def __init__(self, service: AutomaticPublisher, window: MainWindow):
+        super().__init__(window)
+        self.service, self.window = service, window
+        self.worker: ExecutionWorker | None = None
+        self.control_worker: ExecutionWorker | None = None
+        self.closing = False
+        self.running = False
+        self.data: dict[str, Any] = {}
+        self.button = QPushButton("Publishing: checking…")
+        self.button.clicked.connect(self.toggle)
+        self.button.setEnabled(False)
+        self.summary = text(
+            "Automatic publishing is not running. Open the application normally to start its dispatcher."
+        )
+        self.notification = text(
+            "Only explicitly activated jobs can publish. Global publishing starts paused."
+        )
+        self.limit = QSpinBox()
+        self.limit.setRange(1, 10)
+        self.limit.setValue(3)
+        self.limit.setPrefix("Daily automatic limit: ")
+        self.save_limit = QPushButton("Save Publishing Limit")
+        self.save_limit.clicked.connect(
+            lambda: self.control("control", (bool(self.data.get("paused", 1)), self.limit.value()))
+        )
+        self.stop = QPushButton("Stop Active Scheduled Upload")
+        self.stop.setEnabled(False)
+        self.stop.clicked.connect(self.stop_active)
+        self.timer = QTimer(self)
+        self.timer.setSingleShot(True)
+        self.timer.timeout.connect(self.tick)
+
+    def activate(self) -> None:
+        if self.running:
+            return
+        self.running = True
+        self.start("startup")
+
+    def start(self, action: str) -> None:
+        if self.worker or self.closing:
+            return
+        worker = ExecutionWorker(self.service, action, None, self)
+        self.worker = worker
+        worker.result.connect(self.receive)
+        worker.progress.connect(self.progress)
+        worker.finished.connect(self.finished)
+        worker.start()
+
+    def tick(self) -> None:
+        if self.running:
+            self.start("dispatch")
+
+    def control(self, action: str, argument: Any) -> None:
+        if self.control_worker or self.closing:
+            return
+        worker = ExecutionWorker(self.service, action, argument, self)
+        self.control_worker = worker
+        worker.result.connect(self.receive)
+        worker.finished.connect(self.control_finished)
+        self.button.setEnabled(False)
+        worker.start()
+
+    def toggle(self) -> None:
+        from PySide6.QtWidgets import QMessageBox
+
+        paused = bool(self.data.get("paused", 1))
+        if (
+            paused
+            and QMessageBox.question(
+                self.window,
+                "Enable scheduled publishing?",
+                "Enable automatic Public uploads for individually activated future jobs through the running desktop or separately authorized background service? Past jobs will not catch up.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            != QMessageBox.StandardButton.Yes
+        ):
+            return
+        self.control("control", (not paused, None))
+
+    def authorize(self, job: Job) -> None:
+        if self.control_worker:
+            return
+        dialog = ActivationDialog(job, self.window)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.control("authorize", (job.id, job.revision, dialog.background.isChecked()))
+        dialog.deleteLater()
+
+    def execution(self, job: Job) -> dict[str, Any] | None:
+        return next((e for e in self.data.get("executions", []) if e["job_id"] == job.id), None)
+
+    def attempt(self, job: Job) -> Attempt | None:
+        execution = self.execution(job)
+        return next(
+            (
+                a
+                for a in self.data.get("attempts", [])
+                if execution and a.id == execution["attempt_id"]
+            ),
+            None,
+        )
+
+    def outcome(self, attempt: Attempt) -> str:
+        if attempt.state == "Public Verified" and attempt.processing in ("processed", "succeeded"):
+            return "Video processed · Public verified"
+        return upload_status(attempt.state, attempt.processing)
+
+    def description(self, job: Job) -> str:
+        attempt = self.attempt(job)
+        if attempt:
+            execution = self.execution(job)
+            assert execution is not None
+            return (
+                f"Execution: {execution['id']} · {execution['phase']}\nUpload: {attempt.id} · {self.outcome(attempt)}\n"
+                f"Start intent: {execution['started_at'] or 'Not initiated'}\n"
+                f"Acknowledged: {attempt.acknowledged:,} / {attempt.snapshot['size']:,} bytes\n"
+                f"Video ID: {attempt.remote_id or 'Not returned'} · Privacy: {attempt.privacy or 'Unverified'}\n"
+                f"Verification: {attempt.verification_status} · Processing: {attempt.processing or 'Unknown'}\n"
+                f"{attempt.error or execution['error']}"
+            )
+        return "Automatic execution: " + (
+            (
+                "Activated — background permitted"
+                if job.id in self.data.get("background_jobs", [])
+                else "Activated — desktop only"
+            )
+            if job.execution_enabled
+            else "Disabled — explicit activation required"
+        )
+
+    def receive(self, result: dict[str, Any]) -> None:
+        if "recurring" in result:
+            self.recurring_updated.emit(result["recurring"])
+        if "jobs" in result:
+            self.data = result
+            self.button.setText(
+                "Enable Scheduled Publishing…"
+                if result["paused"]
+                else "Pause All Scheduled Publishing"
+            )
+            self.limit.setValue(result["daily_limit"])
+            jobs = result["jobs"]
+            upcoming = [
+                j
+                for j in jobs
+                if j.execution_enabled and j.state == "Scheduled" and not self.execution(j)
+            ]
+            attention = [
+                j
+                for j in jobs
+                if j.state in ("Needs Attention", "Missed")
+                or (
+                    (attempt := self.attempt(j))
+                    and attempt.state in ("Interrupted", "Paused", "Needs Reconciliation", "Failed")
+                )
+            ]
+            active = [a for a in result["attempts"] if a.state in ("Preparing", "Uploading")]
+            self.stop.setEnabled(bool(active and result["executions"]))
+            self.summary.setText(
+                f"Automatic publishing: {'PAUSED' if result['paused'] else 'ENABLED'}\n"
+                f"Upcoming: {len(upcoming)} · Needs attention: {len(attention)}\n"
+                + (
+                    f"Next: {timestamp(upcoming[0].scheduled_utc, upcoming[0].timezone, weekday=True)}\n"
+                    if upcoming
+                    else "No activated upcoming job.\n"
+                )
+                + (f"Active upload: {active[0].snapshot['filename']}\n" if active else "")
+                + "Scheduled time is the upload start, not guaranteed public availability."
+            )
+            self.window.schedules.jobs = jobs
+            for page in (self.window.schedules.queue, self.window.schedules.calendar):
+                page.jobs = jobs
+                page.render()
+            if not self.window.uploads.worker:
+                self.window.uploads.receive({"attempts": result["attempts"]})
+            if result["executions"]:
+                latest = result["executions"][-1]
+                job = next(j for j in jobs if j.id == latest["job_id"])
+                attempt = self.attempt(job)
+                self.notification.setText(
+                    f"{job.snapshot['metadata']['title']} · {self.outcome(attempt) if attempt else job.state}\n"
+                    + (
+                        f"Processing: {attempt.processing or 'Unknown'} · Verification: {attempt.verification_status}\n{attempt.error}"
+                        if attempt
+                        else job.reason
+                    )
+                )
+            elif attention:
+                self.notification.setText(attention[0].reason)
+        if result.get("error"):
+            self.notification.setText(result["error"])
+        self.button.setEnabled(self.control_worker is None and bool(self.data))
+
+    def progress(self, attempt: Attempt) -> None:
+        self.stop.setEnabled(True)
+        self.notification.setText(
+            f"{attempt.state}: {attempt.snapshot['filename']} · "
+            f"{attempt.acknowledged * 100 // attempt.snapshot['size']}% acknowledged. "
+            "Visibility and processing are verified separately."
+        )
+        self.window.uploads.show_progress(attempt)
+        attempts = self.data.setdefault("attempts", [])
+        self.data["attempts"] = [attempt] + [a for a in attempts if a.id != attempt.id]
+        # Link becomes available before the first chunk; the final worker result refreshes all records.
+
+    def finished(self) -> None:
+        assert self.worker
+        self.worker.deleteLater()
+        self.worker = None
+        self.stop.setEnabled(
+            any(a.state in ("Preparing", "Uploading") for a in self.data.get("attempts", []))
+        )
+        if self.running and not self.closing:
+            delay = 5000
+            now = self.service.schedules.clock()
+            for job in self.data.get("jobs", []):
+                if job.execution_enabled and job.state == "Scheduled" and not self.execution(job):
+                    remaining = (datetime.fromisoformat(job.scheduled_utc) - now).total_seconds()
+                    if remaining > 0:
+                        delay = min(delay, max(1, int(remaining * 1000)))
+            self.timer.start(delay)
+        self.idle.emit()
+
+    def control_finished(self) -> None:
+        assert self.control_worker
+        self.control_worker.deleteLater()
+        self.control_worker = None
+        self.button.setEnabled(bool(self.data))
+        self.idle.emit()
+
+    def stop_active(self) -> None:
+        state = self.data.get("background", {})
+        if state.get("requested"):
+            self.window.background.act("stop")
+            return
+        if self.worker:
+            self.worker.cancel.set()
+            self.notification.setText(
+                "Stopping after the active request returns. Remote content is not deleted."
+            )
+
+    def request_close(self) -> bool:
+        self.timer.stop()
+        self.running = False
+        if self.worker or self.control_worker:
+            self.closing = True
+            for worker in (self.worker, self.control_worker):
+                if worker:
+                    worker.cancel.set()
+            return False
+        return True
+
+    def stop_for_quit(self) -> None:
+        self.request_close()
+        for worker in (self.worker, self.control_worker):
+            if worker:
+                worker.wait()

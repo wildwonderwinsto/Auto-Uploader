@@ -1,0 +1,21 @@
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.ruff_cache/
+.mypy_cache/
+build/
+dist/
+.DS_Store
+.env
+credentials*.json
+client_secret*.json
+token*.json
+artifacts/
+
+
+# Local Google client downloads and credentials must never enter exports.
+client_secret*.json
+client_secrets*.json
+token*.json
+credentials*.json
