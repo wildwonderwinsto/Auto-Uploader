@@ -33,7 +33,7 @@ from PySide6.QtWidgets import (
 from ..cadence import Rule
 from ..library_view import LibraryEntry, read_entries
 from ..recurring import CONSENT, RecurringService
-from .components import Disclosure, primary
+from .components import Disclosure, day_row, primary
 from .formatting import file_size, system_zone, time_pattern, timestamp, upload_status
 from .preview import VideoPreview
 from .scheduling import text
@@ -70,6 +70,9 @@ def outcome(item: dict[str, Any]) -> str:
         "Needs Attention": "Needs attention",
         "Reserved": "Reserved · " + (item.get("job_state") or "Waiting for execution"),
     }.get(item["state"], item["state"])
+
+
+DAY_NAMES = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
 
 
 class BatchConfirmation(QDialog):
@@ -187,12 +190,10 @@ class RecurringEditor(QDialog):
         self.hours.setValue(6)
         self.days_preset = QComboBox()
         self.days_preset.addItems(["Every day", "Weekdays", "Weekends", "Custom days"])
-        self.days = [
-            QCheckBox(n)
-            for n in ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
-        ]
-        for day in self.days:
+        self.days = [QCheckBox(name[:3]) for name in DAY_NAMES]
+        for day, name in zip(self.days, DAY_NAMES, strict=True):
             day.setChecked(True)
+            day.setAccessibleName(name)
         self.days_preset.currentIndexChanged.connect(self.preset_days)
         self.start_time = QTimeEdit(QTime(9, 0))
         self.end_time = QTimeEdit(QTime(21, 0))
@@ -220,8 +221,7 @@ class RecurringEditor(QDialog):
         body.addLayout(form)
         days = Disclosure("Selected days")
         days.set_expanded(True)
-        for day in self.days:
-            days.body.addWidget(day)
+        days.body.addWidget(day_row(list(self.days)))
         body.addWidget(days)
         body.addWidget(
             text(
@@ -296,7 +296,7 @@ class RecurringEditor(QDialog):
             "Select a finite batch. New watched-folder arrivals never join automatically."
         )
         body.addWidget(self.feedback)
-        self.review = QPushButton("Review & Approve Queue…")
+        self.review = QPushButton("Review and Approve Queue…")
         primary(self.review)
         self.review.clicked.connect(self.review_batch)
         body.addWidget(self.review)
@@ -627,8 +627,23 @@ class RecurringController(QObject):
             else None
         )
         self.items.clear()
+        # Without a plan, an empty picker, empty list and seven disabled actions are only noise.
+        for widget in (
+            self.plans,
+            self.items,
+            self.pause,
+            self.append,
+            self.up,
+            self.down,
+            self.remove,
+            self.preview_button,
+            self.history,
+        ):
+            widget.setVisible(plan is not None)
         if not plan:
-            self.status.setText("No recurring plans. Approve specific reviewed videos to begin.")
+            self.status.setText(
+                "No recurring queues yet. A recurring queue posts approved, reviewed videos one at a time on a repeating schedule — choose New Recurring Posting Queue… to start."
+            )
             return
         items = [i for i in self.data["items"] if i["plan_id"] == plan["id"]]
         queued = [i for i in items if i["state"] == "Queued"]

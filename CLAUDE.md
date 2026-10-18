@@ -18,7 +18,7 @@ personal authorization). Never start a new stage without explicit instruction.
 ```sh
 .venv/bin/python -m shortspublisher --data-dir /tmp/sp-test        # isolated run
 ./"Start ShortsPublisher.command"                                   # USER's live workspace — don't run
-QT_QPA_PLATFORM=offscreen .venv/bin/python -m unittest discover -s tests   # 714 tests, ~3 min
+QT_QPA_PLATFORM=offscreen .venv/bin/python -m unittest discover -s tests   # 727 tests, ~4 min
 cd tests && QT_QPA_PLATFORM=offscreen PYTHONPATH=../src ../.venv/bin/python -m unittest test_shell  # focused
 .venv/bin/ruff check . && .venv/bin/ruff format --check . && .venv/bin/mypy
 ```
@@ -52,8 +52,9 @@ Tests: `tests/test_*.py` (unittest, discovered), `tests/native_*.py` (manual nat
 SQLite, `PRAGMA user_version`; current schema **11** (`library.SCHEMA_VERSION`). Opening a
 library migrates it forward inside one `BEGIN IMMEDIATE` transaction; newer unknown versions are
 refused; failures never reset data. Add migrations as a new `*_schema.py`-style additive step and a
-fixture/test. **The user's live library is still schema 9; opening it with current code migrates it
-to 11 — only do that with the user's explicit approval and a fresh backup.**
+fixture/test. The user's live library reached schema 11 when the user opened it on 2026-10-17 17:41; the
+schema-9 copy is `artifacts/stage6-live/backups/library-before-launch-20261017T224140686820Z.sqlite3`.
+**Any future migration of the live library needs the user's explicit approval and a fresh backup.**
 
 ## Protected real data — never delete, move, overwrite or migrate without approval
 
@@ -67,7 +68,7 @@ to 11 — only do that with the user's explicit approval and a fresh backup.**
 - `/Users/winston/CodexProjects/ShortsStudio` — read-only design reference.
 
 `artifacts/` is gitignored and mixed-trust. Everything else there is controlled test evidence;
-see `docs/stage-18-verification.md` for the classified inventory and pending cleanup proposal.
+see `docs/stage-18-verification.md` for the classified inventory and the approved cleanup record.
 
 ## Safety rules (non-negotiable)
 
@@ -90,6 +91,9 @@ see `docs/stage-18-verification.md` for the classified inventory and pending cle
   Region-derived default locale with an English one; `time_pattern()` keeps the Region's
   12/24-hour clock. Use `ui/formatting.timestamp()` for every displayed time. User data (titles,
   filenames, the `雪` test fixtures) is never translated.
+- Action buttons: `ui/components.tidy_buttons` turns stacked buttons into wrapping rows (window and
+  every dialog); don't hand-stretch buttons full width. Automation status wording comes from
+  `ui/automation.headline()` and must never say Active while posting is blocked.
 - Workers own I/O; GUI code receives queued signals. SQLite connections never cross threads.
 - Keep changes small and match existing style (ruff line length 100, strict mypy on `src`).
 - Run focused tests while working; run the full suite, lint, mypy and relevant native harnesses

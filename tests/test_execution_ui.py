@@ -63,8 +63,9 @@ class ExecutionUiTests(unittest.TestCase):
         return self.f.c.service.get(job.id)
 
     def test_default_global_pause_visible(self):
-        self.assertIn("PAUSED", self.c.summary.text())
-        self.assertIn("Enable", self.c.button.text())
+        self.assertIn("Automatic publishing is paused", self.c.summary.text())
+        self.assertIn("Paused", self.c.state.text())
+        self.assertIn("Turn On", self.c.button.text())
 
     def test_plan_alone_disabled(self):
         job = self.approve()

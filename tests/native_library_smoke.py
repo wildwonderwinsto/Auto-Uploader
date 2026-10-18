@@ -58,7 +58,7 @@ if args.phase == "import":
     settle(app, page)
     assert len(page.records) == 1, page.feedback.text()
     assert "160 × 240" in page.details.toPlainText()
-    assert page.readiness.text() == "Passes implemented checks"
+    assert page.readiness.text() == "Ready for YouTube Shorts · local checks passed"
     capture("populated")
     silent = root / "Silent landscape fixture.webm"
     make_video(silent, audio=False, size="240x160")
@@ -88,7 +88,7 @@ else:
     settle(app, page)
     assert page.selected is not None
     assert "aac" in page.details.toPlainText()
-    assert page.readiness.text() == "Passes implemented checks"
+    assert page.readiness.text() == "Ready for YouTube Shorts · local checks passed"
     capture("reopened")
     # Exercise the actual refresh action and persist the refreshed result.
     QTest.mouseClick(page.refresh_button, Qt.MouseButton.LeftButton)

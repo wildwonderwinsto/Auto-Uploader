@@ -15,17 +15,17 @@
 | Automatic folder → profile → recurring queue publishing | Controlled foreground + background |
 | English interface on any macOS Region, Region's 12/24-hour clock kept | Automated + native (Stage 18) |
 
-Tests: 714 automated (Stage 18), plus 28 native macOS harness commands. See the latest
-`docs/stage-18-verification.md`.
+Tests: 727 automated (after the UI/UX review), plus 28 native macOS harness commands. See
+`docs/ui-ux-review-verification.md` and `docs/stage-18-verification.md`.
 
 ## Pending / not verified
 
 - **Stage 17 optional live test:** a real folder-to-YouTube background upload. The source and
   proposal are prepared in `artifacts/stage17-prepared/`; it requires the user to authorize the
-  live workspace migration (schema 9 → 11), review the source/destination, select declarations,
+  live workspace use, review the source/destination, select declarations,
   approve the standing scope in the app and personally enable background + global publishing.
-- The live workspace `artifacts/stage6-live/library.sqlite3` is schema **9**; current code is **11**.
-  Launching it migrates it (the launcher takes a backup first). Coordinate with the user.
+- The live workspace `artifacts/stage6-live/library.sqlite3` is now schema **11** (it migrated when the
+  user launched it on 2026-10-17 17:41). Its schema-9 pre-launch backup is in `stage6-live/backups/`.
 - No real background-service or recurring/automatic-folder upload has reached YouTube.
 
 ## Known limitations
@@ -41,7 +41,6 @@ Tests: 714 automated (Stage 18), plus 28 native macOS harness commands. See the 
 
 ## Next priorities (each needs explicit approval)
 
-1. The user-authorized Stage 17 live folder-to-YouTube acceptance (includes the live migration).
-2. Approved cleanup of historical `artifacts/` (proposal in `docs/stage-18-verification.md`).
-3. Usability polish found during live use (e.g. schedule day-control scrolling).
-4. Later: packaging/distribution, then additional platforms — each as its own stage.
+1. The user-authorized Stage 17 live folder-to-YouTube acceptance.
+2. Usability polish found during live use (e.g. schedule day-control scrolling).
+3. Later: packaging/distribution, then additional platforms — each as its own stage.

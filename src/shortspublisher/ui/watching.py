@@ -138,6 +138,12 @@ class WatchPanel(Disclosure):
         self.evidence: dict[str, Any] = {}
         self.pending: dict[str, Any] | None = None
         self.counts: tuple[Any, ...] = ()
+        self.body.addWidget(
+            text(
+                "Import Videos… adds files you pick once. A watched folder adds new finished videos automatically. Watching only imports — it never publishes.",
+                "Muted",
+            )
+        )
         self.choose = QPushButton("Watch a Folder…")
         primary(self.choose)
         self.choose.clicked.connect(self.choose_folder)

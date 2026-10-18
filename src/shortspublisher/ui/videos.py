@@ -34,7 +34,7 @@ from ..library_view import LibraryEntry, browse, read_entries
 from ..media import Cancelled
 from ..preparation import review_checks
 from ..readiness import LIMITATIONS, evaluate
-from .components import Disclosure, primary
+from .components import Disclosure, FlowLayout, primary
 from .formatting import duration, timestamp
 from .metadata import MetadataEditor, PreparationTabs
 from .preview import VideoPreview
@@ -115,6 +115,10 @@ class LibraryWorker(QThread):
                 self.failed.emit(str(exc))
 
 
+# Display wording only; readiness statuses stay unchanged for storage and logic.
+READINESS_LABELS = {"Passes implemented checks": "Ready for YouTube Shorts · local checks passed"}
+
+
 def text(value: str, style: str = "") -> QLabel:
     result = QLabel(value)
     result.setTextFormat(Qt.TextFormat.PlainText)
@@ -137,6 +141,7 @@ class VideosPage(QScrollArea):
         self.pending_discovery = False
         self.watch_panel: QWidget | None = None
         self.recurring_button: QPushButton | None = None
+        self.history_button: QPushButton | None = None
         self.mode = "library"
         self.editing_step = 1
         self.context_revision = 0
@@ -159,7 +164,8 @@ class VideosPage(QScrollArea):
         layout.addWidget(text("Videos", "Title"))
         self.introduction = text("Import or select a video to begin.", "Muted")
         layout.addWidget(self.introduction)
-        actions = QHBoxLayout()
+        action_row = QWidget()
+        actions = FlowLayout(action_row)
         self.import_button = QPushButton("Import Videos…")
         self.import_button.setAccessibleName("Import Video")
         primary(self.import_button)
@@ -170,16 +176,16 @@ class VideosPage(QScrollArea):
         )
         actions.addWidget(self.import_button)
         actions.addWidget(self.reload_button)
-        actions.addStretch()
         self.action_layout = actions
-        layout.addLayout(actions)
+        layout.addWidget(action_row)
         self.continue_button = QPushButton("Continue Editing")
         self.continue_button.clicked.connect(self.continue_editing)
         layout.addWidget(self.continue_button)
         self.continue_button.hide()
         self.back_button = QPushButton("← Back to Library")
         self.back_button.clicked.connect(lambda: self.guard(self.show_library))
-        layout.addWidget(self.back_button)
+        # One header row: while editing it reads "← Back to Library · Import Videos…".
+        actions.insertWidget(0, self.back_button)
         self.back_button.hide()
         self.feedback = text("Open your library to get started.", "Muted")
         self.feedback.setAccessibleName("Library operation status")
@@ -303,7 +309,6 @@ class VideosPage(QScrollArea):
         body.addWidget(self.readiness)
         self.warnings = text("", "Muted")
         body.addWidget(self.warnings)
-        body.addWidget(text(LIMITATIONS, "Muted"))
         buttons = QHBoxLayout()
         self.refresh_button = QPushButton("Refresh Inspection")
         self.refresh_button.clicked.connect(self.refresh)
@@ -392,8 +397,10 @@ class VideosPage(QScrollArea):
         editing = self.mode == "editor" and self.selected is not None
         self.card.setVisible(editing or self.mode == "history")
         self.introduction.setVisible(self.mode == "library")
-        if self.recurring_button:
-            self.recurring_button.setVisible(self.mode == "library")
+        self.reload_button.setVisible(self.mode == "library")
+        for button in (self.recurring_button, self.history_button):
+            if button:
+                button.setVisible(self.mode == "library")
         if self.watch_panel:
             self.watch_panel.setVisible(self.mode == "library")
         self.library_section.setVisible(self.mode == "library" and bool(self.records))
@@ -688,7 +695,8 @@ class VideosPage(QScrollArea):
             )
         else:
             result = evaluate(media)
-            self.readiness.setText(result.status)
+            self.readiness.setText(READINESS_LABELS.get(result.status, result.status))
+            self.readiness.setToolTip(LIMITATIONS)
             self.warnings.setText("\n".join(result.messages))
 
     @Slot(str)
@@ -851,7 +859,7 @@ class VideosPage(QScrollArea):
         self.review_errors.setText(
             "Blocking issues\n" + "\n".join(result.errors)
             if result.errors
-            else "No blocking issues in the implemented local checks."
+            else "No blocking issues found by the local checks."
         )
         self.review_warnings.setText(
             "Warnings\n" + "\n".join(result.warnings)

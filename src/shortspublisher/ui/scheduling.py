@@ -286,7 +286,8 @@ class SchedulePage(QScrollArea):
         content = QWidget()
         self.body = QVBoxLayout(content)
         self.body.setContentsMargins(28, 28, 28, 28)
-        self.body.addWidget(text("Calendar" if calendar else "Publishing Queue", "Heading"))
+        self.body.setSpacing(14)
+        self.body.addWidget(text("Calendar" if calendar else "Publishing Queue", "Title"))
         self.body.addWidget(
             text(
                 "Times are upload start times. Select a plan to manage it; YouTube processing may finish later.",
@@ -441,10 +442,16 @@ class SchedulePage(QScrollArea):
         if self.list.count() and self.list.currentRow() < 0:
             self.list.setCurrentRow(0)
         self.status.setText(
-            f"{len(shown)} plan(s) shown · {len(self.jobs)} saved. See activation and global publishing status."
+            f"Individually scheduled videos: {len(shown)} shown · {len(self.jobs)} saved."
             if shown
-            else "No plans for this day/filter. Create a plan from a reviewed Public video in Videos."
+            else (
+                "No individually scheduled videos on this day."
+                if self.calendar_mode
+                else "No individually scheduled videos."
+            )
+            + " To schedule one, open a reviewed Public video in Videos and choose Schedule."
         )
+        self.list.setVisible(bool(shown))
         self.selected_changed()
 
     def selected_changed(self, *_: Any) -> None:
@@ -484,7 +491,7 @@ class SchedulePage(QScrollArea):
         self.refresh.setEnabled(not busy)
         self.details.setPlainText(
             (
-                f"UTC: {job.scheduled_utc}\nLocal ISO: {job.local_time}\n{automatic.description(job) if automatic else 'Execution disabled'}\n\nJob: {job.id}\nPlan timing/state: {job.state} · Revision {job.revision}\n{job.reason}\nApproved: {job.approved_at or 'Not approved'}\nCancelled: {job.cancelled_at or 'No'}\n\n"
+                f"UTC: {job.scheduled_utc}\nLocal ISO: {job.local_time}\n{automatic.description(job) if automatic else 'Execution disabled'}\n\nJob: {job.id}\nPlan timing/state: {job.state} · Revision {job.revision}\n{job.reason}\nApproved: {timestamp(job.approved_at, job.timezone, empty='Not approved')}\nCancelled: {timestamp(job.cancelled_at, job.timezone, empty='No')}\n\n"
                 + details(
                     job.snapshot, job.channel_id, job.local_time, job.timezone, job.scheduled_utc
                 )

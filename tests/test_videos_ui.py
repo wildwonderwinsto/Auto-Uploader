@@ -41,7 +41,20 @@ class VideosUiTests(unittest.TestCase):
         self.window.show()
         self.window.navigate("videos")
         self.page = self.window.videos
-        settle(self.app, self.page)
+        # Close/retry tests assume nothing else is still loading; wait for every startup worker.
+        w = self.window
+        for controller in (
+            w.accounts,
+            w.uploads,
+            w.schedules,
+            w.automatic,
+            w.recurring,
+            w.automation,
+            w.background,
+            w.watching,
+            self.page,
+        ):
+            settle(self.app, controller)
 
     def tearDown(self):
         self.window.close()
@@ -63,7 +76,9 @@ class VideosUiTests(unittest.TestCase):
         self.assertIn("160 × 240", self.page.details.toPlainText())
         self.assertIn("h264", self.page.details.toPlainText())
         self.assertIn("aac", self.page.details.toPlainText())
-        self.assertEqual(self.page.readiness.text(), "Passes implemented checks")
+        self.assertEqual(
+            self.page.readiness.text(), "Ready for YouTube Shorts · local checks passed"
+        )
         self.assertFalse(self.page.empty.isVisible())
         self.assertEqual(self.page.thread(), QThread.currentThread())
         with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes):
@@ -177,7 +192,9 @@ class VideosUiTests(unittest.TestCase):
         self.page.service.inspector = Inspector()
         self.page.refresh()
         settle(self.app, self.page)
-        self.assertEqual(self.page.readiness.text(), "Passes implemented checks")
+        self.assertEqual(
+            self.page.readiness.text(), "Ready for YouTube Shorts · local checks passed"
+        )
 
     def test_small_layout_long_filename(self):
         source = Path(self.temp.name) / ("雪" * 70 + ".mp4")

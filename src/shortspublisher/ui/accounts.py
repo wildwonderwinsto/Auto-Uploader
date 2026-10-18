@@ -80,7 +80,6 @@ class AccountsPage(QScrollArea):
         layout = QVBoxLayout(content)
         layout.setContentsMargins(20, 20, 20, 20)
         layout.setSpacing(16)
-        layout.addWidget(text("MANAGE / ACCOUNTS", "Eyebrow"))
         layout.addWidget(text("Accounts", "Title"))
         layout.addWidget(
             text(

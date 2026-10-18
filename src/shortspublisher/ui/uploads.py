@@ -22,7 +22,7 @@ from ..accounts import AccountView
 from ..upload_store import Attempt
 from ..uploads import UploadService
 from .components import Disclosure, primary
-from .formatting import duration, file_size, upload_status
+from .formatting import duration, file_size, timestamp, upload_status
 from .videos import text
 
 
@@ -243,16 +243,30 @@ class UploadPanel(QWidget):
             reason = "Use Accounts → Refresh Channel to verify the intended channel."
         elif not self.account.upload_allowed:
             reason = "Authorize Uploads in Accounts first."
-        elif any(
-            not a.released
+        elif blocking := [
+            a
+            for a in self.attempts
+            if not a.released
             and a.state != "Cancelled"
             and (
                 a.video_id == self.video_id
                 or a.state not in ("Uploaded Private", "Public Verified", "Failed")
             )
-            for a in self.attempts
-        ):
-            reason = "An existing attempt blocks another upload. Inspect history and resume or reconcile it first."
+        ]:
+            # Same gate as before; the wording says which situation the user is in.
+            done = [
+                a
+                for a in blocking
+                if a.video_id == self.video_id
+                and a.state in ("Uploaded Private", "Public Verified")
+            ]
+            reason = (
+                "This video has already been uploaded — see Upload History below. "
+                "Duplicate uploads are blocked."
+                if done and len(done) == len(blocking)
+                else "An earlier upload needs attention before another can start. Select it in "
+                "Upload History below to resume or check its result."
+            )
         self.reason.setText(reason)
         self.upload_button.setEnabled(reason.startswith("Ready") and not self.closing)
         public_ready = self.upload_button.isEnabled() and self.planned_privacy == "public"
@@ -264,6 +278,8 @@ class UploadPanel(QWidget):
             if self.planned_privacy != "public"
             else reason
         )
+        # Don't repeat the same blocking sentence under both buttons.
+        self.public_reason.setVisible(self.public_reason.text() != reason or public_ready)
         self.stop_button.setEnabled(busy)
         self.stop_button.setVisible(busy)
         self.reload_button.setEnabled(not busy)
@@ -326,7 +342,7 @@ class UploadPanel(QWidget):
             self.history.clear()
             for attempt in self.attempts:
                 item = QListWidgetItem(
-                    f"{attempt.snapshot['payload']['snippet']['title']} · {attempt.requested_privacy.upper()} · {upload_status(attempt.state, attempt.processing)}"
+                    f"{attempt.snapshot['payload']['snippet']['title']} · {attempt.requested_privacy.title()} · {upload_status(attempt.state, attempt.processing)}"
                 )
                 self.history.addItem(item)
             if self.attempts:
@@ -346,7 +362,7 @@ class UploadPanel(QWidget):
             if old.id == attempt.id:
                 self.attempts[index] = attempt
                 self.history.item(index).setText(
-                    f"{attempt.snapshot['payload']['snippet']['title']} · {attempt.requested_privacy.upper()} · {upload_status(attempt.state, attempt.processing)}"
+                    f"{attempt.snapshot['payload']['snippet']['title']} · {attempt.requested_privacy.title()} · {upload_status(attempt.state, attempt.processing)}"
                 )
                 if self.history.currentRow() == index:
                     self.select_history()
@@ -355,7 +371,7 @@ class UploadPanel(QWidget):
         self.progress.setRange(0, 100)
         self.progress.setValue(attempt.acknowledged * 100 // total)
         self.feedback.setText(
-            f"{attempt.requested_privacy.upper()} · {upload_status(attempt.state, attempt.processing)} · {file_size(attempt.acknowledged)} / {file_size(total)} received by YouTube\n{attempt.error}"
+            f"{attempt.requested_privacy.title()} · {upload_status(attempt.state, attempt.processing)} · {file_size(attempt.acknowledged)} / {file_size(total)} received by YouTube\n{attempt.error}"
         )
         self.changed.emit()
 
@@ -388,7 +404,7 @@ class UploadPanel(QWidget):
             self.details.setPlainText(
                 f"{old.snapshot['payload']['snippet']['title']}\nState: {old.state}\n"
                 f"Destination: {old.snapshot['channel_title']} ({old.channel_id})\n"
-                f"Requested privacy: {old.requested_privacy.upper()}\nVerification: {old.verification_status}\nLast verified observation: {old.verified_at or 'Historical / not recorded'}\n"
+                f"Requested privacy: {old.requested_privacy.upper()}\nVerification: {old.verification_status}\nLast verified observation: {timestamp(old.verified_at, empty='Historical / not recorded')}\n"
                 f"YouTube video ID: {old.remote_id or 'Not returned'}\nReturned privacy: {old.privacy or 'Unverified'}\n"
                 f"Processing / upload status: {old.processing or 'Unknown'}\nCreated: {old.created_at}\n"
                 f"Last local update: {old.updated_at}\n"

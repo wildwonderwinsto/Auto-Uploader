@@ -90,6 +90,9 @@ class UploadUiTests(unittest.TestCase):
         self.assertIn("private", self.page.details.toPlainText())
         self.assertTrue(self.page.link_button.isEnabled())
         self.assertFalse(self.page.upload_button.isEnabled())
+        # The block explains itself instead of a generic "existing attempt" message.
+        self.assertIn("already been uploaded", self.page.reason.text())
+        self.assertIn(" · Private · ", self.page.history.item(0).text())
         self.page.upload_button.click()
         self.assertEqual(self.fixture.http.initiations, 1)
 

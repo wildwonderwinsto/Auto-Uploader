@@ -137,6 +137,6 @@ No production service or live migration was performed. Stop after Stage 17. No S
 distribution or new platform integration.
 
 Stage 18 was a maintenance stage: English interface on non-English macOS Regions, regenerable
-cache cleanup, a classified `artifacts/` inventory with a cleanup proposal awaiting approval, and
+cache cleanup, a classified `artifacts/` inventory with an approved 542 MB cleanup, and
 `CLAUDE.md` / `current-status.md` / `development.md`. No feature, schema or publishing change.
 See [Stage 18 verification](stage-18-verification.md). Next work needs explicit instruction.

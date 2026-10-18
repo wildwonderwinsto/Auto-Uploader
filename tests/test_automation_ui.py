@@ -135,7 +135,7 @@ class AutomationUiTests(unittest.TestCase):
         self.f.scan()
         self.c.activate()
         settle(self.app, self.c)
-        self.assertIn("1 ready / queued", self.c.status.text())
+        self.assertIn("Queue: 1 waiting to post", self.c.status.text())
         self.assertIn("global publishing paused", self.c.summary.text())
         self.assertEqual(self.c.activity.count(), 1)
         self.w.recurring.activate()
@@ -149,7 +149,9 @@ class AutomationUiTests(unittest.TestCase):
         self.c.action("pause")
         settle(self.app, self.c)
         self.assertFalse(self.f.state()["profiles"][0]["enabled"])
-        self.assertIn("Paused", self.c.status.text())
+        self.assertTrue(self.c.headline.text().startswith("Paused"))
+        self.assertTrue(self.c.buttons["resume"].isVisibleTo(self.c.page))
+        self.assertFalse(self.c.buttons["pause"].isVisibleTo(self.c.page))
 
     def test_manual_import_and_navigation_retained(self):
         self.w.navigate("automation")
@@ -199,6 +201,9 @@ class AutomationUiTests(unittest.TestCase):
         self.f.approve()
         self.c.activate()
         settle(self.app, self.c)
-        self.assertIn("Automatic publishing paused", self.c.status.text())
+        # An enabled profile must not read as active while the global switch blocks posting.
+        self.assertTrue(self.c.headline.text().startswith("Not posting"), self.c.headline.text())
+        self.assertIn("paused for the whole app", self.c.headline.text())
+        self.assertNotIn("Active", self.c.headline.text())
         self.assertIn("Watching for new videos", self.c.status.text())
         self.assertIn("Background service:", self.c.status.text())

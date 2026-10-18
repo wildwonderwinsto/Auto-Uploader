@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from threading import Event
 from typing import TYPE_CHECKING, Any
 
@@ -31,7 +32,7 @@ from PySide6.QtWidgets import (
 
 from ..automation import CONSENT, AutomationService, title_for
 from ..cadence import Rule
-from .components import Disclosure, primary
+from .components import Disclosure, day_row, primary
 from .formatting import system_zone, time_pattern, timestamp
 from .recurring import outcome, rule_label
 from .scheduling import text
@@ -39,6 +40,9 @@ from .watching import FolderConsent
 
 if TYPE_CHECKING:
     from .window import MainWindow
+
+
+DAY_NAMES = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
 
 
 class ProfileConsent(QDialog):
@@ -107,7 +111,7 @@ class ProfileConsent(QDialog):
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
         self.approve = buttons.button(QDialogButtonBox.StandardButton.Ok)
-        self.approve.setText("Authorize & Enable Profile")
+        self.approve.setText("Authorize and Enable Automation")
         self.approve.setEnabled(False)
         buttons.button(QDialogButtonBox.StandardButton.Cancel).setDefault(True)
         buttons.accepted.connect(self.accept)
@@ -118,6 +122,9 @@ class ProfileConsent(QDialog):
         self.approve.setEnabled(
             all(b.isChecked() for b in (self.scope, self.declarations, self.restrictions))
         )
+
+
+STEPS = ("1 · Folder and channel", "2 · Video details", "3 · Schedule", "4 · Limits")
 
 
 class ProfileEditor(QDialog):
@@ -134,7 +141,7 @@ class ProfileEditor(QDialog):
         self.steps = QTabWidget()
         self.steps.setAccessibleName("Automation setup steps")
         pages = []
-        for name in ("1 · Folder", "2 · Details", "3 · Schedule", "4 · Limits"):
+        for name in STEPS:
             scroll = QScrollArea()
             scroll.setWidgetResizable(True)
             content = QWidget()
@@ -143,6 +150,8 @@ class ProfileEditor(QDialog):
             scroll.setWidget(content)
             self.steps.addTab(scroll, name)
             pages.append(body)
+        self.progress = text("", "Muted")
+        layout.addWidget(self.progress)
         layout.addWidget(self.steps)
         self.name = QLineEdit(profile["name"] if profile else "My Shorts Automation")
         self.folder = QComboBox()
@@ -153,7 +162,7 @@ class ProfileEditor(QDialog):
             )
         if profile:
             self.folder.setCurrentIndex(self.folder.findData(profile["folder_id"]))
-        self.add_folder = QPushButton("Choose & Authorize a Watched Folder…")
+        self.add_folder = QPushButton("Choose and Authorize a New Folder…")
         self.add_folder.clicked.connect(self.choose_folder)
         self.channel = QComboBox()
         self.channel.addItem(
@@ -166,7 +175,7 @@ class ProfileEditor(QDialog):
         self.mode.addItem("Approved Automatic Publishing", "automatic")
         self.template = QLineEdit("{filename} #Shorts")
         self.description = QPlainTextEdit()
-        self.description.setFixedHeight(100)
+        self.description.setFixedHeight(84)
         self.tags = QLineEdit()
         self.kids, self.synthetic = QComboBox(), QComboBox()
         for choice in (self.kids, self.synthetic):
@@ -198,14 +207,13 @@ class ProfileEditor(QDialog):
         self.seconds.setValue(180)
         self.mib.setRange(1, 20480)
         self.mib.setValue(2048)
-        self.days = [
-            QCheckBox(n)
-            for n in ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
-        ]
-        for day in self.days:
+        self.days = [QCheckBox(name[:3]) for name in DAY_NAMES]
+        for day, name in zip(self.days, DAY_NAMES, strict=True):
             day.setChecked(True)
-        self.background = QCheckBox(
-            "Allow this profile in the separately authorized background service"
+            day.setAccessibleName(name)
+        self.background = QCheckBox("Also post while ShortsPublisher is closed")
+        self.background.setToolTip(
+            "Requires Background Publishing to be enabled and started in Settings"
         )
         forms = [QFormLayout() for _ in pages]
         for form in forms:
@@ -234,7 +242,8 @@ class ProfileEditor(QDialog):
             page = 0 if index < 4 else 1 if index < 9 else 2 if index < 15 else 3
             forms[page].addRow(label, widget)
             widget.setAccessibleName(label)
-        pages[0].addWidget(self.add_folder)
+        # Directly under the folder picker it adds to.
+        forms[0].insertRow(2, self.add_folder)
         for body, form in zip(pages, forms, strict=True):
             body.addLayout(form)
         body = pages[2]
@@ -243,8 +252,7 @@ class ProfileEditor(QDialog):
         self.day_preset.currentIndexChanged.connect(self.set_days)
         body.addWidget(self.day_preset)
         days_box = Disclosure("Posting days", expanded=True)
-        for day in self.days:
-            days_box.body.addWidget(day)
+        days_box.body.addWidget(day_row(list(self.days)))
         body.addWidget(days_box)
         pages[0].addWidget(self.background)
         body = pages[1]
@@ -256,6 +264,7 @@ class ProfileEditor(QDialog):
         )
         self.sample = QLineEdit()
         self.sample.setReadOnly(True)
+        self.sample.setVisible(False)  # Shown once a sample video is chosen.
         sample_button = QPushButton("Select Actual Video for Title Preview…")
         sample_button.clicked.connect(self.choose_sample)
         body.addWidget(sample_button)
@@ -263,12 +272,18 @@ class ProfileEditor(QDialog):
         self.preview = text("Choose a real local video to preview its generated title.")
         body.addWidget(self.preview)
         self.template.textChanged.connect(self.show_title)
-        self.feedback = text(
-            "Existing files are excluded at each new authorization. Invalid items are held for review; never silently corrected or truncated."
+        pages[0].addWidget(
+            text(
+                "Videos already in the folder are never posted. Invalid videos are held for your review, never silently corrected or truncated.",
+                "Muted",
+            )
         )
+        # Errors only; hidden while empty so every step keeps its full height.
+        self.feedback = text("")
+        self.feedback.setVisible(False)
         layout.addWidget(self.feedback)
-        self.review = QPushButton("Review Exact Automation Scope…")
-        primary(self.review)
+        self.review = QPushButton("Review and Enable…")
+        self.review.setToolTip("Check every setting, then approve this exact automation scope")
         self.review.clicked.connect(lambda: controller.start("preview", self.values()))
         buttons = QHBoxLayout()
         self.back = QPushButton("Back")
@@ -278,11 +293,13 @@ class ProfileEditor(QDialog):
         self.steps.currentChanged.connect(self.step_changed)
         cancel = QPushButton("Cancel")
         cancel.clicked.connect(self.reject)
-        for button in (self.back, self.next, cancel):
+        buttons.addWidget(cancel)
+        buttons.addStretch()
+        for button in (cancel, self.back, self.next, self.review):
             button.setAutoDefault(False)
-            buttons.addWidget(button)
+            if button is not cancel:
+                buttons.addWidget(button)
         layout.addLayout(buttons)
-        layout.addWidget(self.review)
         self.step_changed()
         if profile:
             s = profile["settings"]
@@ -325,8 +342,22 @@ class ProfileEditor(QDialog):
             check.toggled.connect(self.edited)
 
     def step_changed(self) -> None:
-        self.back.setEnabled(self.steps.currentIndex() > 0)
-        self.next.setEnabled(self.steps.currentIndex() < self.steps.count() - 1)
+        index, last = self.steps.currentIndex(), self.steps.count() - 1
+        self.back.setEnabled(index > 0)
+        self.next.setEnabled(index < last)
+        self.progress.setText(
+            f"Step {index + 1} of {last + 1}: {STEPS[index].split(' · ')[1]}"
+            + (
+                f" · Next: {STEPS[index + 1].split(' · ')[1]}"
+                if index < last
+                else " · Last step: review every setting, then approve"
+            )
+        )
+        # The forward action is the visually primary one; Review stays available throughout.
+        for button, emphasized in ((self.next, index < last), (self.review, index == last)):
+            button.setObjectName("Primary" if emphasized else "")
+            button.style().unpolish(button)
+            button.style().polish(button)
 
     def set_days(self, index: int) -> None:
         if index < 3:
@@ -350,6 +381,7 @@ class ProfileEditor(QDialog):
         )
         if path:
             self.sample.setText(path)
+            self.sample.setVisible(True)
             self.show_title()
 
     def show_title(self) -> None:
@@ -455,6 +487,32 @@ class AutomationWorker(QThread):
                 self.result.emit({"error": str(exc)})
 
 
+def headline(p: dict[str, Any], watching: bool, global_paused: bool, service: str | None) -> str:
+    """One honest answer to "will this automation post?" — never "active" while blocked."""
+    if p["revoked"]:
+        return "Needs approval again · choose Edit… to review and re-approve"
+    if not p["enabled"]:
+        return "Paused · new videos will not be queued or posted"
+    if global_paused:
+        return "Not posting · automatic publishing is paused for the whole app (Turn On in the sidebar)"
+    if not watching:
+        return "Not posting · the watched folder is paused or unavailable"
+    if p["settings"]["mode"] == "review":
+        return "Active · new videos wait for your review before they are queued"
+    if p["settings"]["background"] and service == "Running":
+        return "Active · posts on schedule, including while ShortsPublisher is closed"
+    return "Active · posts on schedule while ShortsPublisher is open"
+
+
+def runs_when(p: dict[str, Any], service: str | None) -> str:
+    state = f"Background service: {service or 'not checked'}"
+    if not p["settings"]["background"]:
+        return f"Posts only while ShortsPublisher is open · {state}"
+    if service == "Running":
+        return f"Also posts while ShortsPublisher is closed · {state}"
+    return f"Background posting allowed, but it only happens once the service runs (Settings) · {state}"
+
+
 class AutomationController(QObject):
     idle = Signal()
 
@@ -476,10 +534,13 @@ class AutomationController(QObject):
         self.page.setWidgetResizable(True)
         content = QWidget()
         body = QVBoxLayout(content)
-        body.addWidget(text("Automatic Posting", "PageTitle"))
+        body.setContentsMargins(28, 28, 28, 28)
+        body.setSpacing(14)
+        body.addWidget(text("Automatic Posting", "Title"))
         body.addWidget(
             text(
-                "Authorized folder → approved profile → recurring queue → verified result", "Muted"
+                "Post new videos from a watched folder on a schedule you approve. Videos already in the folder are never posted.",
+                "Muted",
             )
         )
         self.new = QPushButton("New Automation…")
@@ -492,7 +553,11 @@ class AutomationController(QObject):
         )
         self.profiles.currentIndexChanged.connect(self.render)
         body.addWidget(self.profiles)
-        self.status = text("No automation profiles. Manual workflows remain available.")
+        self.headline = text("No automations yet", "Badge")
+        body.addWidget(self.headline)
+        self.status = text(
+            "Choose New Automation to pick a folder, channel, video details and schedule. Manual importing and publishing remain available in Videos."
+        )
         body.addWidget(self.status)
         self.activity = QListWidget()
         self.activity.setWordWrap(True)
@@ -501,31 +566,36 @@ class AutomationController(QObject):
         body.addWidget(self.activity)
         self.buttons: dict[str, QPushButton] = {}
         for action, label in (
-            ("pause", "Pause Automation"),
-            ("resume", "Resume Automation"),
-            ("disable", "Disable Profile Authorization"),
-            ("edit", "Edit Profile / Renew Consent…"),
-            ("remove", "Remove Profile Configuration…"),
-            ("review", "Review Selected Waiting Video"),
+            ("pause", "Pause"),
+            ("resume", "Resume"),
+            ("edit", "Edit…"),
+            ("review", "Open Selected Video"),
             ("queue", "View Queue"),
-            ("history", "View Publishing History"),
+            ("history", "Upload History"),
+            ("disable", "Revoke Approval…"),
+            ("remove", "Remove…"),
         ):
             button = QPushButton(label)
             button.clicked.connect(lambda checked=False, a=action: self.action(a))
             self.buttons[action] = button
             body.addWidget(button)
+        # App-wide control: kept apart from the per-automation actions above.
+        body.addSpacing(6)
+        body.addWidget(text("Stop everything at once:", "Muted"))
         global_pause = QPushButton("Pause All Automatic Publishing")
         global_pause.clicked.connect(self.pause_all)
         body.addWidget(global_pause)
-        body.addWidget(
+        self.feedback = text("")
+        body.addWidget(self.feedback)
+        explained = Disclosure("How pausing works")
+        explained.body.addWidget(
             text(
-                "Folder Pause stops local discovery. Profile Pause blocks new enrollment and initiation. Global Pause blocks scheduled publishing. Settings stops the service; Stop Active Scheduled Upload interrupts the transfer. These controls do not delete remote videos.",
+                "Pause stops this automation from queuing or posting new videos. Pause All Automatic Publishing stops every scheduled and automatic upload in the app. Pausing a watched folder (Videos → Automatically Import Videos) stops new files being discovered. The background service is controlled in Settings. None of these delete videos already on YouTube.",
                 "Muted",
             )
         )
-        self.feedback = text("")
-        body.addWidget(self.feedback)
-        diagnostics = Disclosure("Profile authorization and source decisions")
+        body.addWidget(explained)
+        diagnostics = Disclosure("Technical details")
         self.details = QPlainTextEdit()
         self.details.setReadOnly(True)
         self.details.setFixedHeight(180)
@@ -552,6 +622,9 @@ class AutomationController(QObject):
             self.timer.start()
             if not self.editor:
                 self.start("load")
+            if self.window.stack.currentWidget() is self.page:
+                # Read-only status query, so "can it post while closed?" is not a guess.
+                self.window.background.start("status")
 
     def start(self, action: str, argument: Any = None) -> None:
         if self.worker or self.closing:
@@ -591,6 +664,7 @@ class AutomationController(QObject):
             self.feedback.setText(result["error"])
             if self.editor:
                 self.editor.feedback.setText(result["error"])
+                self.editor.feedback.setVisible(True)
         if "state" in result:
             self.data, self.recurring, self.folders, self.account = (
                 result["state"],
@@ -663,10 +737,20 @@ class AutomationController(QObject):
             for p in self.data["profiles"]
         )
         self.summary.setText(
-            f"Automatic Posting · {enabled} enabled profile(s) · global publishing {'paused' if self.recurring['control'].get('paused', True) else 'enabled'}"
+            f"Automatic Posting · {enabled} enabled automation{'s' if enabled != 1 else ''}"
+            + (
+                " · global publishing paused"
+                if self.recurring["control"].get("paused", True)
+                else ""
+            )
         )
+        for key in ("pause", "resume", "disable", "edit", "remove", "review"):
+            self.buttons[key].setVisible(p is not None)
         if not p:
-            self.status.setText("No automation profiles. Manual workflows remain available.")
+            self.headline.setText("No automations yet")
+            self.status.setText(
+                "Choose New Automation to pick a folder, channel, video details and schedule. Manual importing and publishing remain available in Videos."
+            )
             return
         plan = next((x for x in self.recurring["plans"] if x["id"] == p["plan_id"]), None)
         decisions = [d for d in self.data["decisions"] if d["profile_id"] == p["id"]]
@@ -675,26 +759,27 @@ class AutomationController(QObject):
             d["item_id"] in items and items[d["item_id"]]["state"] == "Queued" for d in decisions
         )
         attention = sum(d["state"] in ("Needs review", "Queue full") for d in decisions)
-        state = (
-            "Disabled · renewed consent required"
-            if p["revoked"]
-            else "Enabled"
-            if p["enabled"]
-            else "Paused"
-        )
         folder = next((f for f in self.folders if f["id"] == p["folder_id"]), None)
-        monitoring = (
-            "Watching for new videos"
-            if folder and folder["enabled"] and not folder["removed"]
-            else "Folder discovery paused or unavailable"
+        watching = bool(folder and folder["enabled"] and not folder["removed"])
+        global_paused = self.recurring["control"].get("paused", True)
+        active = p["enabled"] and not p["revoked"]
+        self.buttons["pause"].setVisible(active)
+        self.buttons["disable"].setVisible(active)
+        self.buttons["resume"].setVisible(not p["enabled"] and not p["revoked"])
+        self.headline.setText(
+            headline(p, watching, global_paused, self.window.background.service_status)
         )
-        publishing = (
-            "Automatic publishing paused"
-            if self.recurring["control"].get("paused", True)
-            else "Global automatic publishing enabled"
-        )
+        path = p["folder_binding"]["path"]
+        self.status.setToolTip(f"Folder: {path}")
         self.status.setText(
-            f"{p['name']} · {state}\nFolder: {p['folder_binding']['path']}\nChannel: {plan['channel_title'] if plan else p['channel_id']}\n{rule_label(Rule.decode(p['settings']['rule']))}\n{waiting} ready / queued · {attention} need review\nNext opportunity: {timestamp(plan['next_slot'], p['settings']['rule']['zone']) if plan else 'Unavailable'}\n{p['status']}\n{monitoring} · {publishing}\n{self.window.background.dashboard.text()}"
+            f"Folder: {folder['name'] if folder else Path(path).name} · "
+            + ("Watching for new videos" if watching else "Folder watching paused or unavailable")
+            + "\n"
+            f"Channel: {plan['channel_title'] if plan else 'Not available'}\n"
+            f"Schedule: {rule_label(Rule.decode(p['settings']['rule']))}\n"
+            f"Queue: {waiting} waiting to post · {attention} need your review\n"
+            f"Next posting time: {timestamp(plan['next_slot'], p['settings']['rule']['zone'], weekday=True) if plan else 'Not scheduled'}\n"
+            + runs_when(p, self.window.background.service_status)
         )
         for d in decisions:
             item = items.get(d["item_id"])
@@ -719,7 +804,7 @@ class AutomationController(QObject):
         if verified:
             self.status.setText(
                 self.status.text()
-                + "\nLatest verified publication: "
+                + "\nLast published: "
                 + verified[-1]["snapshot"]["metadata"]["title"]
             )
         self.details.setPlainText(

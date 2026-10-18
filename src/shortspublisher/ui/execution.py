@@ -138,15 +138,16 @@ class ExecutionController(QObject):
         self.closing = False
         self.running = False
         self.data: dict[str, Any] = {}
-        self.button = QPushButton("Publishing: checking…")
+        # Sidebar: the global switch needs its state beside it, not only an action label.
+        self.state = text("Automatic publishing\nChecking…", "Muted")
+        self.state.setAccessibleName("Automatic publishing state")
+        self.button = QPushButton("Checking…")
         self.button.clicked.connect(self.toggle)
         self.button.setEnabled(False)
         self.summary = text(
             "Automatic publishing is not running. Open the application normally to start its dispatcher."
         )
-        self.notification = text(
-            "Only explicitly activated jobs can publish. Global publishing starts paused."
-        )
+        self.notification = text("No automatic uploads have run yet.")
         self.limit = QSpinBox()
         self.limit.setRange(1, 10)
         self.limit.setValue(3)
@@ -157,6 +158,7 @@ class ExecutionController(QObject):
         )
         self.stop = QPushButton("Stop Active Scheduled Upload")
         self.stop.setEnabled(False)
+        self.stop.setVisible(False)
         self.stop.clicked.connect(self.stop_active)
         self.timer = QTimer(self)
         self.timer.setSingleShot(True)
@@ -244,7 +246,7 @@ class ExecutionController(QObject):
             assert execution is not None
             return (
                 f"Execution: {execution['id']} · {execution['phase']}\nUpload: {attempt.id} · {self.outcome(attempt)}\n"
-                f"Start intent: {execution['started_at'] or 'Not initiated'}\n"
+                f"Start intent: {timestamp(execution['started_at'], empty='Not initiated')}\n"
                 f"Acknowledged: {attempt.acknowledged:,} / {attempt.snapshot['size']:,} bytes\n"
                 f"Video ID: {attempt.remote_id or 'Not returned'} · Privacy: {attempt.privacy or 'Unverified'}\n"
                 f"Verification: {attempt.verification_status} · Processing: {attempt.processing or 'Unknown'}\n"
@@ -265,10 +267,10 @@ class ExecutionController(QObject):
             self.recurring_updated.emit(result["recurring"])
         if "jobs" in result:
             self.data = result
-            self.button.setText(
-                "Enable Scheduled Publishing…"
-                if result["paused"]
-                else "Pause All Scheduled Publishing"
+            self.button.setText("Turn On…" if result["paused"] else "Pause All")
+            self.state.setText(
+                "Automatic publishing\n"
+                + ("Paused — nothing will post" if result["paused"] else "On")
             )
             self.limit.setValue(result["daily_limit"])
             jobs = result["jobs"]
@@ -288,16 +290,20 @@ class ExecutionController(QObject):
             ]
             active = [a for a in result["attempts"] if a.state in ("Preparing", "Uploading")]
             self.stop.setEnabled(bool(active and result["executions"]))
+            self.stop.setVisible(self.stop.isEnabled())
             self.summary.setText(
-                f"Automatic publishing: {'PAUSED' if result['paused'] else 'ENABLED'}\n"
-                f"Upcoming: {len(upcoming)} · Needs attention: {len(attention)}\n"
-                + (
-                    f"Next: {timestamp(upcoming[0].scheduled_utc, upcoming[0].timezone, weekday=True)}\n"
-                    if upcoming
-                    else "No activated upcoming job.\n"
+                (
+                    "Automatic publishing is paused. Scheduled videos will not post until you turn it on."
+                    if result["paused"]
+                    else "Automatic publishing is on."
                 )
-                + (f"Active upload: {active[0].snapshot['filename']}\n" if active else "")
-                + "Scheduled time is the upload start, not guaranteed public availability."
+                + f"\nScheduled videos: {len(upcoming)} upcoming · {len(attention)} need attention\n"
+                + (
+                    f"Next upload starts {timestamp(upcoming[0].scheduled_utc, upcoming[0].timezone, weekday=True)}"
+                    if upcoming
+                    else "No individually scheduled video is activated."
+                )
+                + (f"\nUploading now: {active[0].snapshot['filename']}" if active else "")
             )
             self.window.schedules.jobs = jobs
             for page in (self.window.schedules.queue, self.window.schedules.calendar):
@@ -321,10 +327,15 @@ class ExecutionController(QObject):
                 self.notification.setText(attention[0].reason)
         if result.get("error"):
             self.notification.setText(result["error"])
+            if not self.data:
+                # Never leave the sidebar on "Checking…" when the first load failed.
+                self.state.setText("Automatic publishing\nStatus unavailable — see Dashboard")
+                self.button.setText("Unavailable")
         self.button.setEnabled(self.control_worker is None and bool(self.data))
 
     def progress(self, attempt: Attempt) -> None:
         self.stop.setEnabled(True)
+        self.stop.setVisible(True)
         self.notification.setText(
             f"{attempt.state}: {attempt.snapshot['filename']} · "
             f"{attempt.acknowledged * 100 // attempt.snapshot['size']}% acknowledged. "
@@ -342,6 +353,7 @@ class ExecutionController(QObject):
         self.stop.setEnabled(
             any(a.state in ("Preparing", "Uploading") for a in self.data.get("attempts", []))
         )
+        self.stop.setVisible(self.stop.isEnabled())
         if self.running and not self.closing:
             delay = 5000
             now = self.service.schedules.clock()

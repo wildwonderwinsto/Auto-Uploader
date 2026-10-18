@@ -7,6 +7,7 @@ from PySide6.QtCore import QEvent, QObject, Qt, QTimer
 from PySide6.QtGui import QCloseEvent, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QButtonGroup,
+    QDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -31,7 +32,7 @@ from ..watching import WatchService
 from .accounts import AccountsPage
 from .automation import AutomationController
 from .background import BackgroundPage
-from .components import Disclosure, primary
+from .components import Disclosure, primary, tidy_buttons
 from .execution import ExecutionController
 from .formatting import upload_status
 from .recurring import RecurringController
@@ -57,7 +58,7 @@ PAGES = (
     Page(
         "dashboard",
         "Dashboard",
-        "Your publishing workspace.",
+        "What is scheduled, what needs attention, and what was published.",
         "A home for your next release",
         "Review a finished video, authorize its exact publishing plan, and follow its upload here.",
     ),
@@ -95,14 +96,6 @@ PAGES = (
         "Manage the channels you publish to.",
         "YouTube comes first",
         "Connect and verify your YouTube channel. Uploads require separate permission and confirmation.",
-    ),
-    Page(
-        "analytics",
-        "Analytics",
-        "Understand how your published videos perform.",
-        "Real results, when available",
-        "Performance tracking is not implemented yet. Metrics will appear here only "
-        "after an account is connected and real data is available.",
     ),
     Page(
         "settings",
@@ -185,6 +178,7 @@ class MainWindow(QMainWindow):
         self.history_button = QPushButton("Upload History")
         self.history_button.clicked.connect(self.show_upload_history)
         self.videos.action_layout.insertWidget(2, self.history_button)
+        self.videos.history_button = self.history_button
         self.automatic = ExecutionController(
             AutomaticPublisher(self.schedules.service, uploads), self
         )
@@ -198,9 +192,10 @@ class MainWindow(QMainWindow):
         self.schedules.calendar.body.insertWidget(2, self.recurring.calendar)
         self.videos.recurring_button = QPushButton("Recurring Posting…")
         self.videos.recurring_button.clicked.connect(lambda: self.recurring.start("open"))
-        self.videos.content_layout.insertWidget(4, self.videos.recurring_button)
+        self.videos.action_layout.insertWidget(3, self.videos.recurring_button)
         self.background = BackgroundPage(background or LaunchAgent(uploads.store.library), self)
         self.background.idle.connect(self._finish_close)
+        self.background.status_changed.connect(self.automation.render)
         self.videos.tabs.addTab(self.uploads, "Publish")
         self.videos.tabs.addTab(self.schedule_panel, "Schedule")
         self.uploads.changed.connect(self.videos.tabs.resize_to_current)
@@ -242,6 +237,8 @@ class MainWindow(QMainWindow):
                 if page.key == "settings"
                 else self._page(page)
             )
+        nav.addSpacing(16)
+        nav.addWidget(self.automatic.state)
         nav.addWidget(self.automatic.button)
         nav.addStretch()
         nav.addWidget(label("SHORTSPUBLISHER", "Eyebrow"))
@@ -253,6 +250,7 @@ class MainWindow(QMainWindow):
         navigation.setWidget(rail)
         layout.addWidget(navigation)
         layout.addWidget(self.stack, 1)
+        tidy_buttons(self.stack)
         self.navigate("dashboard")
 
     def _page(self, page: Page) -> QScrollArea:
@@ -263,8 +261,6 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(content)
         layout.setContentsMargins(SPACE + 8, SPACE + 12, SPACE + 8, SPACE)
         layout.setSpacing(16)
-        layout.addWidget(label("WORKSPACE / " + page.title.upper(), "Eyebrow"))
-        layout.addSpacing(8)
         layout.addWidget(label(page.title, "Title"))
         layout.addWidget(label(page.purpose, "Muted"))
         if page.key == "dashboard":
@@ -276,7 +272,7 @@ class MainWindow(QMainWindow):
             body = QVBoxLayout(card)
             body.setContentsMargins(20, 20, 20, 20)
             body.setSpacing(14)
-            body.addWidget(label("Scheduled publishing", "Heading"))
+            body.addWidget(label("Publishing status", "Heading"))
             body.addWidget(self.automatic.summary)
             body.addWidget(self.recurring.summary)
             body.addWidget(self.automation.summary)
@@ -288,19 +284,19 @@ class MainWindow(QMainWindow):
             self.recent_results = label("No upload history loaded.", "Muted")
             layout.addWidget(self.recent_results)
             self.uploads.changed.connect(self.update_recent_results)
-            for title, target in (
-                ("Prepare a video →", "videos"),
-                ("View publishing queue", "queue"),
-                ("Background settings", "settings"),
+            for index, (title, target) in enumerate(
+                (
+                    ("Prepare a video →", "videos"),
+                    ("Automatic Posting", "automation"),
+                    ("Publishing Queue", "queue"),
+                )
             ):
                 button = QPushButton(title)
                 button.clicked.connect(lambda checked=False, key=target: self.navigate(key))
                 if target == "videos":
                     primary(button)
-                if target == "videos":
-                    layout.insertWidget(5, button)
-                else:
-                    layout.addWidget(button)
+                # Quick actions sit directly under the channel summary, as one row.
+                layout.insertWidget(3 + index, button)
             limits = Disclosure("Publishing limits")
             limits.body.addWidget(self.automatic.limit)
             limits.body.addWidget(self.automatic.save_limit)
@@ -444,6 +440,13 @@ class MainWindow(QMainWindow):
             self.close()
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if (
+            event.type() == QEvent.Type.Show
+            and isinstance(watched, QDialog)
+            and not watched.property("tidied")
+        ):
+            watched.setProperty("tidied", True)
+            tidy_buttons(watched)
         # Application-level Quit must honor the same unsaved-data guard as window closure.
         if event.type() == QEvent.Type.Quit and self.isVisible():
             if (

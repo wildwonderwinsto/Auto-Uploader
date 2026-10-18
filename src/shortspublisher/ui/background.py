@@ -10,6 +10,7 @@ from PySide6.QtWidgets import QCheckBox, QMessageBox, QPushButton, QScrollArea, 
 from ..background import LaunchAgent, ServiceError
 from ..background_state import SERVICE_CONSENT
 from .components import Disclosure, primary
+from .formatting import timestamp
 from .scheduling import text
 
 if TYPE_CHECKING:
@@ -42,6 +43,7 @@ class ServiceWorker(QThread):
 
 class BackgroundPage(QScrollArea):
     idle = Signal()
+    status_changed = Signal()
 
     def __init__(self, manager: LaunchAgent, window: MainWindow):
         super().__init__()
@@ -65,6 +67,7 @@ class BackgroundPage(QScrollArea):
         )
         self.status = text("Not checked. Opening Settings never installs or starts a service.")
         self.dashboard = text("Background service: not checked")
+        self.service_status: str | None = None
         self.feedback = text("", "Muted")
         layout.addWidget(self.feedback)
         self.feedback.hide()
@@ -184,14 +187,18 @@ class BackgroundPage(QScrollArea):
             self.dashboard.setText(
                 "Background service: unable to verify status. " + result["error"]
             )
+            self.service_status = None
             self.quit_after_stop = False
             return
         owner = result["owner"]
+        if self.service_status != result["status"]:
+            self.service_status = result["status"]
+            self.status_changed.emit()
         value = (
             f"Background service: {result['status']}\n"
             f"Permission: {'Enabled' if result['enabled'] else 'Disabled'} · Installed: {'Yes' if result['installed'] else 'No'}\n"
             f"Login startup: {'On' if result['login'] else 'Off'} · OS process: {result['pid'] or 'Not running'}\n"
-            f"Last check-in: {owner['heartbeat'] or 'None'}\n"
+            f"Last check-in: {timestamp(owner['heartbeat'], empty='None')}\n"
             f"Last dispatcher: {owner['kind'] or 'None'} · {owner['state']}\n{owner['error']}\n"
             "Credentials and channel are checked before each upload. Global publishing and per-job approval are separate."
         )

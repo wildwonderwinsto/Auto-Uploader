@@ -3,8 +3,8 @@
 **Unexpected Chinese text is fixed.** The cause was the macOS **Region**, not the code or the data.
 **714 tests passed** (708 baseline plus 6 new), with zero failures or skips. Ruff, format and mypy are clean.
 **All 28 native macOS commands passed**, including real isolated LaunchAgent runs. No real upload,
-YouTube request, live migration or production LaunchAgent change occurred. **Historical
-`artifacts/` cleanup is proposed below and awaits approval.** Nothing in it was deleted or moved.
+YouTube request or production LaunchAgent change occurred. **The approved cleanup removed 80 paths
+(3,057 files, 542.2 MB); see [Approved cleanup results](#approved-cleanup-results).**
 
 ## Starting state
 
@@ -17,7 +17,9 @@ YouTube request, live migration or production LaunchAgent change occurred. **His
 - Git: `main`, one commit, clean tree. `artifacts/`, `.venv` and caches are gitignored.
 - Live library `artifacts/stage6-live/library.sqlite3`: schema **9**, 3 videos, 3 upload attempts,
   no watched folders. It was inspected from a copy in a scratch directory; its SHA-256 was the same
-  at the start and the end (`90c071f2…`, mtime 17:05, before this stage began). Application schema: **11**.
+  until the first report was written (`90c071f2…`). Application schema: **11**. Afterwards the user
+  opened the live workspace (see [Approved cleanup results](#approved-cleanup-results)), which
+  migrated it to schema 11.
 - Repository: **2.6 GB, 14,931 files**. That breaks down as `.venv` 1.4 GB, `artifacts/` 1.2 GB
   (186 entries), `.mypy_cache` 15 MB, `tests/` 1.9 MB, `src/` 1.5 MB (including caches) and docs 360 KB.
 - Baseline suite: 708 tests OK (`artifacts/stage18-evidence/baseline-suite.log`).
@@ -243,18 +245,76 @@ LaunchAgent harnesses (Stage 10, 15 and 16 background flows passed). The product
 
 **User data:** the live DB and its backups/logs were unchanged (same hash). All 3 genuine source
 videos and the prepared Stage 17 source match their recorded hashes. Real credentials were not read,
-and no Google/YouTube request was made with them. The real app was not launched on the live
-workspace, so the live library was not migrated.
+and no Google/YouTube request was made with them. Stage 18 never launched the real app on the
+live workspace; the later migration came from the user's own launch (see below).
 
 Not verified: a person operating the real macOS picker this stage (not affected by the change);
 real Chinese-Region system settings (simulated per process instead); and real YouTube behaviour.
 
+## Approved cleanup results
+
+The user approved tier 1, tier 2 and `src/shortspublisher.egg-info`.
+
+**Unexpected event, handled before any deletion.** The first pre-deletion check found the real app
+running on `artifacts/stage6-live`. It had been started at 17:41 from a Terminal by the user's
+launcher, not by Stage 18. Opening it migrated the live library from schema 9 to **11** (file
+header `0x0b`). The launcher's schema-9 backup is
+`stage6-live/backups/library-before-launch-20261017T224140686820Z.sqlite3`. No upload occurred
+(the log shows navigation only). Deletion was paused and reported. The user then said to proceed,
+and the app had closed normally at 17:48. The migration was kept; no restore was requested.
+
+**Revalidation (read-only, before deletion).** All 79 candidates were checked against
+`artifacts-manifest-before.json`:
+- bytes, file counts and modification times were unchanged since the manifest;
+- no symlinks, no paths outside `artifacts/`, and no real-account IDs;
+- not cited by any doc (other than this report), code, test, launcher or `pyproject.toml`;
+- tier 1 had no evidence-log citations;
+- every tier-2 superseding run still exists;
+- no candidate is a live-DB source folder, and all protected paths exist.
+
+**Zero problems were found.** The egg-info was confirmed unused: `importlib.metadata` resolves
+`shortspublisher` to `.venv/.../shortspublisher-0.1.0.dist-info`, the editable `.pth` points to
+`src/`, and nothing references the egg-info.
+
+**Removed** (each explicit path, one at a time; log in `artifacts/stage18-evidence/cleanup-removed.json`):
+
+| Group | Paths | Bytes |
+| --- | ---: | ---: |
+| Tier 1 (tables above) | 32 | 189,802,782 |
+| Tier 2 (tables above) | 47 | 352,432,150 |
+| `src/shortspublisher.egg-info` | 1 | 12,837 |
+| **Total** (3,057 files) | **80** | **542,247,769** |
+
+| Measure | Before cleanup | After |
+| --- | ---: | ---: |
+| Project on disk (`du`) | 2,678,064 KiB (2.55 GiB) | 2,140,992 KiB (2.04 GiB) |
+| `artifacts/` | 1,235,900 KiB, 186 entries | 698,864 KiB, 108 entries |
+| Files | 14,972 | 11,920 |
+| `.venv` (untouched) | 1,422,440 KiB | 1,422,440 KiB |
+
+The actual reduction is 537,072 KiB (550 MB on disk). The "after" figures include the new
+post-cleanup logs.
+
+**After deletion:**
+- All 107 files in the 10 protected folders hash identically to the pre-deletion baseline. That
+  covers the live DB and its backups/logs, the three genuine source videos and the prepared Stage 17
+  source. The source hashes still match Stage 17's records.
+- All 107 kept entries exist, and all 86 doc links resolve.
+- `tests/fixtures/library-v1…v7.sqlite3` are present. The only code/test reference to `artifacts/`
+  remains `tests/capture_ui.py`.
+- One doc mention, `artifacts/stage16-picker-accepted`, was already absent before Stage 18. It is
+  only the `--root` of a suggested manual command in the Stage 16 report.
+- Full suite: **714 tests OK** (181.4 s, 0 skips). Ruff passes; 132 files are formatted; mypy
+  reports no issues in 47 files.
+- **All 28 native commands exit 0** (`post-cleanup-native-regressions.log`).
+- No ShortsPublisher LaunchAgent is loaded or installed, and no process remains. No credentials
+  were read, and no YouTube request was made.
+
 ## Remaining items and recommendations
 
-- **Needs your approval:** tier 1 (190 MB), tier 2 (352 MB), `src/shortspublisher.egg-info`.
-- **Pending from Stage 17:** the authorized live folder-to-YouTube test. It includes migrating the
-  live library from schema 9 to 11; `Start ShortsPublisher.command` takes a backup first and then
-  migrates on open.
+- Tier 1, tier 2 and `src/shortspublisher.egg-info` were approved and removed (below).
+- **Pending from Stage 17:** the authorized live folder-to-YouTube test. The live library is
+  already at schema 11.
 - `tests/capture_ui.py` still writes into the `artifacts/` root. A future change could give it
   `--root` like the other harnesses.
 - Limitations unchanged: Mac must be awake/logged in; no 18+ API setting; schedule page scrolls at
