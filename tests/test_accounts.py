@@ -646,7 +646,7 @@ class AccountServiceTests(unittest.TestCase):
             videos = [tuple(row) for row in db.execute("SELECT * FROM videos")]
         self.library.initialize()
         with closing(self.library.connect()) as db:
-            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 11)
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 12)
             self.assertEqual(
                 before, [tuple(row) for row in db.execute("SELECT * FROM preparations")]
             )

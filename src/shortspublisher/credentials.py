@@ -108,3 +108,31 @@ class KeychainSessions:
 
     def delete(self, key: str) -> None:
         self.store.delete(key)
+
+
+class KeychainSecrets:
+    """Opaque string secrets (Buffer sign-in, media-host API secret) in their own namespace."""
+
+    def __init__(self, service: str) -> None:
+        self.store = KeychainStore(service)
+
+    def get(self, key: str) -> str | None:
+        try:
+            return self.store.backend().get_password(self.store.service, key)
+        except Exception:
+            raise AccountError(
+                "Cannot read a saved credential from macOS Keychain. Unlock Keychain and retry.",
+                "storage",
+            ) from None
+
+    def put(self, key: str, value: str) -> None:
+        try:
+            self.store.backend().set_password(self.store.service, key, value)
+        except Exception:
+            raise AccountError(
+                "Cannot save the credential in macOS Keychain. Nothing was stored in plaintext.",
+                "storage",
+            ) from None
+
+    def delete(self, key: str) -> None:
+        self.store.delete(key)

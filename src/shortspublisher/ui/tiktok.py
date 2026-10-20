@@ -1,0 +1,1159 @@
+"""TikTok via Buffer: Accounts card, hosting settings, video publishing, automation and queue.
+
+All Buffer, Cloudinary, Keychain and SQLite work runs on a worker thread. Only values that
+Buffer's public API can actually control are offered.
+"""
+
+from __future__ import annotations
+
+import secrets
+from collections.abc import Callable
+from datetime import UTC, datetime
+from threading import Event
+from typing import TYPE_CHECKING, Any
+
+from PySide6.QtCore import QDateTime, QObject, Qt, QThread, QTime, QTimer, QUrl, Signal
+from PySide6.QtGui import QDesktopServices
+from PySide6.QtWidgets import (
+    QCheckBox,
+    QComboBox,
+    QDateTimeEdit,
+    QDialog,
+    QDialogButtonBox,
+    QFormLayout,
+    QFrame,
+    QHBoxLayout,
+    QInputDialog,
+    QLineEdit,
+    QListWidget,
+    QListWidgetItem,
+    QMessageBox,
+    QPlainTextEdit,
+    QPushButton,
+    QSpinBox,
+    QTabWidget,
+    QTimeEdit,
+    QVBoxLayout,
+    QWidget,
+)
+
+from ..buffer import (
+    CALLBACK_PATH,
+    CALLBACK_PORT,
+    BufferError,
+    CallbackListener,
+    authorization_url,
+    parse_callback,
+    pkce,
+)
+from ..cadence import Rule
+from ..hosting import HostingError
+from ..tiktok import (
+    AUTOMATION_CONSENT,
+    HOSTING_CONSENT,
+    TikTokError,
+    TikTokService,
+    caption_errors,
+)
+from .components import Disclosure, day_row, primary
+from .formatting import system_zone, time_pattern, timestamp
+from .videos import text
+
+if TYPE_CHECKING:
+    from .window import MainWindow
+
+BUFFER_CHANNELS = "https://account.buffer.com/channels"
+SETUP = (
+    "TikTok posting is handled by Buffer, using your own Buffer account:\n"
+    "1. In Buffer, connect your TikTok account (Buffer's help center says TikTok Business accounts "
+    "are needed for automatic publishing).\n"
+    "2. In Buffer → Settings → API → App Clients, create a PUBLIC client with the permissions "
+    "account:read, posts:read and posts:write.\n"
+    "3. Host the relay page from docs/buffer-oauth-relay.html at an HTTPS address you control "
+    "(for example GitHub Pages) and register that exact address as the redirect URI. Buffer requires "
+    "HTTPS even for localhost; the relay forwards the sign-in back to this app on "
+    f"http://127.0.0.1:{CALLBACK_PORT}{CALLBACK_PATH}.\n"
+    "4. Enter the Client ID and the redirect URI here. There is no client secret."
+)
+UNSUPPORTED = (
+    "Buffer posts TikTok videos publicly by default. Buffer's API cannot set TikTok privacy, "
+    "comments, Duet, Stitch or commercial-content disclosure. Videos with TikTok music, trending "
+    "sounds or polls cannot be posted automatically."
+)
+ACTIVE_STATES = (
+    "Scheduled in Buffer",
+    "Hosted and ready",
+    "Waiting for Buffer limit",
+    "Waiting for TikTok reconnection",
+    "Hosting failed",
+)
+RELEASABLE = (
+    "Failed",
+    "Needs reconciliation",
+    "Needs attention",
+    "Hosting failed",
+    "Removed in Buffer",
+    "Manual completion required",
+)
+
+
+class TikTokWorker(QThread):
+    result = Signal(object)
+
+    def __init__(self, job: Callable[[Event], Any], parent: QObject) -> None:
+        super().__init__(parent)
+        self.job, self.cancel = job, Event()
+
+    def run(self) -> None:
+        try:
+            value = self.job(self.cancel)
+            self.result.emit({"ok": value})
+        except (TikTokError, BufferError, HostingError) as exc:
+            self.result.emit({"error": str(exc)})
+        except Exception as exc:  # noqa: BLE001 - surfaced, never silently dropped
+            self.result.emit({"error": f"TikTok operation failed safely: {exc}"})
+
+
+def label_for(post: dict[str, Any]) -> str:
+    when = (
+        timestamp(post["due_at"], weekday=True)
+        if post["due_at"]
+        else timestamp(post["created_at"], weekday=True)
+    )
+    return f"{post['caption'][:60] or 'Untitled'} · TikTok · {post['channel_name']} · {post['state']} · {when}"
+
+
+class TikTokController(QObject):
+    idle = Signal()
+
+    def __init__(self, service: TikTokService, window: MainWindow) -> None:
+        super().__init__(window)
+        self.service, self.window = service, window
+        self.worker: TikTokWorker | None = None
+        self.closing = False
+        self.pending: list[tuple[Callable[[Event], Any], Callable[[Any], None] | None]] = []
+        self.data: dict[str, Any] = {
+            "connection": None,
+            "client": None,
+            "hosting": None,
+            "posts": [],
+            "profiles": [],
+        }
+        self.video_id: int | None = None
+        self.build_card()
+        self.build_hosting()
+        self.build_video()
+        self.build_automation()
+        self.build_queue()
+        self.timer = QTimer(self)
+        self.timer.setInterval(60000)
+        self.timer.timeout.connect(self.poll)
+        QTimer.singleShot(0, self.activate)
+
+    # Plumbing -------------------------------------------------------------------------------
+
+    def run(self, job: Callable[[Event], Any], done: Callable[[Any], None] | None = None) -> None:
+        if self.closing:
+            return
+        if self.worker:
+            self.pending.append((job, done))
+            return
+        self.worker = TikTokWorker(job, self)
+        self.worker.result.connect(lambda result: self.finished(result, done))
+        self.set_busy(True)
+        self.worker.start()
+
+    def finished(self, result: dict[str, Any], done: Callable[[Any], None] | None) -> None:
+        assert self.worker
+        self.worker.wait()
+        self.worker.deleteLater()
+        self.worker = None
+        self.set_busy(False)
+        if self.closing:
+            self.idle.emit()
+            return
+        if "error" in result:
+            self.feedback(result["error"])
+        elif done:
+            done(result["ok"])
+        if self.pending:
+            self.run(*self.pending.pop(0))
+        else:
+            self.idle.emit()
+
+    def activate(self) -> None:
+        if not self.closing:
+            self.timer.start()
+            self.run(self.snapshot, self.render)
+
+    def poll(self) -> None:
+        if not self.worker:
+            self.run(self.refreshed, self.render)
+
+    def refreshed(self, cancel: Event) -> dict[str, Any]:
+        self.service.refresh(cancel)
+        self.service.cleanup()
+        return self.snapshot(cancel)
+
+    def snapshot(self, cancel: Event) -> dict[str, Any]:
+        try:
+            client = self.service.client()
+        except BufferError:
+            client = None
+        return {
+            "client": client,
+            "connection": self.service.connection(),
+            "hosting": self.service.hosting(),
+            "posts": self.service.posts(),
+            "profiles": self.service.profiles(),
+            "decisions": {
+                p["id"]: self.service.decisions(p["id"]) for p in self.service.profiles()
+            },
+            "folders": self.window.watching.service.folders(),
+        }
+
+    def reload(self, message: str = "") -> Callable[[Any], None]:
+        def done(_: Any) -> None:
+            if message:
+                self.feedback(message)
+            self.run(self.snapshot, self.render)
+
+        return done
+
+    def feedback(self, message: str) -> None:
+        for label in (
+            self.card_feedback,
+            self.hosting_feedback,
+            self.video_feedback,
+            self.auto_feedback,
+            self.queue_feedback,
+        ):
+            label.setText(message)
+
+    def set_busy(self, busy: bool) -> None:
+        for button in self.buttons():
+            button.setEnabled(not busy)
+        if not busy:
+            self.render(None)
+
+    def buttons(self) -> list[QPushButton]:
+        return [
+            self.connect_button,
+            self.disconnect_button,
+            self.save_client_button,
+            self.save_hosting_button,
+            self.test_hosting_button,
+            self.remove_hosting_button,
+            self.save_draft_button,
+            self.publish_button,
+            self.schedule_button,
+            self.refresh_button,
+            self.cancel_post_button,
+            self.release_button,
+            self.new_automation,
+            self.auto_pause,
+            self.auto_resume,
+            self.auto_revoke,
+            self.auto_remove,
+            self.queue_refresh,
+            self.queue_cancel,
+        ]
+
+    def request_close(self) -> bool:
+        self.timer.stop()
+        self.closing = True
+        if self.worker:
+            self.worker.cancel.set()
+            return False
+        return True
+
+    def stop_for_quit(self) -> None:
+        self.request_close()
+        if self.worker:
+            self.worker.wait()
+
+    # Rendering ------------------------------------------------------------------------------
+
+    def render(self, data: dict[str, Any] | None) -> None:
+        if data is not None:
+            self.data = data
+        d = self.data
+        connection, client, hosting = d["connection"], d["client"], d["hosting"]
+        connected = bool(connection and connection.get("status") == "Connected")
+        name = (connection or {}).get("displayName") or (connection or {}).get("name") or ""
+        if connection:
+            self.card_status.setText(
+                f"@{connection.get('name') or name} · {connection.get('status')} through Buffer"
+            )
+            self.card_detail.setText(
+                "Automatic posting available once media hosting is set up in Settings."
+                if connected and not hosting
+                else "Automatic posting available."
+                if connected
+                else "Buffer needs you to sign in again before anything else is posted."
+            )
+        else:
+            self.card_status.setText("Not connected")
+            self.card_detail.setText(
+                "Connect your TikTok account through Buffer to publish and schedule TikTok posts."
+                if client
+                else "Set up your Buffer app client below first (one time)."
+            )
+        self.connect_button.setText(
+            "Reconnect TikTok via Buffer…" if connection else "Connect TikTok via Buffer…"
+        )
+        self.connect_button.setEnabled(bool(client) and not self.worker)
+        self.disconnect_button.setVisible(bool(connection))
+        self.technical.setText(
+            (
+                f"Buffer channel: {connection['id']}\nOrganization: {connection['organization_id']}\nConnected: {timestamp(connection['verified_at'])}\n"
+                if connection
+                else ""
+            )
+            + (
+                f"Client ID: {client.client_id}\nRedirect URI: {client.redirect_uri}"
+                if client
+                else "No Buffer app client saved."
+            )
+        )
+        if client and not self.client_id.text():
+            self.client_id.setText(client.client_id)
+            self.redirect.setText(client.redirect_uri)
+        self.hosting_status.setText(
+            f"Cloudinary · {hosting['cloud_name']} · "
+            + (
+                "hosted copies are deleted a day after Buffer reports the post sent"
+                if hosting["retention"] == "delete_after_sent"
+                else "hosted copies are kept"
+            )
+            if hosting
+            else "Not set up. TikTok publishing needs a public media host (Buffer has no upload endpoint)."
+        )
+        self.remove_hosting_button.setVisible(bool(hosting))
+        if hosting and not self.cloud_name.text():
+            self.cloud_name.setText(hosting["cloud_name"])
+            self.cloud_key.setText(hosting["api_key"])
+        self.render_video()
+        self.render_automation()
+        self.render_queue()
+
+    # Accounts card --------------------------------------------------------------------------
+
+    def build_card(self) -> None:
+        self.card = QFrame()
+        self.card.setObjectName("Card")
+        body = QVBoxLayout(self.card)
+        body.setContentsMargins(24, 24, 24, 24)
+        body.setSpacing(14)
+        body.addWidget(text("TikTok", "Heading"))
+        self.card_status = text("Not connected", "Badge")
+        self.card_detail = text("", "Muted")
+        self.card_feedback = text("", "Muted")
+        for widget in (self.card_status, self.card_detail, self.card_feedback):
+            body.addWidget(widget)
+        self.connect_button = QPushButton("Connect TikTok via Buffer…")
+        primary(self.connect_button)
+        self.connect_button.clicked.connect(self.connect_tiktok)
+        self.disconnect_button = QPushButton("Disconnect…")
+        self.disconnect_button.clicked.connect(self.disconnect_tiktok)
+        body.addWidget(self.connect_button)
+        body.addWidget(self.disconnect_button)
+        setup = Disclosure("Buffer app client setup")
+        setup.body.addWidget(text(SETUP, "Muted"))
+        form = QFormLayout()
+        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
+        self.client_id = QLineEdit()
+        self.client_id.setAccessibleName("Buffer Client ID")
+        self.redirect = QLineEdit()
+        self.redirect.setPlaceholderText(
+            "https://you.github.io/shortspublisher/buffer-callback.html"
+        )
+        self.redirect.setAccessibleName("Registered HTTPS redirect URI")
+        form.addRow("Client ID (public client — no secret)", self.client_id)
+        form.addRow("Registered HTTPS redirect URI", self.redirect)
+        setup.body.addLayout(form)
+        self.save_client_button = QPushButton("Save Buffer App Client")
+        self.save_client_button.clicked.connect(self.save_client)
+        setup.body.addWidget(self.save_client_button)
+        body.addWidget(setup)
+        details = Disclosure("Account details")
+        self.technical = text("", "Muted")
+        details.body.addWidget(self.technical)
+        body.addWidget(details)
+
+    def save_client(self) -> None:
+        cid, uri = self.client_id.text(), self.redirect.text()
+        self.run(
+            lambda c: self.service.save_client(cid, uri), self.reload("Buffer app client saved.")
+        )
+
+    def connect_tiktok(self) -> None:
+        client = self.data["client"]
+        if not client:
+            return
+        dialog = ConnectDialog(self.window)
+        verifier, challenge = pkce()
+        state = secrets.token_urlsafe(32)
+        url = authorization_url(client, state, challenge)
+        try:
+            listener: CallbackListener | None = CallbackListener()
+        except BufferError as exc:
+            listener = None
+            dialog.status.setText(str(exc))
+        cancel = Event()
+        used = {"done": False}
+
+        def wait(_: Event) -> str | None:
+            assert listener
+            try:
+                return listener.wait(cancel)
+            except BufferError:
+                if cancel.is_set():
+                    return None  # closed by the dialog or by a pasted code; not an error
+                raise
+
+        def returned(query: str | None) -> None:
+            if query is None or used["done"]:
+                return
+            used["done"] = True
+            cancel.set()
+            dialog.accept()
+            try:
+                code = parse_callback(query, state)
+            except BufferError as exc:
+                self.feedback(str(exc))
+                return
+            self.run(lambda c: self.service.finish_connect(code, verifier), self.choose_channel)
+
+        dialog.open_buffer.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(BUFFER_CHANNELS)))
+        dialog.sign_in.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(url)))
+        dialog.use_pasted.clicked.connect(lambda: returned(dialog.pasted.toPlainText()))
+        if listener:
+            self.run(wait, returned)
+        if dialog.exec() != QDialog.DialogCode.Accepted and not used["done"]:
+            cancel.set()
+            self.feedback("Connect TikTok was cancelled. Nothing was connected.")
+
+    def choose_channel(self, value: tuple[str, list[dict[str, Any]]]) -> None:
+        key, channels = value
+        usable = [c for c in channels if not c.get("isDisconnected") and not c.get("isLocked")]
+        if not usable:
+            self.run(lambda c: self.service.discard_key(key))
+            self.feedback(
+                "No usable TikTok channel was found in your Buffer account. Connect TikTok in Buffer first, then try again."
+            )
+            return
+        names = [f"@{c.get('name')} · {c.get('displayName') or ''}".strip(" ·") for c in usable]
+        index = 0
+        if len(usable) > 1:
+            choice, ok = QInputDialog.getItem(
+                self.window, "Choose TikTok account", "TikTok account in Buffer:", names, 0, False
+            )
+            if not ok:
+                self.run(lambda c: self.service.discard_key(key))
+                self.feedback("No TikTok account was selected. Nothing was connected.")
+                return
+            index = names.index(choice)
+        chosen = usable[index]
+        self.run(
+            lambda c: self.service.select_channel(key, chosen),
+            self.reload(f"Connected {names[index]} through Buffer."),
+        )
+
+    def disconnect_tiktok(self) -> None:
+        if (
+            QMessageBox.question(
+                self.window,
+                "Disconnect TikTok?",
+                "Remove the Buffer sign-in from this Mac? Posts already scheduled in Buffer stay scheduled there; history is kept.",
+            )
+            == QMessageBox.StandardButton.Yes
+        ):
+            self.run(lambda c: self.service.disconnect(), self.reload("TikTok disconnected."))
+
+    # Settings: hosting ----------------------------------------------------------------------
+
+    def build_hosting(self) -> None:
+        self.hosting = QFrame()
+        self.hosting.setObjectName("Card")
+        body = QVBoxLayout(self.hosting)
+        body.setContentsMargins(24, 24, 24, 24)
+        body.setSpacing(14)
+        body.addWidget(text("TikTok media hosting", "Heading"))
+        self.hosting_status = text("", "Badge")
+        body.addWidget(self.hosting_status)
+        body.addWidget(text(HOSTING_CONSENT, "Muted"))
+        form = QFormLayout()
+        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
+        self.cloud_name, self.cloud_key, self.cloud_secret = QLineEdit(), QLineEdit(), QLineEdit()
+        self.cloud_secret.setEchoMode(QLineEdit.EchoMode.Password)
+        self.cloud_secret.setPlaceholderText(
+            "Stored in macOS Keychain; leave empty to keep the saved one"
+        )
+        self.retention = QComboBox()
+        self.retention.addItem("Delete a day after posting (recommended)", "delete_after_sent")
+        self.retention.addItem("Keep hosted copies", "keep")
+        self.retention.setToolTip(
+            "Deleted one day after Buffer reports the post sent — never earlier"
+        )
+        for label, widget in (
+            ("Cloudinary cloud name", self.cloud_name),
+            ("API key", self.cloud_key),
+            ("API secret", self.cloud_secret),
+            ("Retention", self.retention),
+        ):
+            form.addRow(label, widget)
+            widget.setAccessibleName(label)
+        body.addLayout(form)
+        self.hosting_consent = QCheckBox("Hosted copies are public by link")
+        self.hosting_consent.setToolTip(
+            "I understand anyone with a hosted link can watch that copy until it is deleted"
+        )
+        body.addWidget(self.hosting_consent)
+        self.hosting_feedback = text("", "Muted")
+        body.addWidget(self.hosting_feedback)
+        self.save_hosting_button = QPushButton("Save Hosting")
+        primary(self.save_hosting_button)
+        self.save_hosting_button.clicked.connect(self.save_hosting)
+        self.test_hosting_button = QPushButton("Check Account and Usage")
+        self.test_hosting_button.clicked.connect(self.test_hosting)
+        self.remove_hosting_button = QPushButton("Remove Hosting…")
+        self.remove_hosting_button.clicked.connect(self.remove_hosting)
+        for button in (
+            self.save_hosting_button,
+            self.test_hosting_button,
+            self.remove_hosting_button,
+        ):
+            body.addWidget(button)
+        body.addWidget(
+            text(
+                "Cloudinary's Free plan accepts videos up to 100 MB and includes 25 monthly credits; nothing is uploaded until you publish to TikTok.",
+                "Muted",
+            )
+        )
+
+    def save_hosting(self) -> None:
+        values = (
+            self.cloud_name.text(),
+            self.cloud_key.text(),
+            self.cloud_secret.text(),
+            self.hosting_consent.isChecked(),
+            self.retention.currentData(),
+        )
+        self.cloud_secret.clear()
+        self.run(
+            lambda c: self.service.save_hosting(
+                values[0], values[1], values[2], consent=values[3], retention=values[4]
+            ),
+            self.reload("Media hosting saved. Nothing was uploaded."),
+        )
+
+    def test_hosting(self) -> None:
+        def done(usage: dict[str, Any]) -> None:
+            self.feedback(
+                f"Cloudinary account OK · plan {usage.get('plan') or 'unknown'} · "
+                f"{usage.get('credits_used')} of {usage.get('credits_limit')} monthly credits used."
+            )
+
+        self.run(lambda c: self.service.host().usage(), done)
+
+    def remove_hosting(self) -> None:
+        if (
+            QMessageBox.question(
+                self.window,
+                "Remove media hosting?",
+                "Forget the Cloudinary settings and Keychain secret on this Mac? Copies already hosted are not deleted.",
+            )
+            == QMessageBox.StandardButton.Yes
+        ):
+            self.run(
+                lambda c: self.service.remove_hosting(), self.reload("Hosting settings removed.")
+            )
+
+    # Videos tab -----------------------------------------------------------------------------
+
+    def build_video(self) -> None:
+        self.video_panel = QWidget()
+        body = QVBoxLayout(self.video_panel)
+        body.setContentsMargins(20, 20, 20, 20)
+        body.setSpacing(12)
+        body.addWidget(text("Publish to TikTok", "Heading"))
+        self.video_account = text("", "Badge")
+        body.addWidget(self.video_account)
+        self.caption = QPlainTextEdit()
+        self.caption.setFixedHeight(90)
+        self.caption.setAccessibleName("TikTok caption")
+        self.caption.textChanged.connect(self.caption_changed)
+        self.caption_count = text("", "Muted")
+        self.ai = QComboBox()
+        self.ai.addItem("Choose explicitly", None)
+        self.ai.addItem("Yes — contains AI-generated content", True)
+        self.ai.addItem("No AI-generated content", False)
+        self.ai.setAccessibleName("AI-generated content disclosure")
+        form = QFormLayout()
+        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
+        form.addRow("Caption (up to 2,200 characters and 5 hashtags)", self.caption)
+        form.addRow("", self.caption_count)
+        form.addRow("AI-generated content", self.ai)
+        body.addLayout(form)
+        body.addWidget(text(UNSUPPORTED, "Muted"))
+        self.when = QDateTimeEdit(QDateTime.currentDateTime().addSecs(3600))
+        self.when.setDisplayFormat("MMM d, yyyy · " + time_pattern())
+        self.when.setCalendarPopup(True)
+        self.when.setAccessibleName("TikTok post time")
+        body.addWidget(text("Schedule for", "Muted"))
+        body.addWidget(self.when)
+        self.save_draft_button = QPushButton("Save TikTok Details")
+        self.save_draft_button.clicked.connect(self.save_draft)
+        self.publish_button = QPushButton("Publish to TikTok Now…")
+        primary(self.publish_button)
+        self.publish_button.clicked.connect(lambda: self.publish(None))
+        self.schedule_button = QPushButton("Schedule on TikTok…")
+        self.schedule_button.clicked.connect(lambda: self.publish(self.when_utc()))
+        for button in (self.publish_button, self.schedule_button, self.save_draft_button):
+            body.addWidget(button)
+        self.video_feedback = text("", "Muted")
+        body.addWidget(self.video_feedback)
+        body.addWidget(text("TikTok history for this video", "Heading"))
+        self.video_history = QListWidget()
+        self.video_history.setFixedHeight(120)
+        self.video_history.setWordWrap(True)
+        self.video_history.currentRowChanged.connect(lambda _: self.render_video_buttons())
+        body.addWidget(self.video_history)
+        self.refresh_button = QPushButton("Refresh Status")
+        self.refresh_button.clicked.connect(self.poll)
+        self.cancel_post_button = QPushButton("Cancel Scheduled Post…")
+        self.cancel_post_button.clicked.connect(lambda: self.cancel_post(self.video_history))
+        self.release_button = QPushButton("Allow Another Attempt…")
+        self.release_button.clicked.connect(self.release)
+        for button in (self.refresh_button, self.cancel_post_button, self.release_button):
+            body.addWidget(button)
+        body.addStretch()
+
+    def when_utc(self) -> datetime:
+        return datetime.fromtimestamp(self.when.dateTime().toSecsSinceEpoch(), UTC)
+
+    def caption_changed(self) -> None:
+        value = self.caption.toPlainText()
+        problems = caption_errors(value)
+        self.caption_count.setText(
+            " ".join(problems) if problems else f"{len(value)} / 2,200 characters"
+        )
+
+    def context(self, video_id: int | None) -> None:
+        if video_id == self.video_id:
+            return
+        self.video_id = video_id
+        if video_id is None:
+            return
+
+        def done(draft: dict[str, Any]) -> None:
+            self.caption.setPlainText(draft["caption"])
+            self.ai.setCurrentIndex(
+                self.ai.findData(draft["ai_generated"]) if draft["ai_generated"] is not None else 0
+            )
+            self.render_video()
+
+        self.run(lambda c: self.service.draft(video_id), done)
+
+    def save_draft(self) -> None:
+        if self.video_id is None:
+            return
+        video_id, caption, ai = self.video_id, self.caption.toPlainText(), self.ai.currentData()
+        self.run(
+            lambda c: self.service.save_draft(video_id, caption, ai),
+            self.reload("TikTok details saved."),
+        )
+
+    def publish(self, due: datetime | None) -> None:
+        if self.video_id is None:
+            return
+        connection = self.data["connection"] or {}
+        caption, ai = self.caption.toPlainText(), self.ai.currentData()
+        message = (
+            f"Post this video PUBLICLY to TikTok @{connection.get('name')} through Buffer"
+            + (f" at {timestamp(due, weekday=True)}?" if due else " now?")
+            + f"\n\nCaption: {caption or '(none)'}\nAI-generated content: {'Yes' if ai else 'No' if ai is False else 'not chosen'}\n\n"
+            + HOSTING_CONSENT
+            + "\n\n"
+            + UNSUPPORTED
+        )
+        box = QMessageBox(
+            QMessageBox.Icon.Question,
+            "Publish to TikTok?",
+            message,
+            QMessageBox.StandardButton.Cancel,
+            self.window,
+        )
+        go = box.addButton("Post Publicly via Buffer", QMessageBox.ButtonRole.AcceptRole)
+        box.setDefaultButton(QMessageBox.StandardButton.Cancel)
+        box.exec()
+        if box.clickedButton() is not go:
+            return
+        video_id = self.video_id
+
+        def job(cancel: Event) -> str:
+            self.service.save_draft(video_id, caption, ai)
+            return self.service.publish(video_id, caption, ai, due, cancel)
+
+        self.run(
+            job,
+            self.reload(
+                "Sent to Buffer. Status updates appear below."
+                if due is None
+                else "Scheduled in Buffer for the approved time."
+            ),
+        )
+
+    def selected_post(self, view: QListWidget) -> dict[str, Any] | None:
+        item = view.currentItem()
+        identity = item.data(Qt.ItemDataRole.UserRole) if item else None
+        return next((p for p in self.data["posts"] if p["id"] == identity), None)
+
+    def cancel_post(self, view: QListWidget) -> None:
+        post = self.selected_post(view)
+        if (
+            post
+            and QMessageBox.question(
+                self.window,
+                "Cancel this TikTok post?",
+                "Delete it from Buffer's schedule and remove its hosted copy? Posts Buffer has already started cannot be cancelled.",
+            )
+            == QMessageBox.StandardButton.Yes
+        ):
+            self.run(
+                lambda c: self.service.cancel(post["id"]), self.reload("TikTok post cancelled.")
+            )
+
+    def release(self) -> None:
+        post = self.selected_post(self.video_history)
+        if (
+            post
+            and QMessageBox.question(
+                self.window,
+                "Allow another attempt?",
+                "Only continue if you have checked Buffer and TikTok and this post did NOT go out. Another attempt could otherwise post a duplicate.",
+            )
+            == QMessageBox.StandardButton.Yes
+        ):
+            self.run(
+                lambda c: self.service.release(post["id"]),
+                self.reload("Another attempt is allowed for this video."),
+            )
+
+    def render_video(self) -> None:
+        connection, hosting = self.data["connection"], self.data["hosting"]
+        if not connection:
+            self.video_account.setText("Connect TikTok via Buffer in Accounts to publish here.")
+        elif connection.get("status") != "Connected":
+            self.video_account.setText("Reconnect TikTok in Accounts to continue.")
+        elif not hosting:
+            self.video_account.setText("Set up TikTok media hosting in Settings to publish here.")
+        else:
+            self.video_account.setText(
+                f"Account: @{connection.get('name')} · posts publicly via Buffer"
+            )
+        self.video_history.clear()
+        for post in self.data["posts"]:
+            if post["video_id"] == self.video_id:
+                item = QListWidgetItem(
+                    label_for(post)
+                    + (f"\n{post['error']}" if post["error"] else "")
+                    + (f"\n{post['external_link']}" if post["external_link"] else "")
+                )
+                item.setData(Qt.ItemDataRole.UserRole, post["id"])
+                self.video_history.addItem(item)
+        self.render_video_buttons()
+
+    def render_video_buttons(self) -> None:
+        ready = bool(
+            self.data["connection"]
+            and self.data["connection"].get("status") == "Connected"
+            and self.data["hosting"]
+            and self.video_id is not None
+        )
+        for button in (self.publish_button, self.schedule_button):
+            button.setEnabled(ready and not self.worker)
+        post = self.selected_post(self.video_history)
+        self.cancel_post_button.setVisible(
+            bool(post and post["state"] in ACTIVE_STATES and not post["released"])
+        )
+        self.release_button.setVisible(
+            bool(post and post["state"] in RELEASABLE and not post["released"])
+        )
+
+    # Automatic Posting ----------------------------------------------------------------------
+
+    def build_automation(self) -> None:
+        self.automation = QWidget()
+        body = QVBoxLayout(self.automation)
+        body.setContentsMargins(0, 12, 0, 0)
+        body.setSpacing(12)
+        body.addWidget(text("TikTok automations", "Heading"))
+        body.addWidget(
+            text(
+                "Each TikTok automation has its own approval, separate from YouTube. To post to both, create one of each for the same folder.",
+                "Muted",
+            )
+        )
+        self.new_automation = QPushButton("New TikTok Automation…")
+        self.new_automation.clicked.connect(self.new_tiktok_automation)
+        body.addWidget(self.new_automation)
+        self.auto_profiles = QComboBox()
+        self.auto_profiles.setAccessibleName("TikTok automations")
+        self.auto_profiles.currentIndexChanged.connect(lambda _: self.render_automation())
+        body.addWidget(self.auto_profiles)
+        self.auto_headline = text("No TikTok automations yet", "Badge")
+        self.auto_status = text("", "")
+        self.auto_activity = QListWidget()
+        self.auto_activity.setFixedHeight(140)
+        self.auto_activity.setWordWrap(True)
+        for widget in (self.auto_headline, self.auto_status, self.auto_activity):
+            body.addWidget(widget)
+        self.auto_pause = QPushButton("Pause")
+        self.auto_resume = QPushButton("Resume")
+        self.auto_revoke = QPushButton("Revoke Approval…")
+        self.auto_remove = QPushButton("Remove…")
+        for button, action in (
+            (self.auto_pause, "pause"),
+            (self.auto_resume, "resume"),
+            (self.auto_revoke, "revoke"),
+            (self.auto_remove, "remove"),
+        ):
+            button.clicked.connect(lambda checked=False, a=action: self.control(a))
+            body.addWidget(button)
+        self.auto_feedback = text("", "Muted")
+        body.addWidget(self.auto_feedback)
+
+    def current_profile(self) -> dict[str, Any] | None:
+        return next(
+            (p for p in self.data["profiles"] if p["id"] == self.auto_profiles.currentData()), None
+        )
+
+    def render_automation(self) -> None:
+        selected = self.auto_profiles.currentData()
+        self.auto_profiles.blockSignals(True)
+        self.auto_profiles.clear()
+        for p in self.data["profiles"]:
+            self.auto_profiles.addItem(p["name"], p["id"])
+        self.auto_profiles.setCurrentIndex(max(0, self.auto_profiles.findData(selected)))
+        self.auto_profiles.blockSignals(False)
+        p = self.current_profile()
+        self.auto_profiles.setVisible(bool(self.data["profiles"]))
+        self.auto_activity.setVisible(p is not None)
+        for button in (self.auto_pause, self.auto_resume, self.auto_revoke, self.auto_remove):
+            button.setVisible(p is not None)
+        if not p:
+            self.auto_headline.setText("No TikTok automations yet")
+            self.auto_status.setText("")
+            return
+        paused = bool(self.window.automatic.data.get("paused", 1))
+        connected = bool(
+            self.data["connection"] and self.data["connection"].get("status") == "Connected"
+        )
+        self.auto_headline.setText(
+            "Needs approval again"
+            if p["revoked"]
+            else "Paused · no new TikTok posts are scheduled"
+            if not p["enabled"]
+            else "Not posting · reconnect TikTok in Accounts"
+            if not connected
+            else "Not posting · automatic publishing is paused for the whole app (Turn On in the sidebar)"
+            if paused
+            else "Active · Buffer posts each video at its approved time"
+        )
+        rule = Rule.decode(p["settings"]["rule"])
+        folder = next((f for f in self.data.get("folders", []) if f["id"] == p["folder_id"]), None)
+        pending = [
+            x
+            for x in self.data["posts"]
+            if x["profile_id"] == p["id"]
+            and not x["released"]
+            and x["state"] in ACTIVE_STATES + ("Publishing", "Sending to Buffer")
+        ]
+        self.auto_status.setText(
+            f"Folder: {folder['name'] if folder else 'unavailable'} · TikTok: {p['channel_name']}\n"
+            f"Schedule: every {rule.hours or 24} h · {rule.start}–{rule.end} {rule.zone} · up to {p['settings']['daily_cap']} per day\n"
+            + (
+                f"Next post: {timestamp(pending[0]['due_at'], weekday=True)} ({pending[0]['state']})"
+                if pending and pending[0]["due_at"]
+                else "No post scheduled in Buffer right now"
+            )
+            + (f"\n{p['status']}" if p["status"] else "")
+        )
+        self.auto_pause.setVisible(bool(p["enabled"]))
+        self.auto_resume.setVisible(not p["enabled"] and not p["revoked"])
+        self.auto_revoke.setVisible(not p["revoked"])
+        decisions = self.data.get("decisions", {}).get(p["id"], [])
+        self.auto_activity.setVisible(bool(decisions))
+        self.auto_activity.clear()
+        for d in self.data.get("decisions", {}).get(p["id"], []):
+            self.auto_activity.addItem(
+                f"{d['name']} · {d['state']}"
+                + (f" · {d['reason']}" if d["reason"] and d["state"] != "Excluded existing" else "")
+            )
+
+    def control(self, action: str) -> None:
+        p = self.current_profile()
+        if not p:
+            return
+        if (
+            action in ("revoke", "remove")
+            and QMessageBox.question(
+                self.window,
+                "Stop this TikTok automation?",
+                "No new videos will be posted under it. A post already scheduled in Buffer stays scheduled — cancel it in Publishing Queue if needed.",
+            )
+            != QMessageBox.StandardButton.Yes
+        ):
+            return
+        self.run(lambda c: self.service.control(p["id"], action), self.reload())
+
+    def new_tiktok_automation(self) -> None:
+        editor = TikTokAutomationEditor(self)
+        if editor.exec() != QDialog.DialogCode.Accepted:
+            return
+        values = editor.values()
+
+        def reviewed(proposal: dict[str, Any]) -> None:
+            consent = TikTokConsent(proposal, self.window)
+            if consent.exec() == QDialog.DialogCode.Accepted:
+                scanner = self.window.watching.service
+                self.run(
+                    lambda c: self.service.approve(proposal, scanner, c),
+                    self.reload(
+                        "TikTok automation enabled. Only videos added from now on are eligible."
+                    ),
+                )
+
+        self.run(lambda c: self.service.preview(values), reviewed)
+
+    # Queue ----------------------------------------------------------------------------------
+
+    def build_queue(self) -> None:
+        self.queue = Disclosure("TikTok posts (via Buffer)", expanded=True)
+        self.queue_list = QListWidget()
+        self.queue_list.setWordWrap(True)
+        self.queue_list.setFixedHeight(150)
+        self.queue_list.setAccessibleName("TikTok posts")
+        self.queue_empty = text("No TikTok posts yet.", "Muted")
+        self.queue_refresh = QPushButton("Refresh TikTok Status")
+        self.queue_refresh.clicked.connect(self.poll)
+        self.queue_cancel = QPushButton("Cancel Selected TikTok Post…")
+        self.queue_cancel.clicked.connect(lambda: self.cancel_post(self.queue_list))
+        self.queue_feedback = text("", "Muted")
+        for widget in (
+            self.queue_empty,
+            self.queue_list,
+            self.queue_refresh,
+            self.queue_cancel,
+            self.queue_feedback,
+        ):
+            self.queue.body.addWidget(widget)
+
+    def render_queue(self) -> None:
+        self.queue_list.clear()
+        for post in self.data["posts"]:
+            item = QListWidgetItem(label_for(post))
+            item.setData(Qt.ItemDataRole.UserRole, post["id"])
+            item.setToolTip(post["error"] or post["external_link"])
+            self.queue_list.addItem(item)
+        has = bool(self.data["posts"])
+        self.queue_list.setVisible(has)
+        self.queue_cancel.setVisible(has)
+        self.queue_empty.setVisible(not has)
+
+
+class ConnectDialog(QDialog):
+    def __init__(self, parent: QWidget) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Connect TikTok via Buffer")
+        layout = QVBoxLayout(self)
+        layout.addWidget(text("Connect TikTok via Buffer", "Heading"))
+        layout.addWidget(
+            text(
+                "1. If you have not yet, connect your TikTok account inside Buffer.\n"
+                "2. Sign in to Buffer and allow ShortsPublisher to read your channels and create posts.\n"
+                "3. Your browser returns here automatically. If it shows a code instead, paste it below.",
+                "Muted",
+            )
+        )
+        self.open_buffer = QPushButton("Open Buffer Channels…")
+        self.sign_in = QPushButton("Sign In to Buffer…")
+        primary(self.sign_in)
+        layout.addWidget(self.open_buffer)
+        layout.addWidget(self.sign_in)
+        self.status = text("Waiting for Buffer to return here…", "Muted")
+        layout.addWidget(self.status)
+        self.pasted = QPlainTextEdit()
+        self.pasted.setFixedHeight(60)
+        self.pasted.setPlaceholderText("Paste the text shown by the relay page (only if needed)")
+        layout.addWidget(self.pasted)
+        self.use_pasted = QPushButton("Use Pasted Code")
+        layout.addWidget(self.use_pasted)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+
+class TikTokAutomationEditor(QDialog):
+    def __init__(self, controller: TikTokController) -> None:
+        super().__init__(controller.window)
+        self.setWindowTitle("New TikTok Automation")
+        self.resize(560, 600)
+        layout = QVBoxLayout(self)
+        layout.addWidget(text("TikTok automation · future files only", "Heading"))
+        self.progress = text("", "Muted")
+        layout.addWidget(self.progress)
+        self.steps = QTabWidget()
+        pages = []
+        for name in ("1 · Folder and account", "2 · Caption", "3 · Schedule and limits"):
+            page = QWidget()
+            body = QVBoxLayout(page)
+            body.setAlignment(Qt.AlignmentFlag.AlignTop)
+            self.steps.addTab(page, name)
+            pages.append(body)
+        layout.addWidget(self.steps)
+        self.name = QLineEdit("My TikTok Automation")
+        self.folder = QComboBox()
+        for folder in controller.data.get("folders", []):
+            if folder["enabled"]:
+                self.folder.addItem(folder["name"], folder["id"])
+        connection = controller.data["connection"] or {}
+        account = text(f"TikTok account: @{connection.get('name') or 'not connected'} (via Buffer)")
+        self.background = QCheckBox("Also run while ShortsPublisher is closed")
+        self.template = QLineEdit("{filename}")
+        self.ai = QComboBox()
+        self.ai.addItem("Choose explicitly", None)
+        self.ai.addItem("Yes — videos contain AI-generated content", True)
+        self.ai.addItem("No AI-generated content", False)
+        self.hours = QComboBox()
+        for label, value in (
+            ("Once per day", 0),
+            ("Every 2 hours", 2),
+            ("Every 3 hours", 3),
+            ("Every 4 hours", 4),
+            ("Every 6 hours", 6),
+        ):
+            self.hours.addItem(label, value)
+        self.hours.setCurrentIndex(1)
+        self.start, self.end = QTimeEdit(QTime(9, 0)), QTimeEdit(QTime(21, 0))
+        for clock in (self.start, self.end):
+            clock.setDisplayFormat(time_pattern())
+        self.zone = QLineEdit(system_zone())
+        self.cap = QSpinBox()
+        self.cap.setRange(1, 10)
+        self.cap.setValue(3)
+        self.pattern = QLineEdit("*.mp4")
+        self.days = [QCheckBox(n) for n in ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")]
+        for day in self.days:
+            day.setChecked(True)
+        first, second, third = (QFormLayout() for _ in range(3))
+        for form in (first, second, third):
+            form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
+        first.addRow("Automation name", self.name)
+        first.addRow(
+            "Watched folder (add one in Videos → Automatically Import Videos)", self.folder
+        )
+        first.addRow("", account)
+        first.addRow("", self.background)
+        second.addRow("Caption template · only {filename}", self.template)
+        second.addRow("AI-generated content", self.ai)
+        third.addRow("Frequency", self.hours)
+        third.addRow("First post of the day", self.start)
+        third.addRow("Last possible post", self.end)
+        third.addRow("Time zone (IANA)", self.zone)
+        third.addRow("Most posts per day", self.cap)
+        third.addRow("Eligible filenames", self.pattern)
+        for body, form in zip(pages, (first, second, third), strict=True):
+            body.addLayout(form)
+        pages[1].addWidget(text(UNSUPPORTED, "Muted"))
+        pages[2].addWidget(text("Posting days", "Muted"))
+        pages[2].addWidget(day_row(list(self.days)))
+        bar = QHBoxLayout()
+        cancel = QPushButton("Cancel")
+        cancel.clicked.connect(self.reject)
+        self.back, self.next = QPushButton("Back"), QPushButton("Next")
+        self.review = QPushButton("Review and Enable…")
+        self.back.clicked.connect(lambda: self.steps.setCurrentIndex(self.steps.currentIndex() - 1))
+        self.next.clicked.connect(lambda: self.steps.setCurrentIndex(self.steps.currentIndex() + 1))
+        self.review.clicked.connect(self.accept)
+        bar.addWidget(cancel)
+        bar.addStretch()
+        for button in (self.back, self.next, self.review):
+            button.setAutoDefault(False)
+            bar.addWidget(button)
+        layout.addLayout(bar)
+        self.steps.currentChanged.connect(self.step_changed)
+        self.step_changed()
+
+    def step_changed(self) -> None:
+        index, last = self.steps.currentIndex(), self.steps.count() - 1
+        self.back.setEnabled(index > 0)
+        self.next.setEnabled(index < last)
+        self.progress.setText(
+            f"Step {index + 1} of {last + 1}"
+            + (
+                " · Next: " + self.steps.tabText(index + 1).split(" · ")[1]
+                if index < last
+                else " · Last step: review, then approve"
+            )
+        )
+        for button, emphasized in ((self.next, index < last), (self.review, index == last)):
+            button.setObjectName("Primary" if emphasized else "")
+            button.style().unpolish(button)
+            button.style().polish(button)
+
+    def values(self) -> dict[str, Any]:
+        return {
+            "name": self.name.text(),
+            "folder_id": self.folder.currentData(),
+            "settings": {
+                "caption_template": self.template.text(),
+                "ai_generated": self.ai.currentData(),
+                "rule": Rule(
+                    self.zone.text().strip(),
+                    tuple(i for i, d in enumerate(self.days) if d.isChecked()),
+                    self.start.time().toString("HH:mm"),
+                    self.end.time().toString("HH:mm"),
+                    int(self.hours.currentData()),
+                ).encode(),
+                "daily_cap": self.cap.value(),
+                "pattern": self.pattern.text(),
+                "background": self.background.isChecked(),
+            },
+        }
+
+
+class TikTokConsent(QDialog):
+    def __init__(self, proposal: dict[str, Any], parent: QWidget) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Authorize this TikTok automation?")
+        self.resize(560, 560)
+        layout = QVBoxLayout(self)
+        layout.addWidget(text("Authorize this exact PUBLIC TikTok automation?", "Heading"))
+        summary = QPlainTextEdit(proposal["summary"])
+        summary.setReadOnly(True)
+        layout.addWidget(summary)
+        layout.addWidget(text(AUTOMATION_CONSENT, "Muted"))
+        self.scope = QCheckBox("I authorize this exact scope, as summarized above")
+        self.hosting = QCheckBox(
+            "Each video is copied to my media host and reachable by public link until deleted"
+        )
+        for box in (self.scope, self.hosting):
+            layout.addWidget(box)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
+        self.approve = buttons.addButton(
+            "Authorize and Enable", QDialogButtonBox.ButtonRole.AcceptRole
+        )
+        self.approve.setEnabled(False)
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setDefault(True)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        for box in (self.scope, self.hosting):
+            box.toggled.connect(
+                lambda _: self.approve.setEnabled(
+                    self.scope.isChecked() and self.hosting.isChecked()
+                )
+            )
+        layout.addWidget(buttons)

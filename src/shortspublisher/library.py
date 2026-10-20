@@ -12,7 +12,7 @@ from typing import Any
 from .media import InspectionError, Inspector, Media, checkpoint
 from .preparation import PreparationStore
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 
 class LibraryError(Exception):
@@ -192,6 +192,11 @@ class Library:
                 from .automation_schema import migrate as migrate_automation
 
                 migrate_automation(db)
+
+            if version < 12:
+                from .tiktok_schema import migrate as migrate_tiktok
+
+                migrate_tiktok(db)
 
     @staticmethod
     def decode(row: sqlite3.Row) -> Video:

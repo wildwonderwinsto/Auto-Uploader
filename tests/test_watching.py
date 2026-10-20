@@ -411,7 +411,7 @@ class WatchTests(unittest.TestCase):
         self.library.initialize()
         self.assertEqual(self.library.all(), before)
         with closing(self.library.connect()) as db:
-            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 11)
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 12)
 
     def test_new_only_readd_excludes_previously_waiting(self):
         identity = self.add()

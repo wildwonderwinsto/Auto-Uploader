@@ -61,6 +61,7 @@ of a pair: later phases verify persistence and remove synthetic Keychain entries
 | Recurring queues | `tests/native_recurring.py prepare\|reopen --root R`; background: `background-prepare`, then `tests/native_recurring_continue.py --root R` |
 | Automatic folder posting | `tests/native_automation.py prepare\|reopen --root R`; background: `tests/native_automation_background.py prepare\|continue --root R` |
 | Page/dialog audit | `tests/native_ui_audit.py --root R` (screenshots of every route at three sizes) |
+| TikTok via Buffer | `tests/native_tiktok.py --root R` (controlled Buffer/Cloudinary; connect, hosting, publish, automation, queue) |
 | Entry point | `-m shortspublisher --smoke-test --data-dir R` |
 
 `native_automation.py prepare --native-picker [--picker-cancel-first]` needs a person to operate
@@ -76,7 +77,8 @@ To check locale handling, Cocoa honours per-process defaults overrides, e.g.
 
 `library.Library.initialize` reads `PRAGMA user_version`, refuses newer versions, and applies each
 step in one `BEGIN IMMEDIATE` transaction (v1–v6 inline, then `execution_schema` v7,
-`background_state` v8, `watch_schema` v9, `recurring_schema` v10, `automation_schema` v11).
+`background_state` v8, `watch_schema` v9, `recurring_schema` v10, `automation_schema` v11,
+`tiktok_schema` v12). Never use `executescript()` in a migration: it commits the open transaction.
 New migrations must be additive, must not create publishing authority, and need a fixture-based
 upgrade test. Bump `SCHEMA_VERSION`.
 

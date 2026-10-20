@@ -57,6 +57,20 @@ class WatchService:
         self.library: Library = imports.library
         self.clock = clock
         self.lock = FileLock(str(self.library.path) + ".watch.lock")
+        # TikTok (via Buffer) automation runs after YouTube's; tests inject a controlled service.
+        self.tiktok: Callable[[], Any] = self.production_tiktok
+
+    def production_tiktok(self) -> Any:
+        from datetime import UTC, datetime
+
+        from .credentials import KeychainSecrets
+        from .tiktok import TikTokService
+
+        return TikTokService(
+            self.library,
+            KeychainSecrets("ShortsPublisher.TikTok"),
+            lambda: datetime.fromtimestamp(self.clock(), UTC),
+        )
 
     def folders(self) -> list[dict[str, Any]]:
         with closing(self.library.connect()) as db:
@@ -377,6 +391,7 @@ class WatchService:
                 AutomationService(
                     ScheduleService(self.library, lambda: datetime.fromtimestamp(self.clock(), UTC))
                 ).reconcile(self, cancel, background=background)
+                self.tiktok().reconcile(self, cancel, background=background)
                 return {
                     "imported": imported,
                     "message": f"{imported} new videos imported. Publishing requires separate profile or video authorization.",

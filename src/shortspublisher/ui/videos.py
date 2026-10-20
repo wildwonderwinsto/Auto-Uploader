@@ -165,6 +165,7 @@ class VideosPage(QScrollArea):
         self.introduction = text("Import or select a video to begin.", "Muted")
         layout.addWidget(self.introduction)
         action_row = QWidget()
+        action_row.setObjectName("ActionRow")
         actions = FlowLayout(action_row)
         self.import_button = QPushButton("Import Videos…")
         self.import_button.setAccessibleName("Import Video")

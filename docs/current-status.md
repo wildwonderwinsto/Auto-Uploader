@@ -1,6 +1,6 @@
-# Current status — 2026-10-17 (after Stage 18)
+# Current status — 2026-10-20 (after Stage 19)
 
-## Works today (YouTube only)
+## Works today
 
 | Capability | Verification |
 | --- | --- |
@@ -14,9 +14,10 @@
 | Recurring Public queues (intervals, weekdays, windows, DST) | Controlled foreground + background |
 | Automatic folder → profile → recurring queue publishing | Controlled foreground + background |
 | English interface on any macOS Region, Region's 12/24-hour clock kept | Automated + native (Stage 18) |
+| **TikTok via Buffer**: connect (PKCE + relay page), Cloudinary hosting, Publish Now / Schedule, status, duplicates, reconciliation, watched-folder automation | Controlled Buffer/Cloudinary + native (Stage 19); **no live request yet** |
 
-Tests: 727 automated (after the UI/UX review), plus 28 native macOS harness commands. See
-`docs/ui-ux-review-verification.md` and `docs/stage-18-verification.md`.
+Tests: 786 automated, plus 28 native macOS harness commands and `native_tiktok.py`. See
+`docs/stage-19-buffer-tiktok-verification.md`.
 
 ## Pending / not verified
 
@@ -27,6 +28,9 @@ Tests: 727 automated (after the UI/UX review), plus 28 native macOS harness comm
 - The live workspace `artifacts/stage6-live/library.sqlite3` is now schema **11** (it migrated when the
   user launched it on 2026-10-17 17:41). Its schema-9 pre-launch backup is in `stage6-live/backups/`.
 - No real background-service or recurring/automatic-folder upload has reached YouTube.
+- **TikTok live use** needs: Buffer account with TikTok connected (possibly a Business account),
+  a public Buffer app client, the relay page hosted at your HTTPS redirect URI, a Cloudinary
+  account, and an authorized single live test. Opening the live library migrates it to schema 12.
 
 ## Known limitations
 
@@ -38,9 +42,13 @@ Tests: 727 automated (after the UI/UX review), plus 28 native macOS harness comm
 - Schedule/detail setup pages still scroll at the smallest window size.
 - Not packaged, signed or notarized; runs from this checkout and `.venv`.
 - No exactly-once guarantee across SQLite, Keychain and YouTube; uncertain outcomes are reconciled.
+- TikTok: privacy/comments/Duet/Stitch/commercial disclosure aren't settable via Buffer; music or
+  trending sounds can't post automatically; Cloudinary Free caps videos at 100 MB; Calendar doesn't
+  mark TikTok posts; Pause All doesn't stop a post already scheduled in Buffer (cancel it).
 
 ## Next priorities (each needs explicit approval)
 
 1. The user-authorized Stage 17 live folder-to-YouTube acceptance.
-2. Usability polish found during live use (e.g. schedule day-control scrolling).
+2. Stage 19 external setup, then one authorized live TikTok post via Buffer.
+3. Usability polish found during live use.
 3. Later: packaging/distribution, then additional platforms — each as its own stage.

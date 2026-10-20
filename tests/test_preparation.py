@@ -89,7 +89,7 @@ class MigrationTests(unittest.TestCase):
         library.initialize()
         library.initialize()
         with sqlite3.connect(self.path) as db:
-            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 11)
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 12)
             self.assertEqual([row[:-1] for row in db.execute("SELECT * FROM videos")], original)
         video = library.get(17)
         self.assertEqual(video.media.frames, 48)

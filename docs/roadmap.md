@@ -140,3 +140,9 @@ Stage 18 was a maintenance stage: English interface on non-English macOS Regions
 cache cleanup, a classified `artifacts/` inventory with an approved 542 MB cleanup, and
 `CLAUDE.md` / `current-status.md` / `development.md`. No feature, schema or publishing change.
 See [Stage 18 verification](stage-18-verification.md). Next work needs explicit instruction.
+
+Stage 19 adds TikTok through Buffer's official API (no unofficial TikTok access): Buffer PKCE
+sign-in via an HTTPS relay page, Cloudinary public hosting, exact-time automatic posts, status and
+reconciliation, duplicates per SHA-256 + account, and folder automation with separate consent.
+Verified with controlled services only; live use awaits the user's setup and authorization. See
+[Stage 19 verification](stage-19-buffer-tiktok-verification.md).

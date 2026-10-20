@@ -14,6 +14,7 @@ SPACE = 24
 STYLESHEET = f"""
 QWidget {{ background: {BACKGROUND}; color: {TEXT}; font-size: 10pt; }}
 QLabel {{ background: transparent; }}
+QWidget#ActionRow, QCheckBox {{ background: transparent; }}
 QLabel#Title {{ font-size: 22pt; font-weight: 600; }}
 QLabel#Heading {{ font-size: 14pt; font-weight: 600; }}
 QLabel#Brand {{ font-size: 14pt; font-weight: 600; }}

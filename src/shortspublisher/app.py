@@ -58,6 +58,7 @@ def build(
     app.aboutToQuit.connect(window.automation.stop_for_quit)
     app.aboutToQuit.connect(window.uploads.stop_for_quit)
     app.aboutToQuit.connect(window.accounts.stop_for_quit)
+    app.aboutToQuit.connect(window.tiktok.stop_for_quit)
     if library.path.exists():
         QTimer.singleShot(0, window.accounts.activate)
 

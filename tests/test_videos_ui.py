@@ -52,6 +52,7 @@ class VideosUiTests(unittest.TestCase):
             w.automation,
             w.background,
             w.watching,
+            w.tiktok,
             self.page,
         ):
             settle(self.app, controller)

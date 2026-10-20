@@ -459,7 +459,7 @@ class UploadServiceTests(unittest.TestCase):
             }
         self.library.initialize()
         with closing(self.library.connect()) as db:
-            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 11)
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 12)
             for table in tables:
                 self.assertEqual(
                     before[table], [tuple(row) for row in db.execute("SELECT * FROM " + table)]

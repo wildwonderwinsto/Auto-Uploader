@@ -23,10 +23,12 @@ from PySide6.QtWidgets import (
 from ..accounts import AccountService, AccountView
 from ..automation import AutomationService
 from ..background import LaunchAgent
+from ..credentials import KeychainSecrets
 from ..execution import AutomaticPublisher
 from ..library import LibraryService
 from ..recurring import RecurringService
 from ..scheduling import ScheduleService
+from ..tiktok import TikTokService
 from ..uploads import UploadService
 from ..watching import WatchService
 from .accounts import AccountsPage
@@ -38,6 +40,7 @@ from .formatting import upload_status
 from .recurring import RecurringController
 from .scheduling import ScheduleController
 from .theme import SPACE
+from .tiktok import TikTokController
 from .uploads import UploadPanel
 from .videos import VideosPage
 from .watching import WatchPanel
@@ -198,6 +201,22 @@ class MainWindow(QMainWindow):
         self.background.status_changed.connect(self.automation.render)
         self.videos.tabs.addTab(self.uploads, "Publish")
         self.videos.tabs.addTab(self.schedule_panel, "Schedule")
+        # TikTok via Buffer: its own credentials namespace, consent and records.
+        self.tiktok = TikTokController(
+            TikTokService(uploads.store.library, KeychainSecrets("ShortsPublisher.TikTok")), self
+        )
+        self.tiktok.idle.connect(self._finish_close)
+        self.videos.tabs.addTab(self.tiktok.video_panel, "TikTok")
+        accounts_layout = self.accounts.content_layout
+        accounts_layout.insertWidget(
+            accounts_layout.indexOf(self.accounts.card) + 1, self.tiktok.card
+        )
+        settings_layout = self.background.content_layout
+        settings_layout.insertWidget(
+            settings_layout.indexOf(self.background.advanced) + 1, self.tiktok.hosting
+        )
+        self.automation.body.insertWidget(self.automation.body.count() - 1, self.tiktok.automation)
+        self.schedules.queue.body.insertWidget(3, self.tiktok.queue)
         self.uploads.changed.connect(self.videos.tabs.resize_to_current)
         self.uploads.idle.connect(self._finish_close)
         self.uploads.idle.connect(self.update_upload_context)
@@ -376,6 +395,8 @@ class MainWindow(QMainWindow):
             video, prep = None, None
         for index in range(3):
             self.videos.tabs.setTabEnabled(index, self.videos.selected is not None)
+        self.videos.tabs.setTabEnabled(5, self.videos.selected is not None)
+        self.tiktok.context(video.id if video else None)
         self.videos.sync_navigation()
         self.uploads.context(
             video.id if video else None,
@@ -420,6 +441,7 @@ class MainWindow(QMainWindow):
             and self.automation.request_close()
             and self.background.request_close()
             and self.watching.request_close()
+            and self.tiktok.request_close()
         ):
             event.accept()
         else:
@@ -436,6 +458,7 @@ class MainWindow(QMainWindow):
             or self.automation.closing
             or self.background.closing
             or self.watching.closing
+            or self.tiktok.closing
         ):
             self.close()
 
@@ -459,6 +482,7 @@ class MainWindow(QMainWindow):
                 or not self.automation.request_close()
                 or not self.background.request_close()
                 or not self.watching.request_close()
+                or not self.tiktok.request_close()
             ):
                 event.ignore()
                 return True

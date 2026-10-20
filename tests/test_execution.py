@@ -339,7 +339,7 @@ class ExecutionTests(unittest.TestCase):
                 self.assertEqual(
                     [tuple(r) for r in db.execute("select * from " + name)], values, name
                 )
-            self.assertEqual(db.execute("pragma user_version").fetchone()[0], 11)
+            self.assertEqual(db.execute("pragma user_version").fetchone()[0], 12)
             self.assertEqual(
                 db.execute("select sum(execution_enabled) from scheduled_jobs").fetchone()[0], 0
             )

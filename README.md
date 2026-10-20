@@ -2,14 +2,16 @@
 
 A local-first macOS desktop application for preparing and publishing short vertical videos to
 YouTube — manually, on an approved schedule, from recurring queues, or automatically from watched
-folders under explicit standing approval. YouTube is the only implemented platform.
+folders under explicit standing approval. YouTube is implemented and live-verified; TikTok is
+implemented through Buffer (see [Stage 19](docs/stage-19-buffer-tiktok-verification.md) for the
+one-time Buffer, relay-page and Cloudinary setup) and has not yet been used live.
 
 - Current capabilities and limitations: [docs/current-status.md](docs/current-status.md)
 - Developer commands and native checks: [docs/development.md](docs/development.md)
 - Architecture and safety decisions: [docs/architecture.md](docs/architecture.md)
 - AI-assistant handoff map: [CLAUDE.md](CLAUDE.md)
-- Latest stage: [Stage 18 verification](docs/stage-18-verification.md) (maintenance, English UI);
-  previous: [Stage 17](docs/stage-17-verification.md).
+- Latest stage: [Stage 19 — TikTok through Buffer](docs/stage-19-buffer-tiktok-verification.md);
+  previous: [Stage 18](docs/stage-18-verification.md).
 
 **Live folder-to-YouTube publishing remains pending personal in-app approval and activation.**
 Packaging is not included.
@@ -544,7 +546,7 @@ location comes from Qt's application-data directory:
 
 `~/Library/Application Support/ShortsPublisher/ShortsPublisher/library.sqlite3`
 
-Schema version 11 is recorded in `PRAGMA user_version`. Existing libraries migrate
+Schema version 12 is recorded in `PRAGMA user_version`. Existing libraries migrate
 transactionally during startup; the desktop dispatcher also initializes new libraries. Existing video IDs and inspection metadata are preserved. Publishing details
 are separate platform-keyed records, and deleted IDs are never reused. Database failures
 never trigger deletion or reset. Close another running copy if the database is locked, then use
@@ -589,7 +591,8 @@ selection and removal-confirmation response; manual OS picker interaction is not
 - `media.py`: safe cancellable FFprobe inspection and metadata parsing.
 - `readiness.py`: versioned YouTube technical rules, independent of UI and storage.
 - `watching.py`, `watch_schema.py`, `ui/watching.py`: shared local scanner, persistent content registry, consent and import activity.
-- `library.py`: SQLite records, transactional schema migrations through version 11 and local library operations.
+- `library.py`: SQLite records, transactional schema migrations through version 12 and local library operations.
+- `buffer.py`, `hosting.py`, `tiktok.py`, `tiktok_schema.py`, `ui/tiktok.py`: TikTok through Buffer with Cloudinary media hosting.
 - `recurring.py`, `cadence.py`, `automation.py` and their `*_schema.py` / `ui/*.py`: recurring queues, posting opportunities and automatic folder profiles.
 - `background.py`, `background_state.py`, `worker.py`, `worker_entry.py`, `ui/background.py`: optional LaunchAgent service.
 - `ui/formatting.py`: English, time-zone-aware display of dates, times, sizes and statuses.

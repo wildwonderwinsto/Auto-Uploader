@@ -701,3 +701,26 @@ Region's locale (en_GB, en_IN…) and otherwise substitutes English for that ter
 back to en_US). The original Region is retained only to choose the 12/24-hour clock in
 `time_pattern()`. Time-zone conversion is unchanged. User data is never translated. Native macOS
 dialogs (file chooser) still follow the macOS language. See [Stage 18 verification](stage-18-verification.md).
+
+## TikTok through Buffer (Stage 19)
+
+TikTok uses Buffer's GraphQL API (`buffer.py`) — never unofficial TikTok endpoints or browser
+automation. Buffer accepts only a public video URL, so `hosting.py` streams an independent copy of
+the original to the user's Cloudinary account, hashing exactly the bytes sent, and checks the URL
+anonymously before Buffer is contacted. `tiktok.py` owns the state machine (`tiktok_posts`):
+hosting → "Sending to Buffer" (durable intent) → Buffer status (`scheduled`/`sending`/`sent`/
+`error`; `schedulingType` must stay `automatic`). Uncertain creates are reconciled by the unique
+hosted URL, never resent. Duplicate key: source SHA-256 + Buffer channel (partial unique index).
+
+Sign-in is a public OAuth client with PKCE. Buffer requires HTTPS redirect URIs even on localhost,
+so a user-hosted static relay page forwards the code to a one-shot `127.0.0.1:47633` listener,
+with a paste fallback. Rotating refresh tokens are used only under a cross-process file lock with a
+Keychain re-read; an uncertain refresh marks the connection "Reconnect required" and the old token
+is never reused (Buffer revokes the grant on reuse).
+
+Scheduling: ShortsPublisher chooses the video and exact time (cadence `Rule`); Buffer executes via
+`customScheduled` + `dueAt`. Buffer's queue is never used and each TikTok automation keeps at most
+one unsent Buffer post, so there are no competing queues and pausing affects at most one post.
+TikTok automations (`tiktok_profiles`) have their own consent and run after YouTube's in the
+folder scanner, in the desktop and the background worker. See
+[Stage 19 verification](stage-19-buffer-tiktok-verification.md).

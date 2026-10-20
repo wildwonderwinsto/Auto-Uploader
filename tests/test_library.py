@@ -106,7 +106,7 @@ class StorageTests(unittest.TestCase):
         self.assertEqual(reopened.all(), [])
         self.assertEqual(source.read_bytes(), b"original")
         with sqlite3.connect(self.library.path) as db:
-            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 11)
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 12)
 
     def test_concurrent_duplicates(self):
         with ThreadPoolExecutor(max_workers=2) as pool:

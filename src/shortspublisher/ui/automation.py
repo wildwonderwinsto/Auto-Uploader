@@ -534,6 +534,7 @@ class AutomationController(QObject):
         self.page.setWidgetResizable(True)
         content = QWidget()
         body = QVBoxLayout(content)
+        self.body = body
         body.setContentsMargins(28, 28, 28, 28)
         body.setSpacing(14)
         body.addWidget(text("Automatic Posting", "Title"))
@@ -543,7 +544,7 @@ class AutomationController(QObject):
                 "Muted",
             )
         )
-        self.new = QPushButton("New Automation…")
+        self.new = QPushButton("New YouTube Automation…")
         primary(self.new)
         self.new.clicked.connect(lambda: self.start("open"))
         body.addWidget(self.new)

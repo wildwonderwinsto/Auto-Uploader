@@ -55,6 +55,7 @@ class BackgroundPage(QScrollArea):
         self.setWidgetResizable(True)
         content = QWidget()
         layout = QVBoxLayout(content)
+        self.content_layout = layout
         layout.setContentsMargins(28, 28, 28, 28)
         layout.setSpacing(16)
         layout.addWidget(text("Settings", "Title"))

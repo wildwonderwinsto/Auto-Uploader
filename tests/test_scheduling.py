@@ -367,7 +367,7 @@ class SchedulingTests(unittest.TestCase):
             before = {t: db.execute("SELECT * FROM " + t).fetchall() for t in tables}
         Library(target).initialize()
         with sqlite3.connect(target) as db:
-            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 11)
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 12)
             self.assertEqual(
                 before, {t: db.execute("SELECT * FROM " + t).fetchall() for t in tables}
             )

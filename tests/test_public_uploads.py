@@ -285,7 +285,7 @@ class PublicUploadTests(unittest.TestCase):
             for table, rows in before.items():
                 after = db.execute("SELECT * FROM " + table).fetchall()
                 self.assertEqual([r[: len(rows[0])] for r in after] if rows else after, rows)
-            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 11)
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 12)
         for old in UploadStore(Library(target)).all():
             self.assertEqual(old.requested_privacy, "private")
             self.assertEqual(old.verification_status, "historical")

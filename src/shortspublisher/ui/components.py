@@ -80,6 +80,7 @@ class FlowLayout(QLayout):
 def day_row(days: list[QWidget]) -> QWidget:
     """Weekday checkboxes on one wrapping line instead of seven stacked rows."""
     row = QWidget()
+    row.setObjectName("ActionRow")  # transparent over cards and dialogs
     flow = FlowLayout(row, spacing=14)
     for day in days:
         flow.addWidget(day)

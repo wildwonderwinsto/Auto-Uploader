@@ -7,10 +7,12 @@ if the task needs it, the relevant section of `docs/architecture.md`. Stage repo
 
 A local-first macOS desktop app (PySide6) that imports short vertical videos, prepares YouTube
 metadata, and publishes them — manually, on an approved schedule, from recurring queues, or from
-watched folders under standing approval. **YouTube is the only implemented platform.** TikTok,
-Instagram, Facebook and Snapchat are future work. No packaging/distribution exists yet.
+watched folders under standing approval. **YouTube** is implemented and live-verified. **TikTok**
+is implemented through Buffer's API (Stage 19) and verified only against controlled Buffer/Cloudinary
+responses — live use needs the user's Buffer/Cloudinary setup and authorization. Instagram, Facebook
+and Snapchat are future work. No packaging/distribution exists yet.
 
-Stages 1–18 are done (Stage 17's optional live folder-to-YouTube test is still pending the user's
+Stages 1–19 are done (Stage 17's optional live folder-to-YouTube test is still pending the user's
 personal authorization). Never start a new stage without explicit instruction.
 
 ## Commands
@@ -18,7 +20,7 @@ personal authorization). Never start a new stage without explicit instruction.
 ```sh
 .venv/bin/python -m shortspublisher --data-dir /tmp/sp-test        # isolated run
 ./"Start ShortsPublisher.command"                                   # USER's live workspace — don't run
-QT_QPA_PLATFORM=offscreen .venv/bin/python -m unittest discover -s tests   # 727 tests, ~4 min
+QT_QPA_PLATFORM=offscreen .venv/bin/python -m unittest discover -s tests   # 786 tests, ~4 min
 cd tests && QT_QPA_PLATFORM=offscreen PYTHONPATH=../src ../.venv/bin/python -m unittest test_shell  # focused
 .venv/bin/ruff check . && .venv/bin/ruff format --check . && .venv/bin/mypy
 ```
@@ -41,6 +43,7 @@ isolated Keychain/LaunchAgent identifiers. Python 3.12 in `.venv` (uv), PySide6 
 | Scheduling | `scheduling.py`, `execution.py` (+`_schema`), `ui/scheduling.py`, `ui/execution.py` |
 | Background | `background.py` (LaunchAgent), `background_state.py`, `ui/background.py` |
 | Folders/recurring/auto | `watching.py`, `recurring.py`, `cadence.py`, `automation.py` (+ `*_schema.py`), matching `ui/*.py` |
+| TikTok (Buffer) | `buffer.py` (PKCE OAuth, rotating refresh under a file lock, GraphQL), `hosting.py` (Cloudinary public copy), `tiktok.py` (posts, duplicates, status, automation), `tiktok_schema.py`, `ui/tiktok.py`; relay page `docs/buffer-oauth-relay.html` |
 | Shared UI | `ui/window.py`, `ui/theme.py`, `ui/components.py`, `ui/formatting.py` (dates/times) |
 
 Tests: `tests/test_*.py` (unittest, discovered), `tests/native_*.py` (manual native harnesses),
@@ -49,12 +52,13 @@ Tests: `tests/test_*.py` (unittest, discovered), `tests/native_*.py` (manual nat
 
 ## Database
 
-SQLite, `PRAGMA user_version`; current schema **11** (`library.SCHEMA_VERSION`). Opening a
+SQLite, `PRAGMA user_version`; current schema **12** (`library.SCHEMA_VERSION`; v12 = TikTok tables). Opening a
 library migrates it forward inside one `BEGIN IMMEDIATE` transaction; newer unknown versions are
 refused; failures never reset data. Add migrations as a new `*_schema.py`-style additive step and a
 fixture/test. The user's live library reached schema 11 when the user opened it on 2026-10-17 17:41; the
 schema-9 copy is `artifacts/stage6-live/backups/library-before-launch-20261017T224140686820Z.sqlite3`.
-**Any future migration of the live library needs the user's explicit approval and a fresh backup.**
+Opening it with current code migrates it to 12 (additive). **Any migration of the live library
+needs the user's explicit approval and a fresh backup.**
 
 ## Protected real data — never delete, move, overwrite or migrate without approval
 
@@ -64,7 +68,8 @@ schema-9 copy is `artifacts/stage6-live/backups/library-before-launch-20261017T2
   paths**, so these folders cannot be renamed or moved.
 - `artifacts/stage7-preflight/`, `stage9-final/`, `stage10-final/`, `stage17-evidence/`,
   `stage17-human-picker/`, `stage17-prepared/` — live preservation evidence / pending live test.
-- macOS Keychain entries, the real channel `UCoj4BJDrrcuE3gTvpi-7QFA`, and its YouTube videos.
+- macOS Keychain entries (`ShortsPublisher.YouTube`, `.UploadSessions`, `.TikTok`), the real channel
+  `UCoj4BJDrrcuE3gTvpi-7QFA`, and its YouTube videos.
 - `/Users/winston/CodexProjects/ShortsStudio` — read-only design reference.
 
 `artifacts/` is gitignored and mixed-trust. Everything else there is controlled test evidence;
@@ -84,6 +89,11 @@ see `docs/stage-18-verification.md` for the classified inventory and the approve
 - Never modify, move, transcode or delete original source videos.
 - Don't read real credentials. Tests use synthetic Keychain identifiers and controlled providers.
 - Don't kill running ShortsPublisher processes or interfere with an active upload.
+- TikTok: never make real Buffer/Cloudinary requests or TikTok posts without explicit authorization.
+  Never reuse a Buffer refresh token after an uncertain refresh (it revokes the grant). Never
+  resend an uncertain `createPost`; reconcile by the unique hosted URL. Duplicate key = source
+  SHA-256 + Buffer channel. Hosted copies are public by link; never delete before Buffer reports
+  `sent` (+24 h). Only offer TikTok controls Buffer's API supports (AI disclosure; not privacy).
 
 ## Conventions
 

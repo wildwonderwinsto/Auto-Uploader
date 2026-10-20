@@ -83,12 +83,13 @@ class AccountsPage(QScrollArea):
         layout.addWidget(text("Accounts", "Title"))
         layout.addWidget(
             text(
-                "Connect the YouTube channel you intend to use. Connect read-only first. Uploading requires separate consent and confirmation.",
+                "Connect the accounts you publish to. YouTube connects directly with Google; TikTok connects through your Buffer account. Publishing always needs separate consent and confirmation.",
                 "Muted",
             )
         )
         card = QFrame()
         card.setObjectName("Card")
+        self.card, self.content_layout = card, layout
         body = QVBoxLayout(card)
         body.setContentsMargins(24, 24, 24, 24)
         body.setSpacing(16)
