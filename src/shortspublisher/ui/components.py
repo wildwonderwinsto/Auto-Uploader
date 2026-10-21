@@ -158,6 +158,12 @@ class Disclosure(QWidget):
         self.changed.emit()
 
 
+def natural(button: QPushButton) -> QPushButton:
+    """A button inside a form row keeps its natural width instead of filling the field column."""
+    button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+    return button
+
+
 def primary(button: QPushButton) -> None:
     button.setObjectName("Primary")
     button.setCursor(Qt.CursorShape.PointingHandCursor)

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import secrets
 import time
 from collections.abc import Callable
@@ -60,6 +61,39 @@ class HashingReader:
         return getattr(self.file, name)
 
 
+def cloudinary_fields(cloud_name: str, api_key: str, api_secret: str) -> tuple[str, str, str]:
+    """Normalize what people paste from the Cloudinary console.
+
+    Accepts the "API environment variable" (``CLOUDINARY_URL=cloudinary://KEY:SECRET@CLOUD``) in
+    any field, trims whitespace and rejects values that are clearly the wrong field."""
+    for value in (cloud_name, api_key, api_secret):
+        match = re.search(r"cloudinary://([^:@\s]+):([^@\s]+)@([A-Za-z0-9_-]+)", value or "")
+        if match:
+            return match.group(3), match.group(1), match.group(2)
+    cloud, key, secret = (
+        (cloud_name or "").strip(),
+        (api_key or "").strip(),
+        (api_secret or "").strip(),
+    )
+    if not cloud or not key or not secret:
+        raise HostingError("Enter the Cloudinary cloud name, API key and API secret.", "config")
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", cloud):
+        raise HostingError(
+            "The cloud name is the short name shown at the top of the Cloudinary console "
+            "(letters, numbers and hyphens only — not a URL or email).",
+            "config",
+        )
+    if not key.isdigit():
+        raise HostingError(
+            "The API key is the number shown next to “API Key” (digits only).", "config"
+        )
+    if any(c.isspace() for c in secret) or len(secret) < 10:
+        raise HostingError(
+            "The API secret looks incomplete. Copy it again with the copy button.", "config"
+        )
+    return cloud, key, secret
+
+
 class CloudinaryHost:
     def __init__(
         self,
@@ -70,9 +104,7 @@ class CloudinaryHost:
         clock: Callable[[], float] = time.time,
         anonymous: Any | None = None,
     ) -> None:
-        if not cloud_name.strip() or not api_key.strip() or not api_secret:
-            raise HostingError("Enter the Cloudinary cloud name, API key and API secret.", "config")
-        self.cloud, self.key, self.secret = cloud_name.strip(), api_key.strip(), api_secret
+        self.cloud, self.key, self.secret = cloudinary_fields(cloud_name, api_key, api_secret)
         self.session = session or requests.Session()
         self.anonymous = anonymous or requests  # no credentials, like Buffer's fetcher
         self.clock = clock
@@ -99,7 +131,13 @@ class CloudinaryHost:
                 "Could not reach Cloudinary. Check the connection.", "network"
             ) from None
         if response.status_code in (401, 403):
-            raise HostingError("Cloudinary rejected these credentials.", "config")
+            raise HostingError(
+                "Cloudinary rejected these credentials. Check the API key and secret (Cloudinary "
+                "console → Settings → API Keys) and that the cloud name belongs to that account.",
+                "config",
+            )
+        if response.status_code == 404:
+            raise HostingError("Cloudinary has no account with that cloud name.", "config")
         if response.status_code != 200:
             raise HostingError("Cloudinary could not report account usage.", "api")
         data = response.json()

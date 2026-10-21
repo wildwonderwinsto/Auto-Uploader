@@ -32,7 +32,7 @@ from PySide6.QtWidgets import (
 
 from ..automation import CONSENT, AutomationService, title_for
 from ..cadence import Rule
-from .components import Disclosure, day_row, primary
+from .components import Disclosure, day_row, natural, primary
 from .formatting import system_zone, time_pattern, timestamp
 from .recurring import outcome, rule_label
 from .scheduling import text
@@ -162,7 +162,7 @@ class ProfileEditor(QDialog):
             )
         if profile:
             self.folder.setCurrentIndex(self.folder.findData(profile["folder_id"]))
-        self.add_folder = QPushButton("Choose and Authorize a New Folder…")
+        self.add_folder = natural(QPushButton("Choose and Authorize a New Folder…"))
         self.add_folder.clicked.connect(self.choose_folder)
         self.channel = QComboBox()
         self.channel.addItem(
@@ -544,6 +544,7 @@ class AutomationController(QObject):
                 "Muted",
             )
         )
+        body.addWidget(text("YouTube Automations", "Heading"))
         self.new = QPushButton("New YouTube Automation…")
         primary(self.new)
         self.new.clicked.connect(lambda: self.start("open"))
@@ -554,10 +555,10 @@ class AutomationController(QObject):
         )
         self.profiles.currentIndexChanged.connect(self.render)
         body.addWidget(self.profiles)
-        self.headline = text("No automations yet", "Badge")
+        self.headline = text("No YouTube automations yet", "Badge")
         body.addWidget(self.headline)
         self.status = text(
-            "Choose New Automation to pick a folder, channel, video details and schedule. Manual importing and publishing remain available in Videos."
+            "Choose New YouTube Automation… to pick a folder, channel, video details and schedule. Manual importing and publishing remain available in Videos."
         )
         body.addWidget(self.status)
         self.activity = QListWidget()
@@ -747,10 +748,12 @@ class AutomationController(QObject):
         )
         for key in ("pause", "resume", "disable", "edit", "remove", "review"):
             self.buttons[key].setVisible(p is not None)
+        self.activity.setVisible(p is not None)  # no empty list box before the first automation
+        self.profiles.setVisible(bool(self.data["profiles"]))
         if not p:
-            self.headline.setText("No automations yet")
+            self.headline.setText("No YouTube automations yet")
             self.status.setText(
-                "Choose New Automation to pick a folder, channel, video details and schedule. Manual importing and publishing remain available in Videos."
+                "Choose New YouTube Automation… to pick a folder, channel, video details and schedule. Manual importing and publishing remain available in Videos."
             )
             return
         plan = next((x for x in self.recurring["plans"] if x["id"] == p["plan_id"]), None)

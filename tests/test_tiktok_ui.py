@@ -89,7 +89,7 @@ class TikTokUiTests(Fixture):
     def test_hosting_requires_consent_in_settings(self):
         self.w.navigate("settings")
         self.c.cloud_name.setText("demo")
-        self.c.cloud_key.setText("cloud-key")
+        self.c.cloud_key.setText("123456789012345")
         self.c.cloud_secret.setText("cloud-secret")
         self.c.save_hosting()
         settle(self.app, self.c)
@@ -103,6 +103,32 @@ class TikTokUiTests(Fixture):
         self.assertIn("Cloudinary · demo", self.c.hosting_status.text())
         self.assertEqual(self.c.cloud_secret.text(), "")
         self.assertEqual(self.cloud.uploads, 0)
+
+    def test_pasted_cloudinary_variable_fills_fields_and_save_verifies(self):
+        self.c.cloud_secret.setText("CLOUDINARY_URL=cloudinary://123456789012345:cloud-secret@demo")
+        self.assertEqual(
+            (self.c.cloud_name.text(), self.c.cloud_key.text(), self.c.cloud_secret.text()),
+            ("demo", "123456789012345", "cloud-secret"),
+        )
+        self.c.hosting_consent.setChecked(True)
+        self.c.save_hosting()
+        settle(self.app, self.c)
+        settle(self.app, self.c)
+        self.assertEqual(self.service.hosting()["cloud_name"], "demo")
+        self.assertIn("Cloudinary account OK", self.c.hosting_feedback.text())
+
+    def test_errors_from_clicks_open_a_non_blocking_dialog(self):
+        self.c.cloud_name.setText("demo")
+        self.c.cloud_key.setText("123456789012345")
+        self.c.cloud_secret.setText("wrong-secret-value")
+        self.c.hosting_consent.setChecked(True)
+        self.c.save_hosting()
+        settle(self.app, self.c)
+        self.assertIsNotNone(self.c.error_box)
+        self.assertIn("rejected", self.c.error_box.text())
+        self.assertEqual(self.c.cloud_secret.text(), "wrong-secret-value")  # kept for correction
+        self.assertIsNone(self.service.hosting())
+        self.c.error_box.close()
 
     def test_video_tab_publish_now_and_history(self):
         video = self.ready()

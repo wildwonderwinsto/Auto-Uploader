@@ -50,6 +50,7 @@ class OAuthTests(unittest.TestCase):
         self.assertEqual(query["code_challenge_method"], ["S256"])
         self.assertEqual(query["response_type"], ["code"])
         self.assertIn("offline_access", query["scope"][0].split())
+        self.assertEqual(query["prompt"], ["consent"])  # as in Buffer's documented request
         self.assertNotIn("client_secret", query)
 
     def test_redirect_must_be_https(self):
@@ -148,7 +149,7 @@ class Fixture(unittest.TestCase):
 
     def host(self, retention="delete_after_sent"):
         self.service.save_hosting(
-            "demo", "cloud-key", "cloud-secret", consent=True, retention=retention
+            "demo", "123456789012345", "cloud-secret", consent=True, retention=retention
         )
 
     def video(self, name="clip.mp4"):
@@ -272,11 +273,52 @@ class RefreshTests(Fixture):
 class HostingTests(Fixture):
     def test_hosting_requires_explicit_consent_and_keeps_secret_in_keychain(self):
         with self.assertRaises(HostingError):
-            self.service.save_hosting("demo", "cloud-key", "cloud-secret", consent=False)
+            self.service.save_hosting("demo", "123456789012345", "cloud-secret", consent=False)
         self.host()
         self.assertNotIn("cloud-secret", "\n".join(self.library.connect().iterdump()))
         self.assertIn("cloud-secret", self.secrets.values.values())
         self.assertEqual(self.service.host().usage()["plan"], "Free")
+
+    def test_pasted_environment_variable_and_whitespace_are_normalized(self):
+        from shortspublisher.hosting import cloudinary_fields
+
+        self.assertEqual(
+            cloudinary_fields(
+                "CLOUDINARY_URL=cloudinary://123456789012345:abcSECRET_xyz-12@demo", "", ""
+            ),
+            ("demo", "123456789012345", "abcSECRET_xyz-12"),
+        )
+        self.assertEqual(
+            cloudinary_fields(" demo ", " 123 \n", " cloud-secret\n"),
+            ("demo", "123", "cloud-secret"),
+        )
+        for bad in (
+            ("https://cloudinary.com/demo", "1", "cloud-secret"),
+            ("demo", "key-abc", "cloud-secret"),
+            ("demo", "1", "short"),
+        ):
+            with self.assertRaises(HostingError):
+                cloudinary_fields(*bad)
+
+    def test_wrong_credentials_are_never_saved(self):
+        with self.assertRaises(HostingError) as raised:
+            self.service.save_hosting("demo", "999", "wrong-secret-value", consent=True)
+        self.assertIn("rejected", str(raised.exception))
+        self.assertIsNone(self.service.hosting())
+        self.assertEqual(self.secrets.values, {})
+
+    def test_save_trims_and_verifies(self):
+        self.cloud.secret = "cloud-secret"
+        self.service.save_hosting(" demo ", "123456789012345", "cloud-secret\n", consent=True)
+        self.assertEqual(self.service.hosting()["cloud_name"], "demo")
+        self.assertIn("cloud-secret", self.secrets.values.values())
+        self.assertNotIn("cloud-secret\n", self.secrets.values.values())
+
+    def test_check_unsaved_values(self):
+        self.assertEqual(
+            self.service.check_hosting("demo", "123456789012345", "cloud-secret")["plan"], "Free"
+        )
+        self.assertIsNone(self.service.hosting())
 
     def test_upload_is_exact_independent_copy_and_original_unchanged(self):
         video = self.ready()
@@ -291,7 +333,9 @@ class HostingTests(Fixture):
 
     def test_size_limit_checked_before_any_upload(self):
         self.connect()
-        self.service.save_hosting("demo", "cloud-key", "cloud-secret", consent=True, max_bytes=1000)
+        self.service.save_hosting(
+            "demo", "123456789012345", "cloud-secret", consent=True, max_bytes=1000
+        )
         video = self.video()
         with self.assertRaises(TikTokError):
             self.service.publish(video.id, "x", False, None, Event())

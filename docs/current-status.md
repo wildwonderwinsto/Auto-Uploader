@@ -14,9 +14,9 @@
 | Recurring Public queues (intervals, weekdays, windows, DST) | Controlled foreground + background |
 | Automatic folder → profile → recurring queue publishing | Controlled foreground + background |
 | English interface on any macOS Region, Region's 12/24-hour clock kept | Automated + native (Stage 18) |
-| **TikTok via Buffer**: connect (PKCE + relay page), Cloudinary hosting, Publish Now / Schedule, status, duplicates, reconciliation, watched-folder automation | Controlled Buffer/Cloudinary + native (Stage 19); **no live request yet** |
+| **TikTok via Buffer**: connect (PKCE + relay page), Cloudinary hosting, Publish Now / Schedule, status, duplicates, reconciliation, watched-folder automation | **Live**: one automatic Public post to @mrcenterr via Buffer (video 7698923752935017741), plus controlled tests |
 
-Tests: 786 automated, plus 28 native macOS harness commands and `native_tiktok.py`. See
+Tests: 792 automated, plus 28 native macOS harness commands and `native_tiktok.py`. See
 `docs/stage-19-buffer-tiktok-verification.md`.
 
 ## Pending / not verified
@@ -29,8 +29,9 @@ Tests: 786 automated, plus 28 native macOS harness commands and `native_tiktok.p
   user launched it on 2026-10-17 17:41). Its schema-9 pre-launch backup is in `stage6-live/backups/`.
 - No real background-service or recurring/automatic-folder upload has reached YouTube.
 - **TikTok live use** needs: Buffer account with TikTok connected (possibly a Business account),
-  a public Buffer app client, the relay page hosted at your HTTPS redirect URI, a Cloudinary
-  account, and an authorized single live test. Opening the live library migrates it to schema 12.
+  a Cloudinary account and an authorized single live test. Done: Buffer app client saved, relay
+  page live at `https://wildwonderwinsto.github.io/autouploaderhtml/buffer-oauth-relay.html`,
+  live library at schema 12.
 
 ## Known limitations
 

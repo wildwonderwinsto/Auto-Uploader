@@ -114,6 +114,8 @@ def authorization_url(config: BufferClientConfig, state: str, challenge: str) ->
                 "state": state,
                 "code_challenge": challenge,
                 "code_challenge_method": "S256",
+                # Buffer's documented example includes it; required for the offline_access grant.
+                "prompt": "consent",
             }
         )
     )

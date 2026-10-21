@@ -270,7 +270,8 @@ class TikTokService:
         consent: bool,
         retention: str = "delete_after_sent",
         max_bytes: int = FREE_PLAN_MAX_BYTES,
-    ) -> None:
+    ) -> dict[str, Any]:
+        """Verify with Cloudinary (usage call, no upload) before anything is saved."""
         if not consent:
             raise HostingError(
                 "Confirm that hosted copies are publicly reachable by link.", "consent"
@@ -280,15 +281,31 @@ class TikTokService:
         old = self.hosting()
         if not api_secret and old:
             api_secret = self.secrets.get(old["credential_key"]) or ""
-        CloudinaryHost(cloud_name, api_key, api_secret)  # validates presence
+        host = CloudinaryHost(
+            cloud_name, api_key, api_secret, self.host_session, anonymous=self.anonymous
+        )
+        usage = host.usage()  # wrong credentials fail here, before anything is stored
         key = old["credential_key"] if old else "cloudinary-" + uuid.uuid4().hex
-        self.secrets.put(key, api_secret)
+        self.secrets.put(key, host.secret)
         when = stamp(self.clock())
         with closing(self.library.connect()) as db, db:
             db.execute(
                 """INSERT OR REPLACE INTO media_hosting VALUES (1,'cloudinary',?,?,?,?,?,?,?)""",
-                (cloud_name.strip(), api_key.strip(), key, max_bytes, retention, when, when),
+                (host.cloud, host.key, key, max_bytes, retention, when, when),
             )
+        return usage
+
+    def check_hosting(self, cloud_name: str, api_key: str, api_secret: str) -> dict[str, Any]:
+        """Check entered (possibly unsaved) values; an empty secret means the saved one."""
+        old = self.hosting()
+        if not api_secret and old:
+            api_secret = self.secrets.get(old["credential_key"]) or ""
+        if not (cloud_name or api_key) and old:
+            cloud_name, api_key = old["cloud_name"], old["api_key"]
+        host = CloudinaryHost(
+            cloud_name, api_key, api_secret, self.host_session, anonymous=self.anonymous
+        )
+        return host.usage()
 
     def remove_hosting(self) -> None:
         old = self.hosting()

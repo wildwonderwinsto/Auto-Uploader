@@ -68,6 +68,18 @@ the dialog. The pasted text is validated against `state` the same way.
 - Tested: two simulated processes refreshing concurrently make exactly one refresh, with no
   revocation; an uncertain refresh makes exactly one call, then refuses until reconnect.
 
+**Setup check (2026-10-20):**
+- The relay page is live at
+  `https://wildwonderwinsto.github.io/autouploaderhtml/buffer-oauth-relay.html`, byte-identical to
+  the project file.
+- You saved your Buffer client in your live workspace. The redirect URI matches exactly.
+- One unauthenticated GET of the authorization URL returned **303 to Buffer's sign-in
+  interaction**, meaning the client ID, redirect, scopes and PKCE parameters were accepted. Nothing
+  was signed in, posted or stored.
+- Buffer's documented example request includes `prompt=consent`, which governs the refresh-token
+  grant. It was missing and has been added, with a test.
+- Not yet done: Connect TikTok, and media hosting.
+
 ## 3. Posting capabilities, and what is not supported
 
 - **Publish now:** `mode: shareNow`.
@@ -197,6 +209,35 @@ first. The launcher does this automatically.
 - **Fixes found in native screenshots:** the button rows and checkboxes inside cards drew a dark
   band. They are now transparent.
 
+**UI parity fixes after the first pass (native screenshots):**
+- **Checkbox squares had become invisible.** A side effect of the first card-background fix: making
+  checkboxes transparent hid their indicator across the app. Checkboxes inside cards now use the
+  card colour, and the indicators are visible again.
+- **Settings:** TikTok Media Hosting is now a plain section with a Title Case heading, like
+  Background Publishing, instead of a card.
+- **Automatic Posting:** a "YouTube Automations" heading mirrors "TikTok Automations", and both
+  "New … Automation…" buttons are primary. The TikTok setup can now choose and authorize a new
+  watched folder in place, like the YouTube setup.
+- **Natural-width buttons:** buttons inside form rows ("Choose and Authorize a New Folder…" in both
+  editors) keep their natural width.
+- **Empty states:** the empty YouTube automation list is hidden until an automation exists, like
+  TikTok's.
+- **Dashboard:** Publishing status gains a TikTok line, and the sidebar footer reads "Local library ·
+  YouTube · TikTok".
+
+**Hosting setup fixes (2026-10-20, after your first try):**
+- TikTok had connected live as @mrcenterr via Buffer, but no hosting was saved, so publishing stayed
+  unavailable.
+- Cloudinary input is now normalized: a pasted `cloudinary://KEY:SECRET@CLOUD` string fills all
+  three fields, whitespace is trimmed (the secret was not trimmed before), and wrong-field values
+  get specific messages.
+- **Save verifies with Cloudinary** (usage call, no upload) before storing anything.
+- **Check Account** works on unsaved values.
+- Errors from your own clicks open a dialog as well as the inline text. A typed secret is kept when
+  saving fails, so you can correct it.
+- TikTok errors are now written to the application log (messages only, never secrets).
+- Tests: 792 pass.
+
 ## 9. Verification
 
 | Check | Result |
@@ -222,16 +263,28 @@ horizontal overflow. Evidence is in `artifacts/stage19-evidence/`.
   log and one new launcher backup (`library-before-launch-20261017T235359710344Z.sqlite3`). Those
   came from **your** session: opened Oct 17 at 18:54 and active until 19:01. Files were last
   touched Oct 20 at 07:54, with no normal-quit line in the log.
-- The live library is still **schema 11**; this stage's code never opened it.
+- The live library was still schema 11 at the end of the first pass. You then opened it with the launcher on 2026-10-20 at 13:17 (backup `library-before-launch-20261020T181748221482Z.sqlite3`), which migrated it to **schema 12**. A copy passes `integrity_check`, and YouTube's connection and three upload records are intact.
 - All three genuine source videos and the prepared Stage 17 source are unchanged.
 
-## 10. Live testing status
+## 10. Live testing status — PASSED (2026-10-20, authorized by you)
 
-**Not performed.** It needs the external setup below and your explicit authorization of one
-disposable original video, the exact TikTok account, the caption and AI disclosure, and public
-hosting on your Cloudinary account (Free plan, no cost). Before a live run I will show the source,
-destination, metadata and hosting exposure. I will run exactly one Publish Now, observe Buffer's
-status until `sent`, and open the reported `externalLink`. No automation will be left enabled.
+You chose a generated clip and asked me to run it. One Publish Now was made through the app's own
+code against your live workspace, with your window open and coordinating through the app's locks.
+
+| Step | Result |
+|---|---|
+| Source | New 6 s 540×960 H.264/AAC 30 fps clip `ShortsPublisher_TikTok_test_20261021T011602Z.mp4`, SHA-256 `8f44b539…34e1`, never published before; unchanged afterwards |
+| Backup | `artifacts/stage19-live/library-before-live-tiktok.sqlite3` (integrity ok, schema 12) |
+| Hosting | Uploaded to your Cloudinary (`rjgyiytv`); anonymous HEAD returned 200 `video/mp4`, 1,347,628 bytes (exact size) |
+| Buffer | `createPost` accepted: post `6ad8126daff466fe09f630ac`, **`schedulingType: automatic`**, `shareNow`, status `sending` at 01:16:28 UTC |
+| Result | Buffer reported **`sent` at 01:18:11 UTC** (about 1 min 43 s), `externalLink` <https://tiktok.com/@mrcenterr/video/7698923752935017741> |
+| Independent check | TikTok's public oEmbed endpoint returned 200 with an embeddable player for video 7698923752935017741. Author, title and thumbnail fields were not yet populated (consistent with processing). Visual confirmation on the account is yours to do. |
+| Afterwards | No automation created or enabled; global publishing left paused. The hosted copy will be deleted automatically 24 h after `sent` the next time the app runs. The test clip remains in your library as video 4. |
+
+This confirms the live schema shapes (`createPost`, `post`) and that this TikTok account allows
+**automatic** publishing through Buffer. The Business-account question is answered in practice for
+@mrcenterr. Evidence: `artifacts/stage19-live/` (`publish-result.json`, `status-log.json`,
+`tiktok-oembed*.json`, `live-result.json`).
 
 ## 11. Steps you need to complete
 

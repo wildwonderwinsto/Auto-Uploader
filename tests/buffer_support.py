@@ -229,7 +229,7 @@ class FakeCloudinary:
 
     def get(self, url, auth=None, timeout=None):
         assert url.endswith("/usage")
-        if auth != ("cloud-key", self.secret):
+        if auth != ("123456789012345", self.secret):
             return Response(401, {})
         return Response(
             200, {"plan": "Free", "credits": {"usage": 0.4, "limit": 25, "used_percent": 1.6}}

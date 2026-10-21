@@ -8,8 +8,8 @@ if the task needs it, the relevant section of `docs/architecture.md`. Stage repo
 A local-first macOS desktop app (PySide6) that imports short vertical videos, prepares YouTube
 metadata, and publishes them — manually, on an approved schedule, from recurring queues, or from
 watched folders under standing approval. **YouTube** is implemented and live-verified. **TikTok**
-is implemented through Buffer's API (Stage 19) and verified only against controlled Buffer/Cloudinary
-responses — live use needs the user's Buffer/Cloudinary setup and authorization. Instagram, Facebook
+is implemented through Buffer's API (Stage 19) and live-verified once: an automatic Public post to
+@mrcenterr (TikTok video 7698923752935017741). Further real posts still need the user's authorization. Instagram, Facebook
 and Snapchat are future work. No packaging/distribution exists yet.
 
 Stages 1–19 are done (Stage 17's optional live folder-to-YouTube test is still pending the user's
@@ -20,7 +20,7 @@ personal authorization). Never start a new stage without explicit instruction.
 ```sh
 .venv/bin/python -m shortspublisher --data-dir /tmp/sp-test        # isolated run
 ./"Start ShortsPublisher.command"                                   # USER's live workspace — don't run
-QT_QPA_PLATFORM=offscreen .venv/bin/python -m unittest discover -s tests   # 786 tests, ~4 min
+QT_QPA_PLATFORM=offscreen .venv/bin/python -m unittest discover -s tests   # 792 tests, ~4 min
 cd tests && QT_QPA_PLATFORM=offscreen PYTHONPATH=../src ../.venv/bin/python -m unittest test_shell  # focused
 .venv/bin/ruff check . && .venv/bin/ruff format --check . && .venv/bin/mypy
 ```
@@ -55,9 +55,8 @@ Tests: `tests/test_*.py` (unittest, discovered), `tests/native_*.py` (manual nat
 SQLite, `PRAGMA user_version`; current schema **12** (`library.SCHEMA_VERSION`; v12 = TikTok tables). Opening a
 library migrates it forward inside one `BEGIN IMMEDIATE` transaction; newer unknown versions are
 refused; failures never reset data. Add migrations as a new `*_schema.py`-style additive step and a
-fixture/test. The user's live library reached schema 11 when the user opened it on 2026-10-17 17:41; the
-schema-9 copy is `artifacts/stage6-live/backups/library-before-launch-20261017T224140686820Z.sqlite3`.
-Opening it with current code migrates it to 12 (additive). **Any migration of the live library
+fixture/test. The user's live library is at schema 12 (the user opened it 2026-10-20 13:17; pre-launch backups in
+`artifacts/stage6-live/backups/`). Its Buffer app client is saved; TikTok is not yet connected. **Any migration of the live library
 needs the user's explicit approval and a fresh backup.**
 
 ## Protected real data — never delete, move, overwrite or migrate without approval

@@ -6,6 +6,7 @@ Buffer's public API can actually control are offered.
 
 from __future__ import annotations
 
+import logging
 import secrets
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -20,6 +21,7 @@ from PySide6.QtWidgets import (
     QDateTimeEdit,
     QDialog,
     QDialogButtonBox,
+    QFileDialog,
     QFormLayout,
     QFrame,
     QHBoxLayout,
@@ -47,7 +49,7 @@ from ..buffer import (
     pkce,
 )
 from ..cadence import Rule
-from ..hosting import HostingError
+from ..hosting import HostingError, cloudinary_fields
 from ..tiktok import (
     AUTOMATION_CONSENT,
     HOSTING_CONSENT,
@@ -55,12 +57,15 @@ from ..tiktok import (
     TikTokService,
     caption_errors,
 )
-from .components import Disclosure, day_row, primary
+from .components import Disclosure, day_row, natural, primary
 from .formatting import system_zone, time_pattern, timestamp
 from .videos import text
+from .watching import FolderConsent
 
 if TYPE_CHECKING:
     from .window import MainWindow
+
+logger = logging.getLogger(__name__)
 
 BUFFER_CHANNELS = "https://account.buffer.com/channels"
 SETUP = (
@@ -131,7 +136,8 @@ class TikTokController(QObject):
         self.service, self.window = service, window
         self.worker: TikTokWorker | None = None
         self.closing = False
-        self.pending: list[tuple[Callable[[Event], Any], Callable[[Any], None] | None]] = []
+        self.pending: list[tuple[Callable[[Event], Any], Callable[[Any], None] | None, bool]] = []
+        self.error_box: QMessageBox | None = None
         self.data: dict[str, Any] = {
             "connection": None,
             "client": None,
@@ -140,6 +146,7 @@ class TikTokController(QObject):
             "profiles": [],
         }
         self.video_id: int | None = None
+        self.summary = text("TikTok · checking…", "Muted")
         self.build_card()
         self.build_hosting()
         self.build_video()
@@ -152,18 +159,27 @@ class TikTokController(QObject):
 
     # Plumbing -------------------------------------------------------------------------------
 
-    def run(self, job: Callable[[Event], Any], done: Callable[[Any], None] | None = None) -> None:
+    def run(
+        self,
+        job: Callable[[Event], Any],
+        done: Callable[[Any], None] | None = None,
+        *,
+        quiet: bool = False,
+    ) -> None:
+        """quiet: background refreshes report errors inline only; user actions also get a dialog."""
         if self.closing:
             return
         if self.worker:
-            self.pending.append((job, done))
+            self.pending.append((job, done, quiet))
             return
         self.worker = TikTokWorker(job, self)
-        self.worker.result.connect(lambda result: self.finished(result, done))
+        self.worker.result.connect(lambda result: self.finished(result, done, quiet))
         self.set_busy(True)
         self.worker.start()
 
-    def finished(self, result: dict[str, Any], done: Callable[[Any], None] | None) -> None:
+    def finished(
+        self, result: dict[str, Any], done: Callable[[Any], None] | None, quiet: bool = False
+    ) -> None:
         assert self.worker
         self.worker.wait()
         self.worker.deleteLater()
@@ -173,22 +189,34 @@ class TikTokController(QObject):
             self.idle.emit()
             return
         if "error" in result:
+            logger.warning("TikTok operation needs attention: %s", result["error"])
             self.feedback(result["error"])
+            if not quiet:
+                self.alert(result["error"])
         elif done:
             done(result["ok"])
         if self.pending:
-            self.run(*self.pending.pop(0))
+            job, after, silent = self.pending.pop(0)
+            self.run(job, after, quiet=silent)
         else:
             self.idle.emit()
+
+    def alert(self, message: str) -> None:
+        # Window-modal and non-blocking, so background work and tests never stall on it.
+        self.feedback(message)
+        self.error_box = QMessageBox(
+            QMessageBox.Icon.Warning, "TikTok", message, QMessageBox.StandardButton.Ok, self.window
+        )
+        self.error_box.open()
 
     def activate(self) -> None:
         if not self.closing:
             self.timer.start()
-            self.run(self.snapshot, self.render)
+            self.run(self.snapshot, self.render, quiet=True)
 
     def poll(self) -> None:
         if not self.worker:
-            self.run(self.refreshed, self.render)
+            self.run(self.refreshed, self.render, quiet=True)
 
     def refreshed(self, cancel: Event) -> dict[str, Any]:
         self.service.refresh(cancel)
@@ -216,7 +244,7 @@ class TikTokController(QObject):
         def done(_: Any) -> None:
             if message:
                 self.feedback(message)
-            self.run(self.snapshot, self.render)
+            self.run(self.snapshot, self.render, quiet=True)
 
         return done
 
@@ -336,6 +364,26 @@ class TikTokController(QObject):
         self.render_video()
         self.render_automation()
         self.render_queue()
+        self.render_summary()
+
+    def render_summary(self) -> None:
+        connection = self.data["connection"]
+        posts = [p for p in self.data["posts"] if not p["released"]]
+        live = ("Scheduled in Buffer", "Publishing", "Sending to Buffer")
+        scheduled = sum(p["state"] in live for p in posts)
+        attention = sum(p["state"] in RELEASABLE for p in posts)
+        enabled = sum(bool(p["enabled"] and not p["revoked"]) for p in self.data["profiles"])
+        if not connection:
+            self.summary.setText("TikTok · not connected (Accounts → Connect TikTok via Buffer)")
+        elif connection.get("status") != "Connected":
+            self.summary.setText("TikTok · reconnect required in Accounts")
+        else:
+            self.summary.setText(
+                f"TikTok · @{connection.get('name')} · {scheduled} scheduled or publishing · "
+                f"{attention} need attention · {enabled} enabled automation"
+                + ("s" if enabled != 1 else "")
+                + ("" if self.data["hosting"] else " · media hosting not set up (Settings)")
+            )
 
     # Accounts card --------------------------------------------------------------------------
 
@@ -474,18 +522,20 @@ class TikTokController(QObject):
     # Settings: hosting ----------------------------------------------------------------------
 
     def build_hosting(self) -> None:
-        self.hosting = QFrame()
-        self.hosting.setObjectName("Card")
+        # A plain Settings section, like Background Publishing above it.
+        self.hosting = QWidget()
         body = QVBoxLayout(self.hosting)
-        body.setContentsMargins(24, 24, 24, 24)
-        body.setSpacing(14)
-        body.addWidget(text("TikTok media hosting", "Heading"))
+        body.setContentsMargins(0, 16, 0, 0)
+        body.setSpacing(16)
+        body.addWidget(text("TikTok Media Hosting", "Heading"))
         self.hosting_status = text("", "Badge")
         body.addWidget(self.hosting_status)
         body.addWidget(text(HOSTING_CONSENT, "Muted"))
         form = QFormLayout()
         form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
         self.cloud_name, self.cloud_key, self.cloud_secret = QLineEdit(), QLineEdit(), QLineEdit()
+        for field in (self.cloud_name, self.cloud_key, self.cloud_secret):
+            field.textChanged.connect(self.split_pasted)
         self.cloud_secret.setEchoMode(QLineEdit.EchoMode.Password)
         self.cloud_secret.setPlaceholderText(
             "Stored in macOS Keychain; leave empty to keep the saved one"
@@ -533,29 +583,56 @@ class TikTokController(QObject):
         )
 
     def save_hosting(self) -> None:
-        values = (
-            self.cloud_name.text(),
-            self.cloud_key.text(),
-            self.cloud_secret.text(),
-            self.hosting_consent.isChecked(),
-            self.retention.currentData(),
-        )
-        self.cloud_secret.clear()
+        cloud, key, secret = self.cloud_name.text(), self.cloud_key.text(), self.cloud_secret.text()
+        consent, retention = self.hosting_consent.isChecked(), self.retention.currentData()
+        if not consent:
+            self.alert("Tick “Hosted copies are public by link” to confirm, then save again.")
+            return
+
+        def saved(usage: dict[str, Any]) -> None:
+            self.cloud_secret.clear()
+            self.reload("Media hosting saved and verified with Cloudinary. Nothing was uploaded.")(
+                None
+            )
+            self.feedback(f"Saved · {self.usage_text(usage)}")
+
         self.run(
             lambda c: self.service.save_hosting(
-                values[0], values[1], values[2], consent=values[3], retention=values[4]
+                cloud, key, secret, consent=True, retention=retention
             ),
-            self.reload("Media hosting saved. Nothing was uploaded."),
+            saved,
+        )
+
+    @staticmethod
+    def usage_text(usage: dict[str, Any]) -> str:
+        return (
+            f"Cloudinary account OK · plan {usage.get('plan') or 'unknown'} · "
+            f"{usage.get('credits_used')} of {usage.get('credits_limit')} monthly credits used"
         )
 
     def test_hosting(self) -> None:
-        def done(usage: dict[str, Any]) -> None:
-            self.feedback(
-                f"Cloudinary account OK · plan {usage.get('plan') or 'unknown'} · "
-                f"{usage.get('credits_used')} of {usage.get('credits_limit')} monthly credits used."
-            )
+        cloud, key, secret = self.cloud_name.text(), self.cloud_key.text(), self.cloud_secret.text()
+        self.run(
+            lambda c: self.service.check_hosting(cloud, key, secret),
+            lambda usage: self.feedback(self.usage_text(usage) + "."),
+        )
 
-        self.run(lambda c: self.service.host().usage(), done)
+    def split_pasted(self, value: str) -> None:
+        """Accept Cloudinary's “API environment variable” pasted into any field."""
+        try:
+            cloud, key, secret = cloudinary_fields(value, "", "")
+        except HostingError:
+            return
+        if "cloudinary://" in value:
+            for field, text_value in (
+                (self.cloud_name, cloud),
+                (self.cloud_key, key),
+                (self.cloud_secret, secret),
+            ):
+                field.blockSignals(True)
+                field.setText(text_value)
+                field.blockSignals(False)
+            self.feedback("Filled in from the Cloudinary environment variable you pasted.")
 
     def remove_hosting(self) -> None:
         if (
@@ -654,7 +731,7 @@ class TikTokController(QObject):
             )
             self.render_video()
 
-        self.run(lambda c: self.service.draft(video_id), done)
+        self.run(lambda c: self.service.draft(video_id), done, quiet=True)
 
     def save_draft(self) -> None:
         if self.video_id is None:
@@ -789,7 +866,7 @@ class TikTokController(QObject):
         body = QVBoxLayout(self.automation)
         body.setContentsMargins(0, 12, 0, 0)
         body.setSpacing(12)
-        body.addWidget(text("TikTok automations", "Heading"))
+        body.addWidget(text("TikTok Automations", "Heading"))
         body.addWidget(
             text(
                 "Each TikTok automation has its own approval, separate from YouTube. To post to both, create one of each for the same folder.",
@@ -797,6 +874,7 @@ class TikTokController(QObject):
             )
         )
         self.new_automation = QPushButton("New TikTok Automation…")
+        primary(self.new_automation)
         self.new_automation.clicked.connect(self.new_tiktok_automation)
         body.addWidget(self.new_automation)
         self.auto_profiles = QComboBox()
@@ -1051,10 +1129,12 @@ class TikTokAutomationEditor(QDialog):
         first, second, third = (QFormLayout() for _ in range(3))
         for form in (first, second, third):
             form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
+        self.controller = controller
+        self.add_folder = natural(QPushButton("Choose and Authorize a New Folder…"))
+        self.add_folder.clicked.connect(self.choose_folder)
         first.addRow("Automation name", self.name)
-        first.addRow(
-            "Watched folder (add one in Videos → Automatically Import Videos)", self.folder
-        )
+        first.addRow("Watched folder", self.folder)
+        first.addRow("", self.add_folder)
         first.addRow("", account)
         first.addRow("", self.background)
         second.addRow("Caption template · only {filename}", self.template)
@@ -1086,6 +1166,34 @@ class TikTokAutomationEditor(QDialog):
         layout.addLayout(bar)
         self.steps.currentChanged.connect(self.step_changed)
         self.step_changed()
+
+    def choose_folder(self) -> None:
+        path = QFileDialog.getExistingDirectory(self, "Choose a folder to watch for new videos")
+        if not path:
+            return
+        scanner = self.controller.window.watching.service
+
+        def proposed(proposal: dict[str, Any]) -> None:
+            dialog = FolderConsent(proposal, self)
+            if dialog.exec() == QDialog.DialogCode.Accepted and dialog.consent.isChecked():
+                options = dict(
+                    consent=True,
+                    existing=dialog.existing.currentData(),
+                    background=dialog.background.isChecked(),
+                    quiet=dialog.quiet.value(),
+                )
+                self.controller.run(lambda c: scanner.add(proposal, **options), added)
+            dialog.deleteLater()
+
+        def added(folder_id: str) -> None:
+            self.folder.clear()
+            for folder in scanner.folders():
+                if folder["enabled"]:
+                    self.folder.addItem(folder["name"], folder["id"])
+            self.folder.setCurrentIndex(max(0, self.folder.findData(folder_id)))
+            self.controller.window.watching.activate()
+
+        self.controller.run(lambda c: scanner.preview(path, c), proposed)
 
     def step_changed(self) -> None:
         index, last = self.steps.currentIndex(), self.steps.count() - 1
