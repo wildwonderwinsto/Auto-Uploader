@@ -155,7 +155,7 @@ class TikTokUiTests(Fixture):
         self.assertEqual(self.buffer.creates[0]["text"], "Hello #fyp")
         self.assertEqual(self.c.video_history.count(), 1)
         self.assertIn("Publishing", self.c.video_history.item(0).text())
-        self.assertIn("TikTok", self.c.queue_list.item(0).text())
+        self.assertIn("Hello #fyp", self.c.queue_list.item(0).text())
 
     def test_publish_confirmation_cancel_sends_nothing(self):
         video = self.ready()

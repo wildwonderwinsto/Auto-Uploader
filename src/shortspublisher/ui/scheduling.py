@@ -356,6 +356,7 @@ class SchedulePage(QScrollArea):
         heading.addWidget(self.agenda_title, 1)
         agenda.addLayout(heading)
         self.agenda_rows = QVBoxLayout()
+        self.agenda_shown: object = None
         self.agenda_rows.setSpacing(0)
         agenda.addLayout(self.agenda_rows)
         self.agenda_empty = text(
@@ -447,6 +448,15 @@ class SchedulePage(QScrollArea):
         self.controller.window.navigate(key)
 
     def render_agenda(self, entries: list[Entry]) -> None:
+        # Rebuilt only when something shown changes, so the regular refreshes don't flash.
+        key = (
+            datetime.now().date(),
+            entries,
+            self.calendar.selectedDate() if self.calendar else None,
+        )
+        if key == self.agenda_shown:
+            return
+        self.agenda_shown = key
         while self.agenda_rows.count():
             item = self.agenda_rows.takeAt(0)
             widget = item.widget() if item else None

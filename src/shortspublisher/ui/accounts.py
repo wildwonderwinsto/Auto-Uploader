@@ -161,6 +161,8 @@ class AccountsPage(QScrollArea):
         self.worker: AccountWorker | None = None
         self.closing = False
         self.loaded = False
+        # The saved connection has been looked at (or there is no library to hold one yet).
+        self.checked = False
         self.view = AccountView("Disconnected", "Checking your YouTube connection…", False)
         self.setObjectName("accounts")
         self.setWidgetResizable(True)
@@ -433,7 +435,7 @@ class AccountsPage(QScrollArea):
         worker, self.worker = self.worker, None
         if worker:
             worker.deleteLater()
-        self.loaded = True
+        self.loaded = self.checked = True
         if self.closing:
             self.service.pending = None
         self.set_busy(False)

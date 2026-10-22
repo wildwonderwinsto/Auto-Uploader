@@ -218,6 +218,7 @@ class MainWindow(QMainWindow):
         for schedule_page in (self.schedules.queue, self.schedules.calendar):
             self.dashboard.entries_changed.connect(schedule_page.render_agenda)
         self.accounts.state_changed.connect(lambda _: self.dashboard.refresh())
+        self.accounts.idle.connect(self.dashboard.schedule)  # the first check has finished
         for signal in (
             self.uploads.changed,
             self.automatic.changed,

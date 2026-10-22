@@ -40,6 +40,21 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("Connect an account", self.page.views_tile.note.text())
         self.assertFalse(self.page.refresh_stats.isVisibleTo(self.window))
 
+    def test_platforms_say_checking_until_their_first_check_finishes(self):
+        # A saved connection must not flash "Not connected" and Connect while it is still read.
+        self.window.accounts.checked = False
+        self.window.tiktok.loaded = False
+        self.page.refresh()
+        for card in (self.page.youtube, self.page.tiktok):
+            self.assertEqual(card.status.text(), "Checking…")
+            self.assertFalse(card.connect_button.isVisibleTo(self.window))
+        self.window.accounts.checked = True
+        self.window.tiktok.loaded = True
+        self.page.refresh()
+        for card in (self.page.youtube, self.page.tiktok):
+            self.assertEqual(card.status.text(), "Not connected")
+            self.assertTrue(card.connect_button.isVisibleTo(self.window))
+
     def test_all_platforms_in_one_timeline_with_views(self):
         done = Attempt(
             "a1",
@@ -144,6 +159,15 @@ class DashboardTests(unittest.TestCase):
         self.assertIn("×2", recent)
         self.assertIn("Upload interrupted", self.texts(self.page.attention))
         self.assertTrue(self.page.attention.isVisibleTo(self.window))
+
+        # The regular refreshes (every few seconds) keep unchanged rows instead of rebuilding them.
+        layout = self.page.recent.rows
+        rows = [layout.itemAt(i).widget() for i in range(layout.count())]
+        self.page.refresh()
+        self.assertEqual([layout.itemAt(i).widget() for i in range(layout.count())], rows)
+        self.page.stats["videos"]["vid1"]["views"] = 1300
+        self.page.refresh()
+        self.assertIn("2.1K views", self.texts(self.page.recent))
 
     def test_auto_upload_shortcut(self):
         self.page.auto.click()

@@ -63,6 +63,8 @@ def build(
     app.aboutToQuit.connect(window.dashboard.stop_for_quit)
     if library.path.exists():
         QTimer.singleShot(0, window.accounts.activate)
+    else:
+        window.accounts.checked = True  # a new library has no saved YouTube account
 
     app.installEventFilter(window)
     return app, window

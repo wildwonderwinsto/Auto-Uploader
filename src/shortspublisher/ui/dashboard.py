@@ -136,10 +136,6 @@ def group_row(group: Group, extra: str = "") -> QWidget:
     return holder
 
 
-def entry_row(entry: Entry, extra: str = "") -> QWidget:
-    return group_row(Group((entry,)), extra)
-
-
 class ListCard(QWidget):
     """A titled card holding up to `limit` rows, an empty message and a "See all" action."""
 
@@ -164,16 +160,23 @@ class ListCard(QWidget):
         self.empty.setContentsMargins(0, 8, 0, 8)
         body.addWidget(self.empty)
         body.addStretch()
+        self.shown: object = None
 
-    def show_rows(self, rows: list[QWidget]) -> None:
+    def show_rows(self, rows: list[tuple[Group, str]]) -> None:
+        """Rows of (video, extra text); rebuilt only when they change, so refreshes don't flash."""
+        # The date is part of the key: rows say "Today" and "Tomorrow".
+        key = (datetime.now().date(), rows)
+        if key == self.shown:
+            return
+        self.shown = key
         while self.rows.count():
             item = self.rows.takeAt(0)
             widget = item.widget() if item else None
             if widget:
                 widget.hide()
                 widget.deleteLater()
-        for row in rows:
-            self.rows.addWidget(row)
+        for group, extra in rows:
+            self.rows.addWidget(group_row(group, extra))
         self.empty.setVisible(not rows)
 
 
@@ -213,10 +216,13 @@ class PlatformCard(QWidget):
             value.setText(number)
             label.setText(caption)
 
-    def set_connected(self, connected: bool, label: str = "Connected", tone: str = "Good") -> None:
-        self.status.setText(label if connected else "Not connected")
-        restyle(self.status, tone if connected else "Neutral")
-        self.connect_button.setVisible(not connected)
+    def set_connected(
+        self, connected: bool, label: str = "Connected", tone: str = "Good", *, known: bool = True
+    ) -> None:
+        # Until the first check finishes, say so: never flash "Not connected" and Connect.
+        self.status.setText("Checking…" if not known else label if connected else "Not connected")
+        restyle(self.status, tone if known and connected else "Neutral")
+        self.connect_button.setVisible(known and not connected)
 
 
 class DashboardPage(QScrollArea):
@@ -430,11 +436,9 @@ class DashboardPage(QScrollArea):
         )
 
         self.attention.setVisible(bool(attention))
-        self.attention.show_rows([entry_row(e) for e in attention[:5]])
-        self.coming.show_rows([group_row(g) for g in activity.grouped(upcoming)[:6]])
-        self.recent.show_rows(
-            [group_row(g, self.views_label(g)) for g in activity.grouped(recent)[:6]]
-        )
+        self.attention.show_rows([(Group((e,)), "") for e in attention[:5]])
+        self.coming.show_rows([(g, "") for g in activity.grouped(upcoming)[:6]])
+        self.recent.show_rows([(g, self.views_label(g)) for g in activity.grouped(recent)[:6]])
         self.render_platforms(entries)
         self.entries_changed.emit(entries)
 
@@ -447,12 +451,15 @@ class DashboardPage(QScrollArea):
             connection is not None,
             "Connected" if view and view.state.startswith("Connected") else "Check account",
             "Good" if view and view.state.startswith("Connected") else "Warn",
+            known=w.accounts.checked or connection is not None,
         )
         self.youtube.account.setText(
             connection.channel.title
             + (f" · {connection.channel.handle}" if connection.channel.handle else "")
             if connection
             else "Connect your channel in Accounts to start uploading."
+            if w.accounts.checked
+            else "Checking your YouTube connection…"
         )
         channel = self.stats.get("channel", {})
         self.youtube.set_numbers(
@@ -471,12 +478,17 @@ class DashboardPage(QScrollArea):
         tconnection = w.tiktok.data.get("connection")
         live = bool(tconnection and tconnection.get("status") == "Connected")
         self.tiktok.set_connected(
-            bool(tconnection), "Connected" if live else "Sign in again", "Good" if live else "Bad"
+            bool(tconnection),
+            "Connected" if live else "Sign in again",
+            "Good" if live else "Bad",
+            known=w.tiktok.loaded,
         )
         self.tiktok.account.setText(
             f"@{tconnection.get('name')}"
             if tconnection
             else "Connect TikTok through Buffer in Accounts."
+            if w.tiktok.loaded
+            else "Checking your TikTok connection…"
         )
         views = self.platform_views([e for e in tiktok if e.kind == activity.DONE])
         self.tiktok.set_numbers(

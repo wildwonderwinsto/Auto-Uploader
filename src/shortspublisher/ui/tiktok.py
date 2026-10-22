@@ -139,7 +139,8 @@ def label_for(post: dict[str, Any]) -> str:
         if post["due_at"]
         else timestamp(post["created_at"], weekday=True)
     )
-    return f"{post['caption'][:60] or 'Untitled'} · TikTok · {post['channel_name']} · {post['state']} · {when}"
+    # Same three lines as a scheduled YouTube upload: title, time, account · state.
+    return f"{post['caption'][:60] or 'Untitled'}\n{when}\n{post['channel_name']} · {post['state']}"
 
 
 class TikTokController(QObject):
@@ -151,6 +152,7 @@ class TikTokController(QObject):
         self.service, self.window = service, window
         self.worker: TikTokWorker | None = None
         self.closing = False
+        self.loaded = False  # True once the first check of the saved connection has finished
         self.pending: list[tuple[Callable[[Event], Any], Callable[[Any], None] | None, bool]] = []
         self.error_box: QMessageBox | None = None
         self.data: dict[str, Any] = {
@@ -200,6 +202,7 @@ class TikTokController(QObject):
         self.worker.wait()
         self.worker.deleteLater()
         self.worker = None
+        self.loaded = True
         self.set_busy(False)
         if self.closing:
             self.idle.emit()
@@ -275,6 +278,7 @@ class TikTokController(QObject):
         ):
             label.setText(message)
         self.card_feedback.setVisible(bool(message))
+        self.queue_feedback.setVisible(bool(message))
 
     def set_busy(self, busy: bool) -> None:
         for button in self.buttons():
@@ -1177,26 +1181,24 @@ class TikTokController(QObject):
         heading = QHBoxLayout()
         heading.setSpacing(10)
         heading.addWidget(image(logo("tiktok", 22)))
-        heading.addWidget(text("TikTok posts", "Heading"), 1)
+        heading.addWidget(text("TikTok uploads", "Heading"), 1)
         body.addLayout(heading)
         self.queue_list = QListWidget()
         self.queue_list.setWordWrap(True)
-        self.queue_list.setFixedHeight(150)
+        self.queue_list.setMinimumHeight(150)
         self.queue_list.setAccessibleName("TikTok posts")
-        self.queue_empty = text(
-            "No TikTok posts yet. Open a video, choose Upload, then TikTok.", "Muted"
-        )
+        self.queue_empty = text("", "Muted")
         self.queue_refresh = icon_button("Refresh Status", "refresh", role="Ghost")
         self.queue_refresh.setAccessibleName("Refresh TikTok Status")
         self.queue_refresh.clicked.connect(self.poll)
-        self.queue_cancel = icon_button("Cancel Selected Post…", "x", role="Danger")
+        self.queue_cancel = icon_button("Cancel Post…", "x", role="Danger")
         self.queue_cancel.setAccessibleName("Cancel Selected TikTok Post…")
         self.queue_cancel.clicked.connect(lambda: self.cancel_post(self.queue_list))
         self.queue_feedback = text("", "Muted")
-        for widget in (self.queue_empty, self.queue_list):
+        self.queue_feedback.hide()
+        self.queue_actions = flow(self.queue_cancel, self.queue_refresh)
+        for widget in (self.queue_empty, self.queue_list, self.queue_actions, self.queue_feedback):
             body.addWidget(widget)
-        body.addWidget(row(self.queue_cancel, self.queue_refresh))
-        body.addWidget(self.queue_feedback)
 
     def render_queue(self) -> None:
         self.queue_list.clear()
@@ -1205,10 +1207,14 @@ class TikTokController(QObject):
             item.setData(Qt.ItemDataRole.UserRole, post["id"])
             item.setToolTip(post["error"] or post["external_link"])
             self.queue_list.addItem(item)
-        has = bool(self.data["posts"])
-        self.queue_list.setVisible(has)
-        self.queue_cancel.setVisible(has)
-        self.queue_empty.setVisible(not has)
+        count = len(self.data["posts"])
+        self.queue_empty.setText(
+            f"{count} saved"
+            if count
+            else "No TikTok uploads yet. To post one, open a video, choose Upload, then TikTok."
+        )
+        self.queue_list.setVisible(bool(count))
+        self.queue_actions.setVisible(bool(count))
 
 
 class ConnectDialog(QDialog):
