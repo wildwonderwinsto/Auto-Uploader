@@ -48,18 +48,19 @@ class TikTokUiTests(Fixture):
     def test_accounts_card_beside_youtube_and_no_tokens_shown(self):
         self.w.navigate("accounts")
         settle(self.app, self.c)
-        layout = self.w.accounts.content_layout
-        self.assertEqual(layout.indexOf(self.c.card), layout.indexOf(self.w.accounts.card) + 1)
+        cards = self.w.accounts.grid.cards
+        self.assertEqual(cards.index(self.c.card), cards.index(self.w.accounts.card) + 1)
         self.assertEqual(self.c.card_status.text(), "Not connected")
         self.assertTrue(self.c.connect_button.isEnabled())  # client saved by the fixture
         self.assertEqual(self.c.connect_button.text(), "Connect TikTok via Buffer…")
         self.connect()
         self.reload()
-        self.assertIn("@mytiktok", self.c.card_status.text())
-        self.assertIn("through Buffer", self.c.card_status.text())
-        shown = self.c.card_status.text() + self.c.card_detail.text()
+        self.assertEqual(self.c.card_status.text(), "Connected")
+        self.assertIn("@mytiktok", self.c.card_account.text())
+        self.assertIn("through Buffer", self.c.card_account.text())
+        shown = self.c.card_status.text() + self.c.card_account.text() + self.c.card_detail.text()
         self.assertNotIn("access-", shown)
-        self.assertNotIn("ch-tt", shown)  # IDs only under Account details
+        self.assertNotIn("ch-tt", shown)  # IDs only in the tooltip
 
     def test_connect_disabled_without_client_configuration(self):
         with self.library.connect() as db:
@@ -176,14 +177,22 @@ class TikTokUiTests(Fixture):
         self.c.context(video.id)
         settle(self.app, self.c)
         self.assertFalse(self.c.publish_button.isEnabledTo(self.c.video_panel))
-        self.assertIn("Accounts", self.c.video_account.text())
+        # The setup steps show what is missing, with the next step's button offered.
+        steps = self.c.video_checklist
+        self.assertFalse(steps.isHidden())
+        self.assertEqual(steps.done, [True, False, False])  # client saved; not yet connected
+        self.assertFalse(steps.buttons[1].isHidden())
+        self.assertTrue(steps.buttons[2].isHidden())
 
     def test_automation_section_and_queue_empty_state(self):
         self.w.navigate("automation")
         settle(self.app, self.c)
-        self.assertTrue(self.c.new_automation.isVisible())
+        # One "New Auto Upload" covers every platform; there is no separate TikTok button.
+        self.assertFalse(self.c.new_automation.isVisible())
+        self.assertTrue(self.w.automation.new.isVisible())
         self.assertEqual(self.c.auto_headline.text(), "No TikTok automations yet")
-        self.assertEqual(self.w.automation.new.text(), "New YouTube Automation…")
+        self.assertEqual(self.w.automation.new.text(), "New Auto Upload…")
+        self.assertTrue(self.w.automation.page.isAncestorOf(self.w.watching))
         self.w.navigate("queue")
         settle(self.app, self.c)
         self.assertTrue(self.c.queue_empty.isVisible())

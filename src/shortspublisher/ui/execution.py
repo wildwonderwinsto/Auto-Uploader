@@ -22,7 +22,7 @@ from ..background_state import BACKGROUND_CONSENT
 from ..execution import CONSENT, AutomaticPublisher
 from ..scheduling import Job, ScheduleError
 from ..upload_store import Attempt
-from .components import Disclosure
+from .components import Section
 from .formatting import timestamp, upload_status
 from .scheduling import NOTICE, details, text
 
@@ -68,7 +68,7 @@ class ActivationDialog(QDialog):
             )
         )
         layout.addWidget(summary)
-        diagnostics = Disclosure("Activation diagnostics")
+        diagnostics = Section("Activation diagnostics")
         content.appendPlainText(f"\nUTC: {job.scheduled_utc}\nLocal ISO: {job.local_time}")
         diagnostics.body.addWidget(content)
         layout.addWidget(diagnostics)
@@ -129,6 +129,7 @@ class ExecutionWorker(QThread):
 class ExecutionController(QObject):
     idle = Signal()
     recurring_updated = Signal(object)
+    changed = Signal()
 
     def __init__(self, service: AutomaticPublisher, window: MainWindow):
         super().__init__(window)
@@ -139,7 +140,7 @@ class ExecutionController(QObject):
         self.running = False
         self.data: dict[str, Any] = {}
         # Sidebar: the global switch needs its state beside it, not only an action label.
-        self.state = text("Automatic publishing\nChecking…", "Muted")
+        self.state = text("Auto uploading\nChecking…", "Muted")
         self.state.setAccessibleName("Automatic publishing state")
         self.button = QPushButton("Checking…")
         self.button.clicked.connect(self.toggle)
@@ -269,8 +270,12 @@ class ExecutionController(QObject):
             self.data = result
             self.button.setText("Turn On…" if result["paused"] else "Pause All")
             self.state.setText(
-                "Automatic publishing\n"
-                + ("Paused — nothing will post" if result["paused"] else "On")
+                "Auto uploading\n"
+                + (
+                    "Paused · nothing will upload"
+                    if result["paused"]
+                    else "On · uploads run on time"
+                )
             )
             self.limit.setValue(result["daily_limit"])
             jobs = result["jobs"]
@@ -329,9 +334,10 @@ class ExecutionController(QObject):
             self.notification.setText(result["error"])
             if not self.data:
                 # Never leave the sidebar on "Checking…" when the first load failed.
-                self.state.setText("Automatic publishing\nStatus unavailable — see Dashboard")
+                self.state.setText("Auto uploading\nStatus unavailable · see Dashboard")
                 self.button.setText("Unavailable")
         self.button.setEnabled(self.control_worker is None and bool(self.data))
+        self.changed.emit()
 
     def progress(self, attempt: Attempt) -> None:
         self.stop.setEnabled(True)

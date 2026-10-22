@@ -101,10 +101,10 @@ class UploadUiTests(unittest.TestCase):
         view = replace(view, upload_allowed=False)
         self.page.account_changed(view)
         self.assertFalse(self.page.upload_button.isEnabled())
-        self.assertIn("Authorize", self.page.reason.text())
+        self.assertIn("Allow Uploads", self.page.reason.text())
         view = replace(view, upload_allowed=True)
         self.page.context(self.fixture.video.id, 1, False)
-        self.assertIn("complete review", self.page.reason.text())
+        self.assertIn("mark the video as ready", self.page.reason.text())
 
     def test_stop_navigation_and_resume(self):
         self.fixture.http.after_chunk = lambda: self.page.worker.cancel.set()

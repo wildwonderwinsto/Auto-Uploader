@@ -37,7 +37,14 @@ class RecurringUiTests(unittest.TestCase):
 
     def cleanup(self):
         self.c.editor = None
-        for controller in (self.c, self.w.watching, self.w.automatic, self.w.background):
+        for controller in (
+            self.c,
+            self.w.watching,
+            self.w.automatic,
+            self.w.background,
+            self.w.tiktok,
+            self.w.dashboard,
+        ):
             controller.stop_for_quit()
         self.w.close()
         for controller in (self.w.videos, self.w.accounts, self.w.uploads, self.w.schedules):
@@ -154,3 +161,18 @@ class RecurringUiTests(unittest.TestCase):
         settle(self.app, self.c)
         self.assertTrue(self.c.current()["enabled"])
         self.assertEqual(self.f.u.http.initiations, 0)
+
+
+class PostingTimesTests(unittest.TestCase):
+    def test_posting_times_respect_the_daily_limit(self):
+        from datetime import UTC, datetime
+
+        from shortspublisher.cadence import Rule
+        from shortspublisher.ui.recurring import posting_times
+
+        rule = Rule("UTC", (0, 1, 2, 3, 4, 5, 6), "09:00", "21:00", 3)
+        times = posting_times(rule, datetime(2030, 1, 1, 8, tzinfo=UTC), 4, 2)
+        self.assertEqual(
+            [t.strftime("%d %H:%M") for t in times],
+            ["01 09:00", "01 12:00", "02 09:00", "02 12:00"],
+        )

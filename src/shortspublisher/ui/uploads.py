@@ -3,7 +3,7 @@
 from threading import Event
 from typing import Any
 
-from PySide6.QtCore import QThread, QUrl, Signal, Slot
+from PySide6.QtCore import Qt, QThread, QUrl, Signal, Slot
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QDialog,
@@ -13,7 +13,6 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QProgressBar,
-    QPushButton,
     QVBoxLayout,
     QWidget,
 )
@@ -21,7 +20,7 @@ from PySide6.QtWidgets import (
 from ..accounts import AccountView
 from ..upload_store import Attempt
 from ..uploads import UploadService
-from .components import Disclosure, primary
+from .components import FlowLayout, Section, icon_button, row
 from .formatting import duration, file_size, timestamp, upload_status
 from .videos import text
 
@@ -97,7 +96,7 @@ class UploadConfirmation(QDialog):
             f"Tags: {', '.join(payload['snippet'].get('tags', [])) or 'None'}"
         )
         body.addWidget(summary, 1)
-        diagnostics = Disclosure("Source diagnostics")
+        diagnostics = Section("Source diagnostics")
         diagnostics.body.addWidget(details)
         body.addWidget(diagnostics)
         body.addWidget(
@@ -140,77 +139,105 @@ class UploadPanel(QWidget):
         self.planned_privacy = ""
         self.attempts: list[Attempt] = []
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 20, 20, 20)
-        layout.addWidget(text("Publish now", "Heading"))
-        layout.addWidget(
-            text(
-                "Choose visibility, then review the final confirmation. To upload later, use Schedule.",
-                "Muted",
-            )
+        layout.setContentsMargins(0, 4, 0, 4)
+        layout.setSpacing(12)
+        self.heading = text("Upload to YouTube now", "Heading")
+        layout.addWidget(self.heading)
+        self.introduction = text(
+            "Upload as Private to check it on YouTube first, or as Public to publish right away. "
+            "You'll see every detail and confirm before anything is sent.",
+            "Muted",
         )
+        layout.addWidget(self.introduction)
         self.reason = text(
-            "Select a reviewed video and verify upload permission in Accounts.", "Muted"
+            "Select a reviewed video and verify upload permission in Accounts.", "Notice"
         )
         layout.addWidget(self.reason)
-        self.upload_button = QPushButton("Upload Privately…")
+        self.fix_button = icon_button("Go to Accounts", "chevron-right", role="Primary")
+        self.fix_button.hide()
+        layout.addWidget(self.fix_button, 0, Qt.AlignmentFlag.AlignLeft)
+        self.upload_button = icon_button("Upload as Private…", "lock")
+        self.upload_button.setAccessibleName("Upload Privately")
         self.upload_button.clicked.connect(lambda: self.prepare("private"))
-        layout.addWidget(self.upload_button)
+        self.public_button = icon_button("Upload as Public…", "globe", role="Primary")
+        self.public_button.setAccessibleName("Publish Publicly Now")
+        self.public_button.clicked.connect(lambda: self.prepare("public"))
+        self.choices = row(self.public_button, self.upload_button)
+        layout.addWidget(self.choices)
         self.public_reason = text(
-            "Public publishing requires a saved, reviewed Public preference.", "Muted"
+            "Public publishing requires a saved, reviewed Public preference.", "Subtle"
         )
         layout.addWidget(self.public_reason)
-        self.public_button = QPushButton("Publish Publicly Now…")
-        primary(self.public_button)
-        self.public_button.clicked.connect(lambda: self.prepare("public"))
-        layout.addWidget(self.public_button)
-        self.feedback = text("No transfer is active.", "Muted")
+        self.feedback = text("No transfer is active.", "Subtle")
         layout.addWidget(self.feedback)
         self.progress = QProgressBar()
         self.progress.setRange(0, 100)
         self.progress.setValue(0)
+        self.progress.setTextVisible(False)
+        self.progress.setFixedHeight(6)
         layout.addWidget(self.progress)
-        self.stop_button = QPushButton("Stop Upload")
+        self.stop_button = icon_button("Stop Upload", "x", role="Danger")
         self.stop_button.clicked.connect(self.stop)
-        layout.addWidget(self.stop_button)
-        layout.addWidget(text("Upload History", "Heading"))
+        layout.addWidget(self.stop_button, 0, Qt.AlignmentFlag.AlignLeft)
+        layout.addSpacing(6)
+        self.history_title = text("Upload History", "Subheading")
+        layout.addWidget(self.history_title)
         self.history = QListWidget()
         self.history.setMinimumWidth(0)
         self.history.setFixedHeight(140)
         self.history.currentRowChanged.connect(self.select_history)
         layout.addWidget(self.history)
-        self.details = QPlainTextEdit()
-        self.details.setReadOnly(True)
-        self.details.setMinimumHeight(210)
-        history_details = Disclosure("Upload details and recovery")
-        history_details.changed.connect(self.changed.emit)
-        layout.addWidget(history_details)
-        history_details.body.addWidget(self.details)
-        self.reload_button = QPushButton("Reload Upload History")
+        self.reload_button = icon_button("Reload", "refresh", role="Ghost")
+        self.reload_button.setAccessibleName("Reload Upload History")
         self.reload_button.clicked.connect(lambda: self.start("history"))
-        self.resume_button = QPushButton("Check Session and Resume…")
-        self.resume_button.clicked.connect(self.resume)
-        self.verify_button = QPushButton("Verify Remote Result")
-        self.verify_button.clicked.connect(lambda: self.start_selected("verify"))
-        self.release_button = QPushButton("Acknowledge Outcome / Allow Another Attempt…")
-        self.release_button.clicked.connect(self.release)
-        self.link_button = QPushButton("Open Returned Video on YouTube")
+        self.link_button = icon_button("Open on YouTube", "external")
         self.link_button.clicked.connect(self.open_video)
-        self.cancel_confirmation = QPushButton("Cancel Unstarted Confirmation")
+        self.verify_button = icon_button("Check Result Again", "refresh")
+        self.verify_button.setAccessibleName("Verify Remote Result")
+        self.verify_button.clicked.connect(lambda: self.start_selected("verify"))
+        self.resume_button = icon_button("Check Session and Resume…", "play")
+        self.resume_button.clicked.connect(self.resume)
+        self.cancel_confirmation = icon_button("Cancel Unstarted Upload", "x")
+        self.cancel_confirmation.setAccessibleName("Cancel Unstarted Confirmation")
         self.cancel_confirmation.clicked.connect(lambda: self.start_selected("cancel_confirmation"))
+        self.release_button = icon_button("Allow Another Attempt…", "refresh", role="Danger")
+        self.release_button.setToolTip("Acknowledge the outcome of the selected upload")
+        self.release_button.clicked.connect(self.release)
+        actions = QWidget()
+        actions.setObjectName("ActionRow")
+        flow = FlowLayout(actions)
         for button in (
-            self.reload_button,
-            self.resume_button,
-            self.verify_button,
             self.link_button,
+            self.verify_button,
+            self.resume_button,
             self.cancel_confirmation,
             self.release_button,
+            self.reload_button,
         ):
-            (
-                history_details.body
-                if button in (self.resume_button, self.cancel_confirmation, self.release_button)
-                else layout
-            ).addWidget(button)
+            flow.addWidget(button)
+        layout.addWidget(actions)
+        self.details = QPlainTextEdit()
+        self.details.setReadOnly(True)
+        self.details.setFixedHeight(150)
+        self.details.setAccessibleName("Selected upload details")
+        self.history_details = Section("Selected upload")
+        self.history_details.body.addWidget(self.details)
+        layout.addWidget(self.history_details)
         self.refresh_controls()
+
+    def set_history_mode(self, history: bool) -> None:
+        """Upload History shows past uploads only, without the upload buttons."""
+        for widget in (
+            self.heading,
+            self.introduction,
+            self.reason,
+            self.choices,
+            self.history_title,
+        ):
+            widget.setVisible(not history)
+        if history:
+            self.public_reason.hide()
+            self.fix_button.hide()
 
     def selected(self) -> Attempt | None:
         index = self.history.currentRow()
@@ -230,19 +257,19 @@ class UploadPanel(QWidget):
 
     def refresh_controls(self) -> None:
         busy = self.worker is not None
-        reason = "Ready to review the final upload confirmation."
+        reason = "Ready. Choose how to upload; you will confirm on the next screen."
         if busy:
             reason = "An upload operation is active. Stop or wait before starting another."
         elif not self.video_id or not self.reviewed:
-            reason = "Save your details and complete review first."
+            reason = "Finish Details and mark the video as ready in Review first."
         elif (
             not self.account
             or not self.account.state.startswith("Connected")
             or not self.account.connection
         ):
-            reason = "Use Accounts → Refresh Channel to verify the intended channel."
+            reason = "Connect YouTube in Accounts (or choose Check Again there) first."
         elif not self.account.upload_allowed:
-            reason = "Authorize Uploads in Accounts first."
+            reason = "Choose Allow Uploads on the YouTube card in Accounts first."
         elif blocking := [
             a
             for a in self.attempts
@@ -269,19 +296,25 @@ class UploadPanel(QWidget):
             )
         self.reason.setText(reason)
         self.upload_button.setEnabled(reason.startswith("Ready") and not self.closing)
+        self.reason.setObjectName("Subtle" if self.upload_button.isEnabled() else "Notice")
+        self.fix_button.setVisible("Accounts" in reason and not self.closing)
+        self.reason.style().polish(self.reason)
         public_ready = self.upload_button.isEnabled() and self.planned_privacy == "public"
         self.public_button.setEnabled(public_ready)
         self.public_reason.setText(
-            "PUBLIC: final confirmation will authorize a publicly accessible video."
+            "Public uploads are visible to everyone as soon as YouTube finishes processing."
             if public_ready
-            else "Save Planned privacy as Public and complete review to publish publicly."
+            else "To upload as Public, set Visibility to Public in Details and mark the video as ready again."
             if self.planned_privacy != "public"
             else reason
         )
         # Don't repeat the same blocking sentence under both buttons.
-        self.public_reason.setVisible(self.public_reason.text() != reason or public_ready)
+        self.public_reason.setVisible(
+            (self.public_reason.text() != reason or public_ready) and self.choices.isVisibleTo(self)
+        )
         self.stop_button.setEnabled(busy)
         self.stop_button.setVisible(busy)
+        self.progress.setVisible(busy or 0 < self.progress.value() < 100)
         self.reload_button.setEnabled(not busy)
         old = self.selected()
         self.resume_button.setEnabled(
@@ -304,6 +337,11 @@ class UploadPanel(QWidget):
         self.cancel_confirmation.setEnabled(
             not busy and bool(old and old.state == "Awaiting Confirmation")
         )
+        # Recovery actions appear only when they apply to the selected upload.
+        for button in (self.resume_button, self.cancel_confirmation, self.release_button):
+            button.setVisible(button.isEnabled())
+        self.history.setVisible(bool(self.attempts))
+        self.history_details.setVisible(old is not None)
         self.changed.emit()
 
     @Slot()

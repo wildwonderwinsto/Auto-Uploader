@@ -41,3 +41,26 @@ def settle(app: QApplication, page: object, timeout: float = 8) -> None:
         if time.monotonic() > deadline:
             raise AssertionError("Worker failed to finish")
     app.processEvents()
+
+
+def shutdown(app: QApplication, window: object) -> None:
+    """Stop every controller's worker thread before the window and its data folder go away."""
+    window.close()
+    for name in (
+        "videos",
+        "accounts",
+        "uploads",
+        "schedules",
+        "automatic",
+        "recurring",
+        "automation",
+        "background",
+        "watching",
+        "tiktok",
+        "dashboard",
+    ):
+        controller = getattr(window, name, None)
+        if controller is not None and hasattr(controller, "stop_for_quit"):
+            controller.stop_for_quit()
+    window.deleteLater()
+    app.processEvents()

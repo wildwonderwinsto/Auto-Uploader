@@ -45,12 +45,17 @@ class ShellTests(unittest.TestCase):
 
     def test_every_destination_and_selection(self):
         for page in PAGES:
-            QTest.mouseClick(self.window.buttons[page.key], Qt.MouseButton.LeftButton)
+            if page.nav:
+                # Reached from its sidebar entry's page (Calendar is a view of Schedule).
+                self.window.navigate(page.nav)
+                self.window.stack.currentWidget().switch(page.key)
+            else:
+                QTest.mouseClick(self.window.buttons[page.key], Qt.MouseButton.LeftButton)
             self.app.processEvents()
             self.assertEqual(self.window.stack.currentWidget().objectName(), page.key)
             self.assertEqual(
                 [key for key, button in self.window.buttons.items() if button.isChecked()],
-                [page.key],
+                [page.nav or page.key],
             )
             labels = self.window.stack.currentWidget().findChildren(QLabel)
             self.assertIn(page.title, [widget.text() for widget in labels])
@@ -70,10 +75,12 @@ class ShellTests(unittest.TestCase):
         button = next(
             button
             for button in self.window.stack.currentWidget().findChildren(QPushButton)
-            if button.text().startswith("Prepare a video")
+            if button.text() == "Add Videos"
         )
-        QTest.mouseClick(button, Qt.MouseButton.LeftButton)
+        with patch("PySide6.QtWidgets.QFileDialog.getOpenFileNames", return_value=([], "")) as pick:
+            QTest.mouseClick(button, Qt.MouseButton.LeftButton)
         self.assertEqual(self.window.stack.currentWidget().objectName(), "videos")
+        pick.assert_called_once()
 
     def test_keyboard_navigation(self):
         button = self.window.buttons["accounts"]

@@ -7,13 +7,12 @@ from pathlib import Path
 from threading import Event
 from typing import Any
 
-from PySide6.QtCore import Qt, QThread, Signal, Slot
+from PySide6.QtCore import QSize, Qt, QThread, Signal, Slot
 from PySide6.QtGui import QResizeEvent
 from PySide6.QtWidgets import (
     QBoxLayout,
     QComboBox,
     QFileDialog,
-    QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -34,8 +33,22 @@ from ..library_view import LibraryEntry, browse, read_entries
 from ..media import Cancelled
 from ..preparation import review_checks
 from ..readiness import LIMITATIONS, evaluate
-from .components import Disclosure, FlowLayout, primary
-from .formatting import duration, timestamp
+from ..tiktok import MAX_BYTES as TIKTOK_MAX_BYTES
+from ..tiktok import media_errors, readable
+from . import theme
+from .components import (
+    Elided,
+    FlowLayout,
+    Section,
+    card,
+    flow,
+    icon_button,
+    pill,
+    restyle,
+    row,
+)
+from .formatting import duration, file_size, friendly, timestamp
+from .icons import PLATFORM_NAMES, icon, image, logo, logo_icon, pixmap
 from .metadata import MetadataEditor, PreparationTabs
 from .preview import VideoPreview
 
@@ -84,7 +97,7 @@ class LibraryWorker(QThread):
                 result["message"] = (
                     f"{len(imported)} videos imported and saved to your library. "
                     + (
-                        "Add publishing details, then save and review."
+                        "Give each one a title, then save and review."
                         if imported
                         else "No videos imported."
                     )
@@ -117,6 +130,7 @@ class LibraryWorker(QThread):
 
 # Display wording only; readiness statuses stay unchanged for storage and logic.
 READINESS_LABELS = {"Passes implemented checks": "Ready for YouTube Shorts · local checks passed"}
+REVIEW_TONES = {"Review Complete": "Good", "Needs Attention": "Bad", "Draft": "Neutral"}
 
 
 def text(value: str, style: str = "") -> QLabel:
@@ -152,71 +166,85 @@ class VideosPage(QScrollArea):
         self.selected: Video | None = None
         self.records: dict[int, Video] = {}
         self.entries: dict[int, LibraryEntry] = {}
+        self.tiktok_posted: set[int] = set()  # video IDs with a TikTok post; set by the window
+        self.tiktok_limit = TIKTOK_MAX_BYTES  # the video host's size limit; set by the window
         self.setObjectName("videos")
         self.setWidgetResizable(True)
         content = QWidget()
         self.setWidget(content)
         layout = QVBoxLayout(content)
         self.content_layout = layout
-        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setContentsMargins(32, 28, 32, 28)
         layout.setSpacing(16)
 
-        layout.addWidget(text("Videos", "Title"))
-        self.introduction = text("Import or select a video to begin.", "Muted")
-        layout.addWidget(self.introduction)
+        top = QHBoxLayout()
+        top.setSpacing(10)
+        self.back_button = icon_button("All Videos", "chevron-left", role="Ghost")
+        self.back_button.clicked.connect(lambda: self.guard(self.show_library))
+        top.addWidget(self.back_button, 0, Qt.AlignmentFlag.AlignTop)
+        names = QVBoxLayout()
+        names.setSpacing(4)
+        self.page_title = text("Videos", "Title")
+        names.addWidget(self.page_title)
+        self.introduction = text(
+            "Add videos, give them a title, then upload or schedule them.", "Muted"
+        )
+        names.addWidget(self.introduction)
+        top.addLayout(names, 1)
         action_row = QWidget()
         action_row.setObjectName("ActionRow")
-        actions = FlowLayout(action_row)
-        self.import_button = QPushButton("Import Videos…")
+        actions = QHBoxLayout(action_row)
+        actions.setContentsMargins(0, 0, 0, 0)
+        actions.setSpacing(10)
+        self.import_button = icon_button("Add Videos", "plus", role="Primary")
         self.import_button.setAccessibleName("Import Video")
-        primary(self.import_button)
         self.import_button.clicked.connect(self.choose_file)
-        self.reload_button = QPushButton("Reload Library")
+        self.reload_button = icon_button("", "refresh", tip="Reload the library")
+        self.reload_button.setAccessibleName("Reload Library")
         self.reload_button.clicked.connect(
             lambda: self.start("load", self.selected.id if self.selected else None)
         )
-        actions.addWidget(self.import_button)
         actions.addWidget(self.reload_button)
+        actions.addWidget(self.import_button)
         self.action_layout = actions
-        layout.addWidget(action_row)
-        self.continue_button = QPushButton("Continue Editing")
+        top.addWidget(action_row, 0, Qt.AlignmentFlag.AlignBottom)
+        layout.addLayout(top)
+        self.continue_button = icon_button("Continue Editing", "edit", role="Ghost")
         self.continue_button.clicked.connect(self.continue_editing)
-        layout.addWidget(self.continue_button)
+        layout.addWidget(self.continue_button, 0, Qt.AlignmentFlag.AlignLeft)
         self.continue_button.hide()
-        self.back_button = QPushButton("← Back to Library")
-        self.back_button.clicked.connect(lambda: self.guard(self.show_library))
-        # One header row: while editing it reads "← Back to Library · Import Videos…".
-        actions.insertWidget(0, self.back_button)
         self.back_button.hide()
-        self.feedback = text("Open your library to get started.", "Muted")
+        self.feedback = text("Open your library to get started.", "Subtle")
         self.feedback.setAccessibleName("Library operation status")
         layout.addWidget(self.feedback)
-        self.import_issues = Disclosure("Import errors")
-        self.import_error_text = text("")
+        self.import_issues = Section("Some files could not be added")
+        self.import_error_text = text("", "Error")
         self.import_issues.body.addWidget(self.import_error_text)
         self.import_issues.hide()
         layout.addWidget(self.import_issues)
         self.progress = QProgressBar()
         self.progress.setRange(0, 0)
         self.progress.setTextVisible(False)
-        self.progress.setFixedHeight(5)
+        self.progress.setFixedHeight(4)
         self.progress.setAccessibleName("Library operation in progress")
         self.progress.hide()
         layout.addWidget(self.progress)
-        self.empty = QFrame()
-        self.empty.setObjectName("Card")
-        empty_layout = QVBoxLayout(self.empty)
-        empty_layout.setContentsMargins(24, 24, 24, 24)
-        empty_layout.setSpacing(12)
-        empty_layout.addWidget(text("Your library is empty", "Heading"))
+        self.empty, empty_layout = card(32, 12)
         empty_layout.addWidget(
-            text(
-                "Choose Import Video to inspect your first MP4, MOV, WebM, or another supported video.",
-                "Muted",
-            )
+            image(pixmap("film", 40, theme.SUBTLE)), 0, Qt.AlignmentFlag.AlignHCenter
         )
+        heading = text("No videos yet", "Heading")
+        heading.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        empty_layout.addWidget(heading)
+        hint = text(
+            "Choose Add Videos to pick MP4, MOV or WebM files. Your original files always stay where they are.",
+            "Muted",
+        )
+        hint.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        empty_layout.addWidget(hint)
         layout.addWidget(self.empty)
         self.list = QListWidget()
+        self.list.setObjectName("Library")
         self.list.setAccessibleName("Video library")
         self.list.setTextElideMode(Qt.TextElideMode.ElideMiddle)
         self.list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
@@ -224,30 +252,34 @@ class VideosPage(QScrollArea):
         self.list.setFixedHeight(90)
         self.list.currentItemChanged.connect(self.selection_changed)
         self.list.itemClicked.connect(self.open_current_item)
-        self.library_section = Disclosure("Library · choose a video", expanded=True)
+        self.library_section = Section("")
         self.search = QLineEdit()
-        self.search.setPlaceholderText("Search filename, saved title or location")
+        self.search.setPlaceholderText("Search titles and file names")
         self.search.setAccessibleName("Search video library")
         self.search.setClearButtonEnabled(True)
+        self.search.addAction(
+            icon("search", theme.SUBTLE), QLineEdit.ActionPosition.LeadingPosition
+        )
         self.search.textChanged.connect(self.render_library)
-        self.library_section.body.addWidget(self.search)
         options = QHBoxLayout()
+        options.setSpacing(10)
+        options.addWidget(self.search, 2)
         self.filter = QComboBox()
         self.filter.setAccessibleName("Filter videos by saved status")
         for label, key in (
             ("All videos", "all"),
-            ("Needs details or review", "needs_review"),
-            ("Review complete (saved)", "reviewed"),
-            ("Has a future plan", "scheduled"),
-            ("Has a YouTube result", "uploaded"),
-            ("Inspection failed", "inspection"),
+            ("Needs details", "needs_review"),
+            ("Ready to upload", "reviewed"),
+            ("Scheduled", "scheduled"),
+            ("Uploaded", "uploaded"),
+            ("File problems", "inspection"),
         ):
             self.filter.addItem(label, key)
         self.sort = QComboBox()
         self.sort.setAccessibleName("Sort video library")
         for label, key in (
-            ("Recently imported", "newest"),
-            ("Oldest imported", "oldest"),
+            ("Newest first", "newest"),
+            ("Oldest first", "oldest"),
             ("Name A–Z", "name_az"),
             ("Name Z–A", "name_za"),
             ("Shortest first", "shortest"),
@@ -262,76 +294,139 @@ class VideosPage(QScrollArea):
             control.currentIndexChanged.connect(self.render_library)
             options.addWidget(control, 1)
         self.library_section.body.addLayout(options)
-        self.library_count = text("", "Muted")
+        self.library_count = text("", "Subtle")
         self.library_section.body.addWidget(self.library_count)
         self.library_section.body.addWidget(self.list)
         self.library_count.setToolTip(
-            "Saved status. Selecting a video checks its source. Plans are not uploads; returned YouTube IDs may need verification."
+            "Saved status. Selecting a video checks its file. Plans are not uploads; returned YouTube IDs may need verification."
         )
         layout.addWidget(self.library_section)
-        self.library_section.changed.connect(self.refresh_browse)
-        self.card = QFrame()
-        self.card.setObjectName("Card")
-        outer = QVBoxLayout(self.card)
-        self.selected_name = text("", "Heading")
-        outer.addWidget(self.selected_name)
-        self.step_status = text("", "Muted")
-        outer.addWidget(self.step_status)
+
+        self.card, outer = card(22, 14)
+        heading_row = QHBoxLayout()
+        heading_names = QVBoxLayout()
+        heading_names.setSpacing(2)
+        self.selected_name = Elided("", "Heading")
+        heading_names.addWidget(self.selected_name)
+        self.step_status = text("", "Subtle")
+        heading_names.addWidget(self.step_status)
+        heading_row.addLayout(heading_names, 1)
+        outer.addLayout(heading_row)
+        # Three steps over the six editor pages; the tab bar itself stays hidden.
+        self.stepper = QWidget()
+        self.stepper.setObjectName("ActionRow")
+        steps = FlowLayout(self.stepper, 6)
+        self.step_buttons: dict[int, QPushButton] = {}
+        for number, (label, index) in enumerate(
+            (("Details", 1), ("Review", 2), ("Upload", 3)), start=1
+        ):
+            step = QPushButton(f"{number}  {label}")
+            step.setObjectName("Step")
+            step.setCheckable(True)
+            step.setCursor(Qt.CursorShape.PointingHandCursor)
+            step.clicked.connect(lambda checked=False, i=index: self.go_step(i))
+            steps.addWidget(step)
+            self.step_buttons[index] = step
+        outer.addWidget(self.stepper)
+        # Upload step: the same two choices for every platform.
+        self.upload_platform, self.upload_when = "youtube", "now"
+        self.when_changed: Callable[[str], None] | None = None  # set by the window (TikTok)
+        self.destinations = QWidget()
+        self.destinations.setObjectName("ActionRow")
+        targets = FlowLayout(self.destinations, 6)
+        self.platform_buttons: dict[str, QPushButton] = {}
+        self.when_buttons: dict[str, QPushButton] = {}
+        for group, key, label, glyph in (
+            ("platform", "youtube", "YouTube", ""),
+            ("platform", "tiktok", "TikTok", ""),
+            ("when", "now", "Now", "send"),
+            ("when", "later", "Schedule", "calendar"),
+        ):
+            if group == "when" and key == "now":
+                spacer = QLabel("When")
+                spacer.setObjectName("Subtle")
+                spacer.setContentsMargins(14, 0, 2, 0)
+                spacer.setMinimumHeight(36)  # same height as the buttons, text centred
+                spacer.setAlignment(Qt.AlignmentFlag.AlignVCenter)
+                targets.addWidget(spacer)
+            elif group == "platform" and key == "youtube":
+                lead = QLabel("Upload to")
+                lead.setObjectName("Subtle")
+                lead.setContentsMargins(0, 0, 2, 0)
+                lead.setMinimumHeight(36)  # same height as the buttons, text centred
+                lead.setAlignment(Qt.AlignmentFlag.AlignVCenter)
+                targets.addWidget(lead)
+            target = QPushButton(label)
+            target.setObjectName("Segment")
+            target.setCheckable(True)
+            target.setIcon(logo_icon(key) if group == "platform" else icon(glyph, theme.MUTED))
+            target.setCursor(Qt.CursorShape.PointingHandCursor)
+            target.clicked.connect(lambda checked=False, g=group, k=key: self.choose_upload(g, k))
+            targets.addWidget(target)
+            (self.platform_buttons if group == "platform" else self.when_buttons)[key] = target
+        outer.addWidget(self.destinations)
         self.workspace = QBoxLayout(QBoxLayout.Direction.LeftToRight)
+        self.workspace.setSpacing(24)
         outer.addLayout(self.workspace)
         self.preview = VideoPreview()
-        self.preview.setMaximumWidth(300)
         self.tabs = PreparationTabs()
-        self.tabs.setAccessibleName("Video preparation tabs")
+        self.tabs.tabBar().hide()
+        self.tabs.setAccessibleName("Video preparation steps")
         self.workspace.addWidget(self.tabs, 1, Qt.AlignmentFlag.AlignTop)
-        self.workspace.addWidget(self.preview, 0, Qt.AlignmentFlag.AlignTop)
-        self.preview.setFixedWidth(260)
-        information = QWidget()
-        self.tabs.addTab(information, "File")
-        body = QVBoxLayout(information)
-        body.setContentsMargins(20, 20, 20, 20)
-        body.setSpacing(12)
-        next_details = QPushButton("Edit details →")
-        primary(next_details)
-        next_details.clicked.connect(lambda: self.tabs.setCurrentIndex(1))
-        body.addWidget(next_details)
+        side = QWidget()
+        self.side = side
+        side_layout = QVBoxLayout(side)
+        side_layout.setContentsMargins(0, 0, 0, 0)
+        side_layout.setSpacing(10)
+        side_layout.addWidget(self.preview)
+        self.facts = text("", "Subtle")
+        side_layout.addWidget(self.facts)
+        # Whether the file suits each platform, side by side.
+        side_layout.addWidget(text("FITS ON", "Eyebrow"))
+        self.readiness = pill("", "Good")
+        self.readiness.setAccessibleName("YouTube readiness result")
+        self.tiktok_fit = pill("", "Good")
+        self.tiktok_fit.setAccessibleName("TikTok readiness result")
+        for platform, badge in (("youtube", self.readiness), ("tiktok", self.tiktok_fit)):
+            line = QHBoxLayout()
+            line.setSpacing(8)
+            line.addWidget(image(logo(platform, 18)))
+            name = QLabel(PLATFORM_NAMES[platform])
+            line.addWidget(name, 1)
+            line.addWidget(badge)
+            side_layout.addLayout(line)
+        self.warnings = text("", "Subtle")
+        side_layout.addWidget(self.warnings)
         self.details = QPlainTextEdit()
         self.details.setReadOnly(True)
         self.details.setAccessibleName("Selected video metadata")
-        self.details.setMinimumWidth(0)
-        self.details.setFixedHeight(225)
-        technical = Disclosure("File information")
-        technical.body.addWidget(self.details)
-        technical.changed.connect(self.tabs.resize_to_current)
-        body.addWidget(technical)
-        body.addWidget(text("YouTube Shorts Readiness", "Heading"))
-        self.readiness = text("", "Badge")
-        self.readiness.setAccessibleName("YouTube Shorts readiness result")
-        body.addWidget(self.readiness)
-        self.warnings = text("", "Muted")
-        body.addWidget(self.warnings)
-        buttons = QHBoxLayout()
-        self.refresh_button = QPushButton("Refresh Inspection")
+        self.details.hide()  # full file facts stay available as a tooltip
+        self.refresh_button = icon_button("Check File Again", "refresh", role="Ghost")
         self.refresh_button.clicked.connect(self.refresh)
-        self.remove_button = QPushButton("Remove from Library")
+        self.remove_button = icon_button("Remove", "trash", role="Ghost")
+        self.remove_button.setToolTip("Remove from the library. The original file is not touched.")
         self.remove_button.clicked.connect(self.confirm_remove)
-        buttons.addWidget(self.refresh_button)
-        buttons.addWidget(self.remove_button)
-        buttons.addStretch()
-        body.addLayout(buttons)
+        side_layout.addWidget(row(self.refresh_button, self.remove_button, spacing=2))
+        side_layout.addStretch()
+        self.workspace.addWidget(side, 0, Qt.AlignmentFlag.AlignTop)
+        # Page 0 (file facts) now lives beside the preview; the page keeps step numbers stable.
+        self.tabs.addTab(QWidget(), "File")
         self.editor = MetadataEditor()
         self.editor.changed.connect(self.update_review)
         self.editor.save_requested.connect(self.save_metadata)
         self.editor.review_requested.connect(self.save_and_review)
         self.editor.layout_changed.connect(self.tabs.resize_to_current)
+        self.editor.use_filename.clicked.connect(self.use_filename)
         self.tabs.addTab(self.editor, "Details")
         review_page = QWidget()
         review_layout = QVBoxLayout(review_page)
-        review_layout.setContentsMargins(20, 20, 20, 20)
+        review_layout.setContentsMargins(0, 4, 0, 4)
         review_layout.setSpacing(14)
-        review_layout.addWidget(text("Review before publishing", "Heading"))
-        self.review_state = text("Draft", "Badge")
-        review_layout.addWidget(self.review_state)
+        review_heading = QHBoxLayout()
+        review_heading.addWidget(text("Check everything before uploading", "Heading"), 1)
+        self.review_state = pill("Draft", "Neutral")
+        review_heading.addWidget(self.review_state)
+        review_layout.addLayout(review_heading)
         self.review_summary = QPlainTextEdit()
         self.review_summary.setReadOnly(True)
         self.review_summary.setAccessibleName("Video and publishing metadata review")
@@ -341,25 +436,26 @@ class VideosPage(QScrollArea):
         self.review_warnings = text("", "Muted")
         review_layout.addWidget(self.review_errors)
         review_layout.addWidget(self.review_warnings)
-        review_layout.addWidget(text(LIMITATIONS, "Muted"))
-        self.review_button = QPushButton("Mark Review Complete")
+        review_layout.addWidget(text(LIMITATIONS, "Subtle"))
+        self.review_button = icon_button("Mark as Ready", "check", role="Primary")
+        self.review_button.setToolTip(
+            "Confirms these exact saved details. Nothing is uploaded yet."
+        )
         self.review_button.clicked.connect(self.complete_review)
-        primary(self.review_button)
-        self.check_button = QPushButton("Recheck Source and Saved Details")
+        self.check_button = icon_button("Check Again", "refresh")
         self.check_button.clicked.connect(
             lambda: self.start("check", self.selected.id) if self.selected else None
         )
-        edit_button = QPushButton("Edit Publishing Details")
+        edit_button = icon_button("Edit Details", "edit")
         edit_button.clicked.connect(lambda: self.tabs.setCurrentIndex(1))
-        review_layout.addWidget(self.review_button)
-        self.publish_next = QPushButton("Publish now →")
+        self.publish_next = icon_button("Continue to Upload", "upload", role="Primary")
         self.publish_next.clicked.connect(lambda: self.tabs.setCurrentIndex(3))
-        review_layout.addWidget(self.publish_next)
-        self.schedule_next = QPushButton("Schedule →")
+        self.schedule_next = icon_button("Schedule", "calendar")
         self.schedule_next.clicked.connect(lambda: self.tabs.setCurrentIndex(4))
-        review_layout.addWidget(self.schedule_next)
-        review_layout.addWidget(self.check_button)
-        review_layout.addWidget(edit_button)
+        self.schedule_next.hide()  # the Upload step offers scheduling for every platform
+        review_layout.addWidget(
+            flow(self.review_button, self.publish_next, edit_button, self.check_button)
+        )
         review_layout.addStretch()
         self.tabs.addTab(review_page, "Review")
         self.tabs.currentChanged.connect(self.tab_changed)
@@ -370,14 +466,64 @@ class VideosPage(QScrollArea):
         self.list.hide()
         self.set_busy(False)
 
+    def upload_page(self) -> int:
+        """Pages 3 and 4 are YouTube now / scheduled; page 5 is TikTok (both, in one page)."""
+        if self.upload_platform == "tiktok":
+            return 5
+        return 4 if self.upload_when == "later" else 3
+
+    def choose_upload(self, group: str, key: str) -> None:
+        if group == "platform":
+            self.upload_platform = key
+        else:
+            self.upload_when = key
+        if self.when_changed:
+            self.when_changed(self.upload_when)
+        self.tabs.setCurrentIndex(self.upload_page())
+        self.sync_steps()
+
+    def go_step(self, index: int) -> None:
+        if index == 3 and self.tabs.currentIndex() not in (3, 4, 5):
+            index = self.upload_page()
+        self.tabs.setCurrentIndex(index)
+        self.sync_steps()
+
+    def sync_steps(self) -> None:
+        current = self.tabs.currentIndex()
+        # Direct jumps to an upload page (tests, links) update the two choices to match.
+        if current in (3, 4):
+            self.upload_platform, self.upload_when = "youtube", "later" if current == 4 else "now"
+        elif current == 5:
+            self.upload_platform = "tiktok"
+        for index, step in self.step_buttons.items():
+            step.setChecked(current == index or (index == 3 and current in (3, 4, 5)))
+            step.setEnabled(self.tabs.isTabEnabled(index))
+        for key, target in self.platform_buttons.items():
+            target.setChecked(key == self.upload_platform)
+            page = 5 if key == "tiktok" else 3
+            target.setEnabled(page < self.tabs.count() and self.tabs.isTabEnabled(page))
+        for key, target in self.when_buttons.items():
+            target.setChecked(key == self.upload_when)
+        if self.when_changed:
+            self.when_changed(self.upload_when)
+        self.destinations.setVisible(current in (3, 4, 5) and self.mode == "editor")
+        self.stepper.setVisible(self.mode == "editor")
+
+    def use_filename(self) -> None:
+        if self.selected:
+            self.editor.title.setText(readable(Path(self.selected.path).name))
+
     def resizeEvent(self, event: QResizeEvent) -> None:
         super().resizeEvent(event)
-        wide = self.viewport().width() >= 820
+        wide = self.viewport().width() >= 860
         self.workspace.setDirection(
             QBoxLayout.Direction.LeftToRight if wide else QBoxLayout.Direction.TopToBottom
         )
-        self.preview.setMinimumWidth(260 if wide else 0)
-        self.preview.setMaximumWidth(260 if wide else 16777215)
+        if wide:
+            self.side.setFixedWidth(270)
+        else:
+            self.side.setMinimumWidth(0)
+            self.side.setMaximumWidth(300)
         self.tabs.resize_to_current()
 
     def show_library(self) -> None:
@@ -388,38 +534,48 @@ class VideosPage(QScrollArea):
         self.feedback.setText("Import videos or select one to edit.")
         self.preview.release()
         self.sync_navigation()
-        self.library_section.set_expanded(True)
         self.list.blockSignals(True)
         self.list.setCurrentRow(-1)
         self.list.blockSignals(False)
         self.verticalScrollBar().setValue(0)
+        # Returning to the library refreshes each video's saved status.
+        self.refresh_browse()
+
+    def title_of(self, video: Video) -> str:
+        entry = self.entries.get(video.id)
+        saved = entry.preparation.metadata.title if entry else ""
+        return saved or readable(Path(video.path).name)
 
     def sync_navigation(self) -> None:
         editing = self.mode == "editor" and self.selected is not None
+        library = self.mode == "library"
         self.card.setVisible(editing or self.mode == "history")
-        self.introduction.setVisible(self.mode == "library")
-        self.reload_button.setVisible(self.mode == "library")
+        self.introduction.setVisible(library)
+        self.reload_button.setVisible(library)
         for button in (self.recurring_button, self.history_button):
             if button:
-                button.setVisible(self.mode == "library")
+                button.setVisible(library)
         if self.watch_panel:
-            self.watch_panel.setVisible(self.mode == "library")
-        self.library_section.setVisible(self.mode == "library" and bool(self.records))
-        self.back_button.setVisible(self.mode != "library")
-        self.continue_button.setVisible(self.mode == "library" and self.selected is not None)
+            self.watch_panel.setVisible(library)
+        self.library_section.setVisible(library and bool(self.records))
+        self.back_button.setVisible(not library)
+        self.continue_button.setVisible(library and self.selected is not None)
         self.continue_button.setText(
-            "Continue Editing · " + Path(self.selected.path).name
+            "Continue editing · " + self.title_of(self.selected)
             if self.selected
             else "Continue Editing"
         )
-        self.empty.setVisible(self.mode == "library" and not self.records and self.worker is None)
+        self.empty.setVisible(library and not self.records and self.worker is None)
+        self.side.setVisible(editing)
         self.preview.setVisible(editing)
         self.selected_name.setText(
-            Path(self.selected.path).name if editing and self.selected else "Upload History"
+            self.title_of(self.selected) if editing and self.selected else "Upload History"
         )
+        self.selected_name.setToolTip(self.selected.path if editing and self.selected else "")
         self.step_status.setVisible(editing)
         for index in range(self.tabs.count()):
             self.tabs.setTabVisible(index, self.mode != "history" or index == 3)
+        self.sync_steps()
 
     def continue_editing(self) -> None:
         if self.selected and self.worker is None:
@@ -448,13 +604,7 @@ class VideosPage(QScrollArea):
             self.start("browse")
 
     def refresh_browse(self) -> None:
-        if (
-            self.loaded
-            and self.isVisible()
-            and self.library_section.toggle.isChecked()
-            and self.worker is None
-            and not self.closing
-        ):
+        if self.loaded and self.isVisible() and self.worker is None and not self.closing:
             self.start("browse")
 
     @Slot()
@@ -527,7 +677,7 @@ class VideosPage(QScrollArea):
                 "select": "Checking source availability…",
                 "remove": "Removing library entry…",
                 "check": "Rechecking source and saved details…",
-                "save_metadata": "Saving publishing details…",
+                "save_metadata": "Saving details…",
                 "complete_review": "Checking and recording local review…",
                 "browse": "Updating library status…",
             }[action]
@@ -584,7 +734,6 @@ class VideosPage(QScrollArea):
                 self.editing_step = 1
                 requested_step = 1
                 self.tabs.setCurrentIndex(1)
-                self.library_section.set_expanded(False)
         if result["action"] == "save_metadata":
             self.save_succeeded = True
         self.update_review()
@@ -622,7 +771,7 @@ class VideosPage(QScrollArea):
             )
             + result["message"]
             or (
-                "Preview your video and add publishing details."
+                "Add a title and details, then review and upload."
                 if self.mode == "editor"
                 else "Choose a video from Library to edit or preview it."
                 if self.records
@@ -630,34 +779,82 @@ class VideosPage(QScrollArea):
             )
         )
 
+    def library_row(self, entry: LibraryEntry, attention: bool) -> QWidget:
+        video = entry.video
+        holder = QWidget()
+        layout = QHBoxLayout(holder)
+        layout.setContentsMargins(8, 6, 8, 6)
+        layout.setSpacing(12)
+        thumb = image(pixmap("film", 20, theme.MUTED), 40)
+        thumb.setObjectName("Thumb")
+        layout.addWidget(thumb)
+        names = QVBoxLayout()
+        names.setSpacing(2)
+        names.addWidget(Elided(self.title_of(video), "Subheading"))
+        media = video.media
+        names.addWidget(
+            Elided(
+                f"{Path(video.path).name} · {duration(media.duration)} · "
+                f"{media.width}×{media.height} · added {friendly(video.imported_at)}",
+                "Subtle",
+            )
+        )
+        layout.addLayout(names, 1)
+        if entry.results:
+            layout.addWidget(image(logo("youtube", 18)))
+        if video.id in self.tiktok_posted:
+            layout.addWidget(image(logo("tiktok", 18)))
+        if attention or video.error:
+            status, tone = "Check file", "Bad"
+        elif entry.plans:
+            status, tone = "Scheduled", "Info"
+        elif entry.results or video.id in self.tiktok_posted:
+            status, tone = "Uploaded", "Good"
+        elif entry.reviewed:
+            status, tone = "Ready", "Good"
+        else:
+            status, tone = "Needs details", "Warn"
+        layout.addWidget(pill(status, tone))
+        layout.addWidget(image(pixmap("chevron-right", 16, theme.SUBTLE)))
+        return holder
+
     def render_library(self) -> None:
         if not hasattr(self, "sort"):
             return
         scroll = self.list.verticalScrollBar().value()
         self.list.blockSignals(True)
         self.list.clear()
+        category = self.filter.currentData()
         visible = browse(
-            self.entries, self.search.text(), self.filter.currentData(), self.sort.currentData()
+            self.entries,
+            self.search.text(),
+            "all" if category == "uploaded" else category,
+            self.sort.currentData(),
         )
+        if category == "uploaded":  # on any platform
+            visible = [e for e in visible if e.results or e.video.id in self.tiktok_posted]
         for entry in visible:
             video = entry.video
             status = entry.label
-            if self.selected and video.id == self.selected.id and self.availability:
+            attention = bool(self.selected and video.id == self.selected.id and self.availability)
+            if attention:
                 status = "Source needs attention · " + status
             title = entry.preparation.metadata.title
-            item = QListWidgetItem(
-                f"{Path(video.path).name}"
-                + (f" — {title}" if title else "")
-                + f"\n{duration(video.media.duration)} · {status}"
-            )
+            item = QListWidgetItem()
             item.setData(Qt.ItemDataRole.UserRole, video.id)
+            item.setData(
+                Qt.ItemDataRole.AccessibleTextRole,
+                f"{Path(video.path).name}" + (f" — {title}" if title else "") + f", {status}",
+            )
             item.setToolTip(f"{video.path}\nTitle: {title or 'Not saved'}\n{status}")
+            item.setSizeHint(QSize(0, 62))
             self.list.addItem(item)
+            self.list.setItemWidget(item, self.library_row(entry, attention))
             if self.mode == "editor" and self.selected and self.selected.id == video.id:
                 self.list.setCurrentItem(item)
         self.list.blockSignals(False)
         self.list.verticalScrollBar().setValue(scroll)
-        self.list.setFixedHeight(min(220, max(76, len(visible) * 58)))
+        self.list.setFixedHeight(min(520, max(76, len(visible) * 64 + 10)))
         self.list.setVisible(bool(visible))
         message = f"{len(visible)} of {len(self.entries)} videos"
         if not visible:
@@ -680,8 +877,15 @@ class VideosPage(QScrollArea):
             f"Size: {media.size:,} bytes ({media.size / 1024 / 1024:.2f} MiB)\n"
             f"Imported (UTC): {video.imported_at}\nLast successful inspection (UTC): {video.inspected_at}"
         )
+        self.facts.setText(
+            f"{Path(video.path).name}\n{duration(media.duration)} · {media.width}×{media.height}"
+            f" · {file_size(media.size)}"
+        )
+        self.facts.setToolTip(self.details.toPlainText())
         if availability or video.error:
-            self.readiness.setText("Not currently verified")
+            for badge in (self.readiness, self.tiktok_fit):
+                badge.setText("Not currently verified")
+                restyle(badge, "Bad")
             self.warnings.setText(
                 "\n".join(
                     filter(
@@ -689,16 +893,29 @@ class VideosPage(QScrollArea):
                         (
                             availability,
                             video.error,
-                            "Metadata above is from the last successful inspection.",
+                            "Details above are from the last successful check of the file.",
                         ),
                     )
                 )
             )
-        else:
-            result = evaluate(media)
-            self.readiness.setText(READINESS_LABELS.get(result.status, result.status))
-            self.readiness.setToolTip(LIMITATIONS)
-            self.warnings.setText("\n".join(result.messages))
+            return
+        result = evaluate(media)
+        fits = result.status in READINESS_LABELS
+        self.readiness.setText("Fits" if fits else "Check")
+        restyle(self.readiness, "Good" if fits else "Warn")
+        self.readiness.setToolTip("\n".join(result.messages) + "\n\n" + LIMITATIONS)
+        problems = media_errors(video, self.tiktok_limit)
+        self.tiktok_fit.setText("Fits" if not problems else "Won't post")
+        restyle(self.tiktok_fit, "Good" if not problems else "Bad")
+        self.tiktok_fit.setToolTip(
+            "\n".join(problems) or "Length, size, frame rate and file type suit TikTok."
+        )
+        self.warnings.setText(
+            "\n".join(
+                [f"YouTube: {m}" for m in result.messages if not fits]
+                + [f"TikTok: {m}" for m in problems]
+            )
+        )
 
     @Slot(str)
     def failure(self, message: str) -> None:
@@ -765,7 +982,7 @@ class VideosPage(QScrollArea):
             return True
         answer = QMessageBox.question(
             self,
-            "Unsaved publishing details",
+            "Unsaved details",
             "Save your changes before continuing?",
             QMessageBox.StandardButton.Save
             | QMessageBox.StandardButton.Discard
@@ -812,6 +1029,7 @@ class VideosPage(QScrollArea):
 
     @Slot(int)
     def tab_changed(self, index: int) -> None:
+        self.sync_steps()
         self.update_step_status()
         if index == 2 and self.selected and self.worker is None:
             self.start("check", self.selected.id)
@@ -819,7 +1037,7 @@ class VideosPage(QScrollArea):
     def update_step_status(self) -> None:
         if not self.selected or not self.editor.preparation:
             self.step_status.setText(
-                "Select a video to prepare it. Previous uploads remain in Publish."
+                "Select a video to edit it. Past uploads stay in Upload History."
             )
             return
         saved = (
@@ -831,8 +1049,7 @@ class VideosPage(QScrollArea):
         )
         reviewed = self.review_state.text().startswith("Review Complete") and not self.editor.dirty
         review = "Review complete" if reviewed else "Review required before uploading"
-        step = self.tabs.tabText(self.tabs.currentIndex())
-        self.step_status.setText(f"{step} · {saved} · {review}")
+        self.step_status.setText(f"{saved} · {review}")
 
     def update_review(self, *, busy: bool | None = None) -> None:
         if not self.selected or not self.editor.preparation:
@@ -845,6 +1062,7 @@ class VideosPage(QScrollArea):
             self.selected, preparation, self.availability, unsaved=self.editor.dirty
         )
         self.review_state.setText(result.state + " · Local preparation only")
+        restyle(self.review_state, REVIEW_TONES.get(result.state, "Warn"))
         self.update_step_status()
         self.publish_next.setEnabled(result.state == "Review Complete" and not self.editor.dirty)
         self.schedule_next.setEnabled(self.publish_next.isEnabled())
@@ -858,10 +1076,12 @@ class VideosPage(QScrollArea):
             f"Last completed local review: {timestamp(preparation.reviewed_at, empty='Not reviewed')}"
         )
         self.review_errors.setText(
-            "Blocking issues\n" + "\n".join(result.errors)
+            "Fix these first:\n" + "\n".join(result.errors)
             if result.errors
-            else "No blocking issues found by the local checks."
+            else "Everything required is filled in."
         )
+        self.review_errors.setObjectName("Error" if result.errors else "Muted")
+        self.review_errors.style().polish(self.review_errors)
         self.review_warnings.setText(
             "Warnings\n" + "\n".join(result.warnings)
             if result.warnings
@@ -872,3 +1092,4 @@ class VideosPage(QScrollArea):
         self.review_button.setEnabled(
             not working and not result.errors and result.state != "Review Complete"
         )
+        self.review_button.setVisible(result.state != "Review Complete")

@@ -44,6 +44,8 @@ class AutomationUiTests(unittest.TestCase):
             self.w.watching,
             self.w.automatic,
             self.w.background,
+            self.w.tiktok,
+            self.w.dashboard,
         ):
             controller.stop_for_quit()
         self.w.close()

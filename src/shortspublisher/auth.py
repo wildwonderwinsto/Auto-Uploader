@@ -213,7 +213,7 @@ class GoogleOAuth:
                     result["code"] = query["code"][0]
                 else:
                     result["error"] = "invalid"
-                body = b"Authorization received. Return to ShortsPublisher. You may close this tab."
+                body = b"Authorization received. Return to ShortsScheduler. You may close this tab."
                 self.send_response(200)
                 self.send_header("Content-Type", "text/plain; charset=utf-8")
                 self.send_header("Cache-Control", "no-store")

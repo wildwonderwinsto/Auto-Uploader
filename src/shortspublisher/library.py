@@ -58,7 +58,7 @@ class Library:
             version = db.execute("PRAGMA user_version").fetchone()[0]
             if version > SCHEMA_VERSION:
                 raise LibraryError(
-                    "This library was created by a newer application. Update ShortsPublisher; the database was not changed."
+                    "This library was created by a newer application. Update ShortsScheduler; the database was not changed."
                 )
             if version == 0:
                 db.execute("""CREATE TABLE videos (

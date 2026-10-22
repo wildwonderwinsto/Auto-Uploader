@@ -11,9 +11,10 @@ import urllib.request
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Event
+from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
 
-from buffer_support import FakeBuffer, FakeCloudinary, Secrets
+from buffer_support import FakeBuffer, FakeCloudinary, Response, Secrets
 from support import make_video
 
 from shortspublisher.buffer import (
@@ -737,3 +738,60 @@ class AutomationTests(Fixture):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class InsightsTests(unittest.TestCase):
+    """Optional TikTok view counts through a Buffer personal API key. Read-only."""
+
+    def test_metrics_query_reads_views_and_skips_unreported(self):
+        from shortspublisher.buffer import BufferAPI
+
+        class Session:
+            def __init__(self):
+                self.sent = []
+
+            def post(self, url, json, headers, timeout):
+                self.sent.append((json, headers))
+                return Response(
+                    200,
+                    {
+                        "data": {
+                            "post": {
+                                "id": "p1",
+                                "metrics": [
+                                    {"type": "views", "value": 1520.0},
+                                    {"type": "reactions", "value": 40},
+                                    {"type": "comments", "value": "x"},
+                                ],
+                            }
+                        }
+                    },
+                )
+
+        session = Session()
+        api = BufferAPI(lambda: "personal-key", session)
+        self.assertEqual(api.post_metrics("p1"), {"views": 1520, "reactions": 40})
+        query, headers = session.sent[0]
+        self.assertIn("metrics", query["query"])
+        self.assertNotIn("mutation", query["query"])
+        self.assertEqual(headers["Authorization"], "Bearer personal-key")
+
+
+class InsightsServiceTests(Fixture):
+    def test_counts_only_with_the_optional_key_and_only_for_sent_posts(self):
+        posts = [
+            {"state": "Sent by Buffer", "buffer_post_id": "b-sent"},
+            {"state": "Scheduled in Buffer", "buffer_post_id": "b-later"},
+        ]
+        self.buffer.posts["b-sent"] = {"id": "b-sent", "metrics": [{"type": "views", "value": 77}]}
+        with patch.object(self.service, "posts", return_value=posts):
+            before = len(self.buffer.requests)
+            self.assertEqual(self.service.statistics(Event()), {})
+            self.assertEqual(len(self.buffer.requests), before)  # no key, no request
+            self.buffer.access.add("personal-key")
+            self.service.save_insights_key("  personal-key ")
+            self.assertEqual(self.service.statistics(Event()), {"b-sent": {"views": 77}})
+        asked = [r["variables"]["input"]["id"] for r in self.buffer.requests[before:]]
+        self.assertEqual(asked, ["b-sent"])
+        self.service.remove_insights_key()
+        self.assertEqual(self.service.insights_key(), "")

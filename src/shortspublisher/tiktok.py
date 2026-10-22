@@ -59,6 +59,7 @@ UNSENT = (
 CHECK_BACKOFF = (2, 5, 15, 60)  # minutes after the due time; then hourly
 GIVE_UP_HOURS = 48
 RETENTION_GRACE = timedelta(hours=24)
+INSIGHTS_KEY = "buffer-insights-key"  # optional personal API key, only for view counts
 HOSTING_CONSENT = (
     "Videos you publish to TikTok are first copied to your Cloudinary account and served from a "
     "public HTTPS link, because Buffer only accepts a public video URL. Anyone who obtains that "
@@ -88,6 +89,27 @@ def readable(filename: str) -> str:
 
 def caption_for(template: str, filename: str) -> str:
     return template.replace("{filename}", readable(filename)).strip()
+
+
+def caption_from(title: str, description: str, tags: tuple[str, ...]) -> str:
+    """One caption from the shared video details: title, description, then tags as hashtags.
+
+    #Shorts is YouTube's own marker and is left out; hashtags stop at Buffer's limit of five."""
+
+    def tidy(text: str) -> str:
+        return re.sub(r"[ \t]*#shorts\b", "", text, flags=re.IGNORECASE).strip()
+
+    parts = [tidy(title), tidy(description)]
+    present = {tag.lower() for tag in re.findall(r"#\w+", " ".join(parts))}
+    hashtags: list[str] = []
+    for tag in tags:
+        word = re.sub(r"\W", "", tag)
+        mark = f"#{word}"
+        if word and mark.lower() not in present and len(present) < HASHTAGS_MAX:
+            present.add(mark.lower())
+            hashtags.append(mark)
+    parts.append(" ".join(hashtags))
+    return "\n\n".join(part for part in parts if part)
 
 
 def caption_errors(caption: str) -> list[str]:
@@ -205,6 +227,47 @@ class TikTokService:
 
     def api(self) -> BufferAPI:
         return BufferAPI(self.token, self.api_session)
+
+    # Optional view counts ---------------------------------------------------------------------
+
+    def insights_key(self) -> str:
+        return self.secrets.get(INSIGHTS_KEY) or ""
+
+    def save_insights_key(self, key: str) -> None:
+        key = key.strip()
+        if not key:
+            raise TikTokError("Paste your Buffer personal API key first.")
+        self.secrets.put(INSIGHTS_KEY, key)
+
+    def remove_insights_key(self) -> None:
+        self.secrets.delete(INSIGHTS_KEY)
+
+    def statistics(self, cancel: Event) -> dict[str, dict[str, int]]:
+        """View counts for posted TikToks, keyed by Buffer post ID. Read-only; empty without
+        the optional personal API key. Buffer refreshes these once a day."""
+        key = self.insights_key()
+        if not key:
+            return {}
+        api = BufferAPI(lambda: key, self.api_session)
+        found: dict[str, dict[str, int]] = {}
+        sent = [p for p in self.posts() if p["state"] == "Sent by Buffer" and p["buffer_post_id"]]
+        for post in sent[:100]:
+            if cancel.is_set():
+                break
+            metrics = api.post_metrics(post["buffer_post_id"])
+            counts = {
+                name: metrics[source]
+                for name, source in (
+                    ("views", "views"),
+                    ("likes", "reactions"),
+                    ("comments", "comments"),
+                )
+                if source in metrics
+            }
+            if "views" not in counts and "impressions" in metrics:
+                counts["views"] = metrics["impressions"]
+            found[post["buffer_post_id"]] = counts
+        return found
 
     def finish_connect(self, code: str, verifier: str) -> tuple[str, list[dict[str, Any]]]:
         """Exchange the code, store tokens under a fresh key, return TikTok channels to choose."""

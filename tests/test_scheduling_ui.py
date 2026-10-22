@@ -67,8 +67,8 @@ class SchedulingUiTests(unittest.TestCase):
         self.c.start("load")
         settle(self.ui.app, self.c)
         self.assertEqual(self.c.queue.list.count(), 0)
-        self.assertIn("No individually scheduled videos on this day", self.c.calendar.status.text())
-        self.assertIn("No individually scheduled videos.", self.c.queue.status.text())
+        self.assertIn("No scheduled YouTube uploads on this day", self.c.calendar.status.text())
+        self.assertIn("No scheduled YouTube uploads.", self.c.queue.status.text())
         self.assertFalse(self.c.queue.list.isVisibleTo(self.c.queue))
 
     def test_editor_input_and_timezone(self):

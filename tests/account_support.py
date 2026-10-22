@@ -76,3 +76,10 @@ class ControlledYouTube(YouTubeClient):
         if self.error:
             raise self.error
         return self.items
+
+    def statistics(self, tokens, channel_id, video_ids, cancel):
+        self.statistics_tokens = tokens
+        return {"channel": {"views": 5}, "videos": {v: {"views": 1} for v in video_ids}}
+
+    def thumbnail(self, channel, cancel):
+        return b""

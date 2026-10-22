@@ -1,4 +1,4 @@
-# CLAUDE.md — ShortsPublisher
+# CLAUDE.md — ShortsScheduler (package `shortspublisher`)
 
 Read this first. It is a map, not the full history. Then read `docs/current-status.md` and, only
 if the task needs it, the relevant section of `docs/architecture.md`. Stage reports are references.
@@ -13,14 +13,17 @@ is implemented through Buffer's API (Stage 19) and live-verified once: an automa
 and Snapchat are future work. No packaging/distribution exists yet.
 
 Stages 1–19 are done (Stage 17's optional live folder-to-YouTube test is still pending the user's
-personal authorization). Never start a new stage without explicit instruction.
+personal authorization). After Stage 19 the UI was redesigned as an all-platform uploader named
+**ShortsScheduler** (display name only: the internal app/organization name, data folder, Keychain
+services, LaunchAgent and package stay `ShortsPublisher`/`shortspublisher` — never rename them).
+Never start a new stage without explicit instruction.
 
 ## Commands
 
 ```sh
 .venv/bin/python -m shortspublisher --data-dir /tmp/sp-test        # isolated run
 ./"Start ShortsPublisher.command"                                   # USER's live workspace — don't run
-QT_QPA_PLATFORM=offscreen .venv/bin/python -m unittest discover -s tests   # 792 tests, ~4 min
+QT_QPA_PLATFORM=offscreen .venv/bin/python -m unittest discover -s tests   # 812 tests, ~6 min
 cd tests && QT_QPA_PLATFORM=offscreen PYTHONPATH=../src ../.venv/bin/python -m unittest test_shell  # focused
 .venv/bin/ruff check . && .venv/bin/ruff format --check . && .venv/bin/mypy
 ```
@@ -44,7 +47,9 @@ isolated Keychain/LaunchAgent identifiers. Python 3.12 in `.venv` (uv), PySide6 
 | Background | `background.py` (LaunchAgent), `background_state.py`, `ui/background.py` |
 | Folders/recurring/auto | `watching.py`, `recurring.py`, `cadence.py`, `automation.py` (+ `*_schema.py`), matching `ui/*.py` |
 | TikTok (Buffer) | `buffer.py` (PKCE OAuth, rotating refresh under a file lock, GraphQL), `hosting.py` (Cloudinary public copy), `tiktok.py` (posts, duplicates, status, automation), `tiktok_schema.py`, `ui/tiktok.py`; relay page `docs/buffer-oauth-relay.html` |
-| Shared UI | `ui/window.py`, `ui/theme.py`, `ui/components.py`, `ui/formatting.py` (dates/times) |
+| Dashboard | `activity.py` (pure cross-platform timeline), `ui/dashboard.py`; read-only view counts via `AccountService.statistics` |
+| Auto upload | `ui/autoupload.py` (one editor → YouTube profile + TikTok profile, each with its own consent) |
+| Shared UI | `ui/window.py`, `ui/theme.py`, `ui/components.py` (cards, pills, `Section`, `CardGrid`, `flow`), `ui/icons.py` (SVG icons + platform logos), `ui/formatting.py` (dates/times) |
 
 Tests: `tests/test_*.py` (unittest, discovered), `tests/native_*.py` (manual native harnesses),
 `tests/*support.py`/`*_fixture.py` (shared fixtures), `tests/fixtures/library-v1…v7.sqlite3`
@@ -101,7 +106,19 @@ see `docs/stage-18-verification.md` for the classified inventory and the approve
   12/24-hour clock. Use `ui/formatting.timestamp()` for every displayed time. User data (titles,
   filenames, the `雪` test fixtures) is never translated.
 - Action buttons: `ui/components.tidy_buttons` turns stacked buttons into wrapping rows (window and
-  every dialog); don't hand-stretch buttons full width. Automation status wording comes from
+  every dialog); don't hand-stretch buttons full width. Use `icon_button`, `flow`/`row`, `card` and
+  `pill`; icons come from `ui/icons.py` (never emoji). Nothing collapses: `Section` is always open
+  (the user dislikes reveal/dropdown sections); developer diagnostics go in tooltips or Settings.
+- Wording is platform-neutral ("upload", not "publish to YouTube"); settings only one platform
+  supports are labelled "Only used on YouTube/TikTok". Video details are shared: the TikTok caption
+  is `tiktok.caption_from(title, description, tags)`.
+- Lists show one row per video across platforms (`activity.grouped`), with a logo per platform.
+  Setup steps use `components.Checklist`; `CardGrid` evens card heights per row.
+- Video editor: six internal pages (File, Details, Review, Publish, Schedule, TikTok — tests use
+  these indices) shown as three steps (Details · Review · Upload) with a hidden tab bar.
+- Preview shows the first frame on selection (muted play → pause). Never call
+  `QMediaPlayer.stop()` right after `setSource()`: it can deadlock Qt's FFmpeg backend; clear the
+  source instead. Automation status wording comes from
   `ui/automation.headline()` and must never say Active while posting is blocked.
 - Workers own I/O; GUI code receives queued signals. SQLite connections never cross threads.
 - Keep changes small and match existing style (ruff line length 100, strict mypy on `src`).

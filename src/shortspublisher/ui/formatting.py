@@ -66,6 +66,57 @@ def timestamp(
         return "Time unavailable"
 
 
+def friendly(value: str | None, zone: str | None = None, *, empty: str = "No time set") -> str:
+    """Short times for lists: "Today · 3:00 PM", "Tomorrow · 9:00 AM", "Tue, Oct 21 · 3:00 PM"."""
+    if not value:
+        return empty
+    try:
+        instant = datetime.fromisoformat(value)
+        if instant.tzinfo is None:
+            return "Time zone unavailable"
+        tz = ZoneInfo(zone or system_zone())
+        local, today = instant.astimezone(tz), datetime.now(tz).date()
+        language = QLocale()
+        clock = language.toString(QTime(local.hour, local.minute), time_pattern())
+        days = (local.date() - today).days
+        if days in (-1, 0, 1):
+            day = ("Yesterday", "Today", "Tomorrow")[days + 1]
+        else:
+            day = language.toString(
+                QDate(local.year, local.month, local.day),
+                "ddd, MMM d" if local.year == today.year else "MMM d, yyyy",
+            )
+        return f"{day} · {clock}"
+    except (ValueError, KeyError, OverflowError):
+        return "Time unavailable"
+
+
+def day_label(value: str | None, zone: str | None = None) -> str:
+    """Agenda group names: "Today", "Tomorrow", "Wednesday, Oct 22"."""
+    if not value:
+        return "Waiting for the next posting time"
+    try:
+        tz = ZoneInfo(zone or system_zone())
+        local = datetime.fromisoformat(value).astimezone(tz)
+        days = (local.date() - datetime.now(tz).date()).days
+    except (ValueError, KeyError, OverflowError):
+        return "Time unavailable"
+    if days in (-1, 0, 1):
+        return ("Yesterday", "Today", "Tomorrow")[days + 1]
+    if days < -1:
+        return "Earlier"
+    return QLocale().toString(QDate(local.year, local.month, local.day), "dddd, MMM d")
+
+
+def compact(number: int) -> str:
+    """1234 → 1.2K, 2500000 → 2.5M."""
+    for limit, suffix in ((1_000_000_000, "B"), (1_000_000, "M"), (1_000, "K")):
+        if abs(number) >= limit:
+            text = f"{number / limit:.1f}".rstrip("0").rstrip(".")
+            return text + suffix
+    return str(number)
+
+
 def duration(seconds: float) -> str:
     if not isfinite(seconds) or seconds < 0:
         return "Duration unknown"

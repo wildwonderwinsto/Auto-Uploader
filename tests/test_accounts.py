@@ -437,6 +437,25 @@ class AccountServiceTests(unittest.TestCase):
         self.assertTrue(view.state.startswith("Connected"), view.message)
         return view
 
+    def test_statistics_need_a_connection_and_never_wait_for_the_lock(self):
+        empty = {"channel": {}, "videos": {}}
+        self.assertEqual(self.service.statistics(["abc"], Event()), empty)
+        self.connected()
+        self.assertEqual(self.service.statistics(["abc"], Event())["videos"], {"abc": {"views": 1}})
+        key = self.repository.connection().key
+        stale = self.credentials.get(key)
+        self.credentials.put(key, Tokens(stale.access, stale.refresh, 0, stale.scopes))
+        refreshes = self.oauth.refresh_count
+        from filelock import FileLock
+
+        with FileLock(self.service.lock.lock_file).acquire(timeout=0):
+            # A scheduled upload may hold the account lock: skip rather than wait.
+            self.assertEqual(self.service.statistics(["abc"], Event()), empty)
+        self.assertEqual(self.oauth.refresh_count, refreshes)
+        self.service.statistics(["abc"], Event())
+        self.assertEqual(self.oauth.refresh_count, refreshes + 1)
+        self.assertEqual(self.youtube.statistics_tokens.access, "test-access-rotated")
+
     def test_connection_persistence_and_live_restore(self):
         connected = self.connected()
         service = AccountService(
@@ -670,3 +689,30 @@ class AccountServiceTests(unittest.TestCase):
             db.execute("PRAGMA user_version=99")
         with self.assertRaises(LibraryError):
             self.library.initialize()
+
+
+class StatisticsTests(unittest.TestCase):
+    def test_reads_channel_and_video_counters_read_only(self):
+        channel = {"items": [{"statistics": {"viewCount": "120", "subscriberCount": "7"}}]}
+        videos = {
+            "items": [
+                {"id": "abc", "statistics": {"viewCount": "90", "likeCount": "4"}},
+                {"id": "def", "statistics": {"viewCount": "x", "hiddenSubscriberCount": True}},
+            ]
+        }
+        with patch(
+            "shortspublisher.youtube.requests.get",
+            side_effect=[response(200, channel), response(200, videos)],
+        ) as get:
+            result = YouTubeClient().statistics(
+                Tokens("a", "r", 0), CHANNEL.id, ["abc", "def", "abc", ""], Event()
+            )
+        self.assertEqual(result["channel"], {"views": 120, "subscribers": 7})
+        self.assertEqual(result["videos"]["abc"], {"views": 90, "likes": 4})
+        self.assertEqual(result["videos"]["def"], {})
+        urls = [call.args[0] for call in get.call_args_list]
+        self.assertTrue(urls[0].endswith("/youtube/v3/channels"))
+        self.assertTrue(urls[1].endswith("/youtube/v3/videos"))
+        self.assertEqual(get.call_args_list[1].kwargs["params"]["id"], "abc,def")
+        for call in get.call_args_list:
+            self.assertEqual(call.kwargs["params"]["part"], "statistics")

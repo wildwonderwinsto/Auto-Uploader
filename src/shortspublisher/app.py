@@ -33,9 +33,10 @@ def build(
 ) -> tuple[QApplication, MainWindow]:
     existing = QApplication.instance()
     app = existing if isinstance(existing, QApplication) else QApplication([])
+    # The internal names locate the existing data folder and must not change.
     app.setApplicationName("ShortsPublisher")
     app.setOrganizationName("ShortsPublisher")
-    app.setApplicationDisplayName("ShortsPublisher")
+    app.setApplicationDisplayName("ShortsScheduler")
     use_english_interface()
     theme.apply(app)
     directory = data_dir or Path(
@@ -59,6 +60,7 @@ def build(
     app.aboutToQuit.connect(window.uploads.stop_for_quit)
     app.aboutToQuit.connect(window.accounts.stop_for_quit)
     app.aboutToQuit.connect(window.tiktok.stop_for_quit)
+    app.aboutToQuit.connect(window.dashboard.stop_for_quit)
     if library.path.exists():
         QTimer.singleShot(0, window.accounts.activate)
 
@@ -67,7 +69,7 @@ def build(
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="ShortsPublisher desktop")
+    parser = argparse.ArgumentParser(description="ShortsScheduler desktop")
     parser.add_argument("--log-dir", type=Path, help="Override the OS application log directory")
     parser.add_argument(
         "--smoke-test", action="store_true", help="Open, render, then close after 1s"

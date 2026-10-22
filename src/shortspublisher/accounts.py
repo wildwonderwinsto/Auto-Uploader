@@ -122,6 +122,28 @@ class AccountService:
                 False,
             )
 
+    def statistics(self, video_ids: list[str], cancel: Event) -> dict[str, Any]:
+        """Read-only view counts for the connected channel; empty when unavailable.
+
+        Never holds the account lock during the reads: scheduled uploads need it within their
+        due window. A needed token refresh takes the lock briefly, or is skipped if it is busy.
+        """
+        empty: dict[str, Any] = {"channel": {}, "videos": {}}
+        connection, config = self.repository.connection(), self.repository.config()
+        tokens = self.credentials.get(connection.key) if connection and config else None
+        if not connection or not config or tokens is None:
+            return empty
+        if tokens.expires_at <= time.time() + 60:
+            try:
+                with self.lock.acquire(timeout=0):
+                    tokens = self.credentials.get(connection.key) or tokens
+                    if tokens.expires_at <= time.time() + 60:
+                        tokens = self.oauth.refresh(config, tokens, cancel)
+                        self.credentials.put(connection.key, tokens)
+            except Timeout:
+                return empty
+        return self.youtube.statistics(tokens, connection.channel.id, video_ids, cancel)
+
     def failure(self, error: AccountError) -> AccountView:
         try:
             connection = self.repository.connection()
@@ -185,7 +207,7 @@ class AccountService:
         if not config:
             return AccountView(
                 "Disconnected",
-                "Choose a Google OAuth Desktop client JSON to get started. Setup instructions are below.",
+                "First choose your Google Desktop client JSON in Settings (one-time setup), then connect.",
                 False,
                 connection,
             )

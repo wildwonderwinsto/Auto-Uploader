@@ -7,8 +7,18 @@ from threading import Event
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo, available_timezones
 
-from PySide6.QtCore import QDate, QObject, Qt, QThread, QTime, QTimer, QTimeZone, Signal
-from PySide6.QtGui import QColor, QIcon, QTextCharFormat
+from PySide6.QtCore import (
+    QDate,
+    QLocale,
+    QObject,
+    Qt,
+    QThread,
+    QTime,
+    QTimer,
+    QTimeZone,
+    Signal,
+)
+from PySide6.QtGui import QColor, QTextCharFormat
 from PySide6.QtWidgets import (
     QCalendarWidget,
     QCheckBox,
@@ -16,6 +26,7 @@ from PySide6.QtWidgets import (
     QDateEdit,
     QDialog,
     QDialogButtonBox,
+    QHBoxLayout,
     QLabel,
     QListWidget,
     QListWidgetItem,
@@ -29,14 +40,19 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .. import activity
+from ..activity import Entry
 from ..scheduling import Job, Proposal, ScheduleService, local_choices
-from .formatting import duration, file_size, time_pattern, timestamp
+from . import theme
+from .dashboard import group_row
+from .formatting import day_label, duration, file_size, system_zone, time_pattern, timestamp
+from .icons import icon, image, logo, pixmap
 from .videos import text
 
 if TYPE_CHECKING:
     from .window import MainWindow
 
-from .components import Disclosure, primary
+from .components import Section, card, flow, icon_button
 
 NOTICE = "Saved plans require separate automatic Public activation and the global switch. Background execution also requires job permission and a running, explicitly enabled service. Older approvals remain desktop-only."
 
@@ -95,7 +111,7 @@ class ScheduleConfirmation(QDialog):
             )
         )
         layout.addWidget(summary)
-        diagnostics = Disclosure("Schedule diagnostics")
+        diagnostics = Section("Schedule diagnostics")
         box.appendPlainText(f"\nUTC: {proposal.scheduled_utc}\nLocal ISO: {proposal.local_time}")
         diagnostics.body.addWidget(box)
         layout.addWidget(diagnostics)
@@ -285,18 +301,83 @@ class SchedulePage(QScrollArea):
         self.setWidgetResizable(True)
         content = QWidget()
         self.body = QVBoxLayout(content)
-        self.body.setContentsMargins(28, 28, 28, 28)
-        self.body.setSpacing(14)
-        self.body.addWidget(text("Calendar" if calendar else "Publishing Queue", "Title"))
-        self.body.addWidget(
-            text(
-                "Times are upload start times. Select a plan to manage it; YouTube processing may finish later.",
-                "Muted",
-            )
+        self.body.setContentsMargins(32, 32, 32, 32)
+        self.body.setSpacing(18)
+        top = QHBoxLayout()
+        names = QVBoxLayout()
+        names.setSpacing(4)
+        names.addWidget(text("Calendar" if calendar else "Schedule", "Title"))
+        names.addWidget(
+            text("Everything waiting to upload on every platform, and when it goes out.", "Muted")
         )
-        self.status = text("Open or reload to read saved plans.")
-        self.body.addWidget(self.status)
+        top.addLayout(names, 1)
+        self.views: dict[str, QPushButton] = {}
+        for key, label, glyph in (("queue", "List", "list"), ("calendar", "Calendar", "calendar")):
+            view = QPushButton(label)
+            view.setObjectName("Segment")
+            view.setCheckable(True)
+            view.setChecked(key == ("calendar" if calendar else "queue"))
+            view.setIcon(icon(glyph, theme.MUTED))
+            view.setCursor(Qt.CursorShape.PointingHandCursor)
+            view.clicked.connect(lambda checked=False, k=key: self.switch(k))
+            top.addWidget(view, 0, Qt.AlignmentFlag.AlignBottom)
+            self.views[key] = view
+        self.body.addLayout(top)
+        self.calendar: QCalendarWidget | None = None
+        self.marked: list[QDate] = []
+        if calendar:
+            frame, holder = card(16, 8)
+            self.calendar = QCalendarWidget()
+            self.calendar.setVerticalHeaderFormat(
+                QCalendarWidget.VerticalHeaderFormat.NoVerticalHeader
+            )
+            self.calendar.setGridVisible(False)
+            header = QTextCharFormat()
+            header.setForeground(QColor(theme.MUTED))
+            self.calendar.setHeaderTextFormat(header)
+            for day in (Qt.DayOfWeek.Saturday, Qt.DayOfWeek.Sunday):
+                self.calendar.setWeekdayTextFormat(day, header)
+            for name, glyph in (
+                ("qt_calendar_prevmonth", "chevron-left"),
+                ("qt_calendar_nextmonth", "chevron-right"),
+            ):
+                button = self.calendar.findChild(QToolButton, name)
+                if button:
+                    button.setIcon(icon(glyph, theme.TEXT))
+            self.calendar.setMinimumHeight(300)
+            self.calendar.selectionChanged.connect(self.render)
+            holder.addWidget(self.calendar)
+            self.body.addWidget(frame)
+        # All platforms in one agenda, grouped by day (filled from the shared timeline).
+        self.agenda_frame, agenda = card(20, 4)
+        heading = QHBoxLayout()
+        heading.addWidget(image(pixmap("clock", 18, theme.ACCENT_TEXT)))
+        self.agenda_title = text("On this day" if calendar else "Coming up", "Heading")
+        heading.addWidget(self.agenda_title, 1)
+        agenda.addLayout(heading)
+        self.agenda_rows = QVBoxLayout()
+        self.agenda_rows.setSpacing(0)
+        agenda.addLayout(self.agenda_rows)
+        self.agenda_empty = text(
+            "Nothing on this day."
+            if calendar
+            else "Nothing is scheduled yet. Open a video and choose Upload, or set up Auto Upload.",
+            "Muted",
+        )
+        self.agenda_empty.setContentsMargins(0, 8, 0, 8)
+        agenda.addWidget(self.agenda_empty)
+        self.body.addWidget(self.agenda_frame)
+        # Posting times (recurring queues) and TikTok posts are placed here by the window.
+        self.recurring_slot = QVBoxLayout()
+        self.body.addLayout(self.recurring_slot)
+
+        self.youtube, youtube = card(20, 12)
+        heading = QHBoxLayout()
+        heading.setSpacing(10)
+        heading.addWidget(image(logo("youtube", 22)))
+        heading.addWidget(text("Scheduled YouTube uploads", "Heading"), 1)
         self.filter = QComboBox()
+        self.filter.setAccessibleName("Show scheduled uploads")
         self.filter.addItems(
             [
                 "Active plans",
@@ -317,68 +398,107 @@ class SchedulePage(QScrollArea):
                 "Failed",
             ]
         )
+        self.filter.setItemText(0, "Active")
+        self.filter.setItemText(1, "All")
         self.filter.currentTextChanged.connect(self.render)
-        self.body.addWidget(self.filter)
-        self.calendar: QCalendarWidget | None = None
-        self.marked: list[QDate] = []
-        if calendar:
-            self.body.addWidget(
-                text(
-                    "Dates use each plan’s approved local time zone. Select a marked day; job rows show the zone.",
-                    "Muted",
-                )
-            )
-            self.calendar = QCalendarWidget()
-            self.calendar.setVerticalHeaderFormat(
-                QCalendarWidget.VerticalHeaderFormat.NoVerticalHeader
-            )
-            header = QTextCharFormat()
-            header.setBackground(QColor("#202630"))
-            header.setForeground(QColor("#b5d3ff"))
-            self.calendar.setHeaderTextFormat(header)
-            for day in (Qt.DayOfWeek.Saturday, Qt.DayOfWeek.Sunday):
-                self.calendar.setWeekdayTextFormat(day, header)
-            for name, caption in (("qt_calendar_prevmonth", "‹"), ("qt_calendar_nextmonth", "›")):
-                button = self.calendar.findChild(QToolButton, name)
-                if button:
-                    button.setIcon(QIcon())
-                    button.setText(caption)
-                    button.setStyleSheet("color: #b5d3ff; font-size: 24px; padding: 2px 10px;")
-            self.calendar.selectionChanged.connect(self.render)
-            self.body.addWidget(self.calendar)
+        heading.addWidget(self.filter)
+        youtube.addLayout(heading)
+        self.status = text("Open or reload to read saved plans.", "Muted")
+        youtube.addWidget(self.status)
         self.list = QListWidget()
         self.list.setWordWrap(True)
-        self.list.setMinimumHeight(170)
+        self.list.setMinimumHeight(150)
         self.list.currentRowChanged.connect(self.selected_changed)
-        self.body.addWidget(self.list)
+        youtube.addWidget(self.list)
+        self.refresh = icon_button("Reload", "refresh", role="Ghost")
+        self.refresh.clicked.connect(lambda: controller.start("load"))
+        self.edit = icon_button("Change Time…", "edit")
+        self.edit.setAccessibleName("Reschedule / Review Again…")
+        self.edit.clicked.connect(self.edit_selected)
+        self.cancel = icon_button("Cancel Schedule…", "x", role="Danger")
+        self.cancel.clicked.connect(self.cancel_selected)
+        self.activate_job = icon_button("Approve Automatic Upload…", "check", role="Primary")
+        self.activate_job.setAccessibleName("Activate automatic publishing…")
+        self.activate_job.clicked.connect(self.activate_selected)
+        self.history = icon_button("Upload History…", "history")
+        self.history.clicked.connect(self.open_history)
+        self.stop_upload = icon_button("Stop Current Upload", "x", role="Danger")
+        self.stop_upload.clicked.connect(lambda: controller.window.automatic.stop_active())
+        self.action_row = flow(
+            self.activate_job, self.edit, self.cancel, self.history, self.stop_upload, self.refresh
+        )
+        youtube.addWidget(self.action_row)
         self.details = QPlainTextEdit()
         self.details.setReadOnly(True)
-        self.details.setMinimumHeight(230)
-        plan_details = Disclosure("Plan details and approval history")
-        plan_details.body.addWidget(self.details)
-        self.body.addWidget(plan_details)
-        self.refresh = QPushButton("Refresh plans")
-        self.refresh.clicked.connect(lambda: controller.start("load"))
-        self.body.addWidget(self.refresh)
-        self.edit = QPushButton("Reschedule / Review Again…")
-        self.edit.clicked.connect(self.edit_selected)
-        self.body.addWidget(self.edit)
-        self.cancel = QPushButton("Cancel Schedule…")
-        self.cancel.clicked.connect(self.cancel_selected)
-        self.body.addWidget(self.cancel)
-        self.activate_job = QPushButton("Activate automatic publishing…")
-        primary(self.activate_job)
-        self.activate_job.clicked.connect(self.activate_selected)
-        self.body.addWidget(self.activate_job)
-        self.history = QPushButton("Upload History — Resume / Verify / Resolve…")
-        self.history.clicked.connect(self.open_history)
-        self.body.addWidget(self.history)
-        self.stop_upload = QPushButton("Stop Active Scheduled Upload")
-        self.stop_upload.clicked.connect(lambda: controller.window.automatic.stop_active())
-        self.body.addWidget(self.stop_upload)
+        self.details.setFixedHeight(150)
+        self.plan_details = Section("Selected upload")
+        self.plan_details.body.addWidget(self.details)
+        youtube.addWidget(self.plan_details)
+        self.body.addWidget(self.youtube)
+        self.tiktok_slot = QVBoxLayout()
+        self.body.addLayout(self.tiktok_slot)
         self.body.addStretch()
         self.setWidget(content)
         self.selected_changed()
+
+    def switch(self, key: str) -> None:
+        for name, view in self.views.items():
+            view.setChecked(name == ("calendar" if self.calendar_mode else "queue"))
+        self.controller.window.navigate(key)
+
+    def render_agenda(self, entries: list[Entry]) -> None:
+        while self.agenda_rows.count():
+            item = self.agenda_rows.takeAt(0)
+            widget = item.widget() if item else None
+            if widget:
+                widget.hide()
+                widget.deleteLater()
+        if self.calendar:
+            for date in self.marked:
+                self.calendar.setDateTextFormat(date, QTextCharFormat())
+            self.marked = []
+            mark = QTextCharFormat()
+            mark.setBackground(QColor(theme.ACCENT_SOFT))
+            mark.setForeground(QColor(theme.ACCENT_TEXT))
+            mark.setFontWeight(700)
+            for entry in entries:
+                moment = activity.instant(entry)
+                if moment:
+                    local = moment.astimezone(ZoneInfo(system_zone()))
+                    date = QDate(local.year, local.month, local.day)
+                    self.calendar.setDateTextFormat(date, mark)
+                    self.marked.append(date)
+            chosen = self.calendar.selectedDate()
+            shown = [
+                e
+                for e in sorted(
+                    entries, key=lambda e: activity.instant(e) or datetime.max.astimezone()
+                )
+                if (moment := activity.instant(e))
+                and (local := moment.astimezone(ZoneInfo(system_zone())))
+                and QDate(local.year, local.month, local.day) == chosen
+            ]
+            self.agenda_title.setText("On " + QLocale().toString(chosen, "dddd, MMMM d"))
+            for group in activity.grouped(shown):
+                self.agenda_rows.addWidget(group_row(group))
+            self.agenda_empty.setVisible(not shown)
+            return
+        attention = [e for e in entries if e.kind == activity.ATTENTION]
+        pending = activity.grouped(attention) + activity.grouped(activity.upcoming(entries))
+        last = None
+        for group in pending[:30]:
+            label_text = (
+                "Needs your attention"
+                if group.kind == activity.ATTENTION
+                else day_label(group.when)
+            )
+            if label_text != last:
+                label = text(label_text, "Eyebrow")
+                label.setContentsMargins(0, 12 if last else 4, 0, 2)
+                self.agenda_rows.addWidget(label)
+                last = label_text
+            self.agenda_rows.addWidget(group_row(group))
+        self.agenda_empty.setVisible(not pending)
 
     def selected(self) -> Job | None:
         item = self.list.currentItem()
@@ -390,13 +510,14 @@ class SchedulePage(QScrollArea):
         selected = self.selected()
         identity = selected.id if selected else ""
         self.list.clear()
-        if self.calendar:
-            for date in self.marked:
-                self.calendar.setDateTextFormat(date, QTextCharFormat())
-            self.marked = []
         shown = []
         for job in self.jobs:
-            wanted = self.filter.currentText()
+            # The first two choices are shown as "Active" and "All".
+            wanted = (
+                ("Active plans", "All plans")[i]
+                if (i := self.filter.currentIndex()) < 2
+                else (self.filter.currentText())
+            )
             if wanted == "Active plans" and job.state == "Cancelled":
                 continue
             automatic = getattr(self.controller.window, "automatic", None)
@@ -413,23 +534,8 @@ class SchedulePage(QScrollArea):
             if wanted not in ("All plans", "Active plans") and wanted != shown_state:
                 continue
             date = QDate.fromString(job.local_time[:10], "yyyy-MM-dd")
-            if self.calendar:
-                fmt = QTextCharFormat()
-                fmt.setBackground(QColor("#263b60"))
-                fmt.setForeground(
-                    QColor(
-                        "#f6c879"
-                        if job.state in ("Missed", "Needs Attention")
-                        else "#aab4c5"
-                        if job.state == "Cancelled"
-                        else "#b5d3ff"
-                    )
-                )
-                fmt.setFontWeight(700)
-                self.calendar.setDateTextFormat(date, fmt)
-                self.marked.append(date)
-                if date != self.calendar.selectedDate():
-                    continue
+            if self.calendar and date != self.calendar.selectedDate():
+                continue
             item = QListWidgetItem(
                 f"{job.snapshot['metadata']['title']}\n{timestamp(job.scheduled_utc, job.timezone, weekday=True)}\n{job.channel_title} · {self.execution_label(job)}"
             )
@@ -442,16 +548,21 @@ class SchedulePage(QScrollArea):
         if self.list.count() and self.list.currentRow() < 0:
             self.list.setCurrentRow(0)
         self.status.setText(
-            f"Individually scheduled videos: {len(shown)} shown · {len(self.jobs)} saved."
+            f"{len(shown)} shown · {len(self.jobs)} saved"
             if shown
             else (
-                "No individually scheduled videos on this day."
+                "No scheduled YouTube uploads on this day."
                 if self.calendar_mode
-                else "No individually scheduled videos."
+                else "No scheduled YouTube uploads."
             )
-            + " To schedule one, open a reviewed Public video in Videos and choose Schedule."
+            + " To schedule one, open a video, choose Upload, then Schedule."
         )
         self.list.setVisible(bool(shown))
+        self.action_row.setVisible(bool(shown))
+        self.plan_details.setVisible(bool(shown))
+        window = self.controller.window
+        if hasattr(window, "dashboard"):
+            self.render_agenda(window.dashboard.entries)
         self.selected_changed()
 
     def selected_changed(self, *_: Any) -> None:

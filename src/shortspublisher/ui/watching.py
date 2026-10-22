@@ -12,10 +12,10 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFileDialog,
+    QHBoxLayout,
     QListWidget,
     QMessageBox,
     QPlainTextEdit,
-    QPushButton,
     QSpinBox,
     QVBoxLayout,
     QWidget,
@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
 
 from ..media import Cancelled
 from ..watching import POLL_SECONDS, QUIET_SECONDS, WatchService
-from .components import Disclosure, primary
+from .components import Section, flow, icon_button, natural
 from .formatting import timestamp
 from .videos import text
 
@@ -46,12 +46,15 @@ class FolderConsent(QDialog):
         self.existing.addItem("Import existing eligible videos", True)
         self.existing.addItem("Watch newly added videos only", False)
         self.existing.setAccessibleName("Initial existing-file choice")
+        existing_label = text("Videos already in the folder", "Muted")
+        body.insertWidget(body.count(), existing_label)
         body.addWidget(self.existing)
         self.quiet = QSpinBox()
         self.quiet.setRange(1, 3600)
         self.quiet.setValue(QUIET_SECONDS)
         self.quiet.setSuffix(" seconds without changes")
         self.quiet.setAccessibleName("File quiet period")
+        body.addWidget(text("Treat a new file as finished after", "Muted"))
         body.addWidget(self.quiet)
         body.addWidget(
             text(
@@ -122,12 +125,15 @@ class WatchWorker(QThread):
                 self.result.emit({"error": str(exc)})
 
 
-class WatchPanel(Disclosure):
+class WatchPanel(Section):
     idle = Signal()
     library_changed = Signal()
 
     def __init__(self, service: WatchService):
-        super().__init__("Automatically Import Videos")
+        super().__init__("Watched folders")
+        self.setObjectName("Card")
+        self.outer.setContentsMargins(20, 20, 20, 20)
+        self.heading.setObjectName("Heading")
         self.service = service
         self.worker: WatchWorker | None = None
         self.closing = False
@@ -140,14 +146,13 @@ class WatchPanel(Disclosure):
         self.counts: tuple[Any, ...] = ()
         self.body.addWidget(
             text(
-                "Import Videos… adds files you pick once. A watched folder adds new finished videos automatically. Watching only imports — it never publishes.",
+                "New finished videos in these folders are added to your library by themselves. "
+                "Watching only adds videos; an auto upload decides what uploads.",
                 "Muted",
             )
         )
-        self.choose = QPushButton("Watch a Folder…")
-        primary(self.choose)
+        self.choose = natural(icon_button("Watch a Folder…", "folder"))
         self.choose.clicked.connect(self.choose_folder)
-        self.body.addWidget(self.choose)
         self.folder = QComboBox()
         self.folder.setAccessibleName("Watched folders")
         self.folder.setMinimumWidth(0)
@@ -155,39 +160,43 @@ class WatchPanel(Disclosure):
             QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
         )
         self.folder.currentIndexChanged.connect(self.present)
-        self.body.addWidget(self.folder)
+        line = QHBoxLayout()
+        line.addWidget(self.folder, 1)
+        line.addWidget(self.choose)
+        line.addStretch(0)
+        self.body.addLayout(line)
         self.status = text(
             "Choose a folder and explicitly enable local importing. Nothing is published."
         )
         self.body.addWidget(self.status)
-        self.scan_button = QPushButton("Scan Now")
+        self.scan_button = icon_button("Scan Now", "refresh")
         self.scan_button.clicked.connect(lambda: self.start("scan"))
-        self.pause = QPushButton("Pause Watching")
+        self.pause = icon_button("Pause Watching", "pause")
         self.pause.clicked.connect(self.toggle_pause)
-        self.body.addWidget(self.scan_button)
-        self.body.addWidget(self.pause)
-        self.results = Disclosure("View Import Results")
+        self.change = icon_button("Change Folder…", "edit")
+        self.change.clicked.connect(self.change_folder)
+        self.remove = icon_button("Stop Watching…", "trash", role="Danger")
+        self.remove.setAccessibleName("Remove Folder From Monitoring…")
+        self.remove.clicked.connect(self.remove_folder)
+        self.action_row = flow(self.scan_button, self.pause, self.change, self.remove)
+        self.body.addWidget(self.action_row)
+        self.results = Section("Recent imports")
         self.activity = QListWidget()
         self.activity.setMinimumWidth(0)
         self.activity.setWordWrap(True)
         self.activity.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.activity.setTextElideMode(Qt.TextElideMode.ElideMiddle)
-        self.activity.setFixedHeight(170)
+        self.activity.setFixedHeight(150)
         self.activity.setAccessibleName("Folder import results")
         self.results.body.addWidget(self.activity)
         self.body.addWidget(self.results)
-        self.settings = Disclosure("Folder Settings and Diagnostics")
-        self.path = text("")
+        # Folder path and diagnostics, shown as a tooltip on the status line.
+        self.settings = Section("")
+        self.path = text("", "Subtle")
         self.settings.body.addWidget(self.path)
-        self.change = QPushButton("Change Folder…")
-        self.change.clicked.connect(self.change_folder)
-        self.remove = QPushButton("Remove Folder From Monitoring…")
-        self.remove.clicked.connect(self.remove_folder)
-        self.settings.body.addWidget(self.change)
-        self.settings.body.addWidget(self.remove)
         self.diagnostics = QPlainTextEdit()
         self.diagnostics.setReadOnly(True)
-        self.diagnostics.setFixedHeight(160)
+        self.diagnostics.hide()
         self.settings.body.addWidget(self.diagnostics)
         self.body.addWidget(self.settings)
         self.feedback = text("", "Muted")
@@ -331,10 +340,9 @@ class WatchPanel(Disclosure):
             )
             waiting = sum(r["state"] == "Waiting for file to finish" for r in rows)
             self.status.setText(
-                f"{folder['name']} · {'Needs attention' if folder['error'] else 'Watching' if folder['enabled'] else 'Paused'}\nLast checked: {timestamp(folder['scanned_at'], empty='Not checked yet')}\nCurrent results · Imported: {imported} · Duplicates: {duplicates} · Waiting: {waiting}"
+                f"{folder['name']} · {'Needs attention' if folder['error'] else 'Watching' if folder['enabled'] else 'Paused'} · checked {timestamp(folder['scanned_at'], empty='not yet')}\nImported: {imported} · Duplicates skipped: {duplicates} · Still copying: {waiting}"
                 + ("\n" + folder["error"] if folder["error"] else "")
             )
-            self.status.setToolTip(folder["path"])
             self.path.setText(
                 folder["path"]
                 + f"\nQuiet period: {folder['quiet_seconds']:g} seconds\nBackground local import: {'Allowed' if folder['background'] else 'Not allowed'}"
@@ -371,8 +379,16 @@ class WatchPanel(Disclosure):
             )
             self.path.clear()
             self.diagnostics.clear()
-        for control in (self.folder, self.scan_button, self.pause, self.results, self.settings):
+        for control in (
+            self.folder,
+            self.action_row,
+            self.scan_button,
+            self.pause,
+            self.results,
+            self.settings,
+        ):
             control.setVisible(folder is not None)
+        self.status.setToolTip(self.diagnostics.toPlainText()[:4000] if folder else "")
 
     @Slot()
     def finished(self) -> None:

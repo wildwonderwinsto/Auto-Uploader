@@ -1,38 +1,126 @@
 """Accounts presentation; all OAuth, network and secret storage runs off the GUI thread."""
 
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import Event
 from typing import Any
 
-from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QSize, QThread, QTimer, Signal, Slot
-from PySide6.QtGui import QImageReader, QPixmap
+from PySide6.QtCore import (
+    QBuffer,
+    QByteArray,
+    QIODevice,
+    QSize,
+    Qt,
+    QThread,
+    QTimer,
+    Signal,
+    Slot,
+)
+from PySide6.QtGui import QImageReader, QPainter, QPainterPath, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QFileDialog,
     QFrame,
+    QHBoxLayout,
+    QLabel,
     QMessageBox,
     QProgressBar,
-    QPushButton,
     QScrollArea,
     QVBoxLayout,
     QWidget,
 )
 
 from ..accounts import AccountService, AccountView
-from .components import Disclosure, primary
+from . import theme
+from .components import (
+    CardGrid,
+    Checklist,
+    FlowLayout,
+    Section,
+    card,
+    header,
+    icon_button,
+    pill,
+    platform_top,
+    restyle,
+    row,
+)
 from .formatting import timestamp
+from .icons import PLATFORM_NAMES, image, logo, pixmap
 from .videos import text
 
 SETUP = (
-    "1. In Google Cloud Console, create or select a project and enable YouTube Data API v3.\n"
-    "2. Configure Google Auth Platform branding, audience and data access. For External / Testing, add your Google account as a test user.\n"
-    "3. Create an OAuth client of type Desktop app, download its JSON, and choose it here. No source-code edits are needed.\n"
-    "4. Connect YouTube, choose the intended YouTube or Brand Account in your system browser, approve read-only access, then confirm the returned channel here.\n\n"
-    "Testing authorizations can expire after seven days. Production may require Google's verification; it does not guarantee indefinite authorization.\n"
-    "The desktop client is public configuration. Access and refresh tokens are stored only in macOS Keychain."
+    "1. In Google Cloud Console, create a project and turn on YouTube Data API v3.\n"
+    "2. Set up the Google Auth Platform consent screen. While it is in Testing, add your Google "
+    "account as a test user (Testing sign-ins expire after seven days).\n"
+    "3. Create an OAuth client of type Desktop app, download its JSON file and choose it below.\n"
+    "Your sign-in tokens are kept only in the macOS Keychain."
 )
+# Messages that only repeat what the setup checklist already says.
+ROUTINE = {
+    "Checking your YouTube connection…",
+    "First choose your Google Desktop client JSON in Settings (one-time setup), then connect.",
+    "Connect YouTube to verify your channel. Only read-only access is requested.",
+    "Desktop client configured. Connect YouTube to authorize read-only access.",
+}
+
+# Account states in plain words, with the pill colour for each.
+STATES = {
+    "Disconnected": ("Not connected", "Neutral"),
+    "Confirm channel": ("Choose channel", "Info"),
+    "Connecting": ("Connecting…", "Info"),
+    "Verification pending": ("Checking…", "Info"),
+    "Temporarily offline": ("Offline", "Warn"),
+    "Reconnection required": ("Sign in again", "Bad"),
+}
+
+
+def state_label(state: str) -> tuple[str, str]:
+    return (
+        ("Connected", "Good")
+        if state.startswith("Connected")
+        else STATES.get(state, (state, "Info"))
+    )
+
+
+def coming_soon(platform: str) -> QFrame:
+    """A compact card for a platform that is not supported yet."""
+    frame, body = card(18, 10)
+    top = QHBoxLayout()
+    top.setSpacing(12)
+    top.addWidget(image(logo(platform, 32)))
+    top.addWidget(text(PLATFORM_NAMES[platform], "Subheading"), 1)
+    connect = icon_button("Connect", "link")
+    connect.setEnabled(False)
+    connect.setToolTip(f"Uploading to {PLATFORM_NAMES[platform]} arrives in a future version")
+    top.addWidget(connect)
+    body.addLayout(top)
+    return frame
+
+
+def rounded(source: QPixmap, side: int) -> QPixmap:
+    """A circular avatar."""
+    ratio = 2.0
+    result = QPixmap(int(side * ratio), int(side * ratio))
+    result.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(result)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    path = QPainterPath()
+    path.addEllipse(0, 0, result.width(), result.height())
+    painter.setClipPath(path)
+    painter.drawPixmap(
+        result.rect(),
+        source.scaled(
+            result.size(),
+            Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+            Qt.TransformationMode.SmoothTransformation,
+        ),
+    )
+    painter.end()
+    result.setDevicePixelRatio(ratio)
+    return result
 
 
 class AccountWorker(QThread):
@@ -63,6 +151,9 @@ class AccountWorker(QThread):
 class AccountsPage(QScrollArea):
     idle = Signal()
     state_changed = Signal(object)
+    setup_requested = Signal()
+    # Set by the window: True while an upload is running or one is due within two minutes.
+    hold_refresh: Callable[[], bool] = staticmethod(lambda: False)
 
     def __init__(self, service: AccountService) -> None:
         super().__init__()
@@ -70,55 +161,70 @@ class AccountsPage(QScrollArea):
         self.worker: AccountWorker | None = None
         self.closing = False
         self.loaded = False
-        self.view = AccountView(
-            "Disconnected", "Choose a Desktop client configuration, then connect YouTube.", False
-        )
+        self.view = AccountView("Disconnected", "Checking your YouTube connection…", False)
         self.setObjectName("accounts")
         self.setWidgetResizable(True)
         content = QWidget()
         self.setWidget(content)
         layout = QVBoxLayout(content)
-        layout.setContentsMargins(20, 20, 20, 20)
-        layout.setSpacing(16)
-        layout.addWidget(text("Accounts", "Title"))
+        layout.setContentsMargins(32, 32, 32, 32)
+        layout.setSpacing(20)
+        self.content_layout = layout
         layout.addWidget(
-            text(
-                "Connect the accounts you publish to. YouTube connects directly with Google; TikTok connects through your Buffer account. Publishing always needs separate consent and confirmation.",
-                "Muted",
-            )
+            header(
+                "Accounts", "Connect the platforms you upload to. Nothing uploads until you say so."
+            )[0]
         )
-        card = QFrame()
-        card.setObjectName("Card")
-        self.card, self.content_layout = card, layout
-        body = QVBoxLayout(card)
-        body.setContentsMargins(24, 24, 24, 24)
-        body.setSpacing(16)
-        body.addWidget(text("YouTube", "Heading"))
-        self.status = text("Disconnected", "Badge")
+        self.grid = CardGrid()
+        layout.addWidget(self.grid)
+        # Not yet supported: one even row of three, apart from the platforms that work.
+        layout.addWidget(text("COMING SOON", "Eyebrow"))
+        self.soon = CardGrid(minimum=200, maximum=3)
+        layout.addWidget(self.soon)
+        self.card, body = card(22, 14)
+        self.status = pill("Not connected")
+        body.addLayout(platform_top("youtube", "Uploads straight to your channel", self.status))
+        account = QHBoxLayout()
+        account.setSpacing(12)
+        self.avatar = QLabel()
+        self.avatar.setFixedSize(44, 44)
+        account.addWidget(self.avatar)
+        names = QVBoxLayout()
+        names.setSpacing(2)
+        self.details = text("", "Subheading")
+        self.permission = text("", "Muted")
+        names.addWidget(self.details)
+        names.addWidget(self.permission)
+        account.addLayout(names, 1)
+        self.account_row = QWidget()
+        self.account_row.setLayout(account)
+        body.addWidget(self.account_row)
         self.feedback = text(self.view.message, "Muted")
-        self.avatar = text("")
-        body.addWidget(self.avatar)
-        self.details = text("")
-        self.details.setTextInteractionFlags(self.details.textInteractionFlags())
-        self.config_status = text("Desktop client not configured", "Muted")
-        for item in (self.status, self.feedback, self.details, self.config_status):
-            body.addWidget(item)
-        self.diagnostics = Disclosure("Channel details")
+        body.addWidget(self.feedback)
+        self.checklist = Checklist(
+            [
+                (
+                    "Add your Google client file",
+                    "Open Setup",
+                    lambda: self.setup_requested.emit(),
+                ),
+                ("Connect your YouTube channel", "Connect", lambda: self.start("connect")),
+                (
+                    "Allow uploads",
+                    "Allow Uploads",
+                    self.confirm_upload_permission,
+                ),
+            ]
+        )
+        body.addWidget(self.checklist)
+        # Kept for tooltips and support; channel IDs are not shown on the card itself.
         self.technical = text("")
-        self.diagnostics.body.addWidget(self.technical)
-        body.addWidget(self.diagnostics)
+        self.technical.hide()
         self.progress = QProgressBar()
         self.progress.setRange(0, 0)
         self.progress.setTextVisible(False)
-        self.progress.setFixedHeight(5)
+        self.progress.setFixedHeight(4)
         body.addWidget(self.progress)
-        self.configure_button = QPushButton("Choose Desktop Client JSON…")
-        self.connect_button = QPushButton("Connect YouTube")
-        self.refresh_button = QPushButton("Refresh Channel")
-        self.disconnect_button = QPushButton("Disconnect…")
-        self.upload_permission = QPushButton("Authorize Uploads…")
-        self.upload_permission.clicked.connect(self.confirm_upload_permission)
-        self.cancel_button = QPushButton("Cancel")
         self.channels = QComboBox()
         self.channels.setMinimumWidth(0)
         self.channels.setSizeAdjustPolicy(
@@ -126,21 +232,35 @@ class AccountsPage(QScrollArea):
         )
         self.channels.setMinimumContentsLength(10)
         self.channels.setAccessibleName("Authorized channel to confirm")
-        self.confirm_button = QPushButton("Confirm Selected Channel")
-        self.choice_details = text("")
+        self.choice_details = text("", "Muted")
         self.channels.currentIndexChanged.connect(self.show_choice)
         body.addWidget(self.choice_details)
+        body.addWidget(self.channels)
+        self.configure_button = icon_button("Choose Google Client File…", "folder")
+        self.connect_button = icon_button("Connect YouTube", "link", role="Primary")
+        self.confirm_button = icon_button("Use This Channel", "check", role="Primary")
+        self.upload_permission = icon_button("Allow Uploads…", "upload")
+        self.upload_permission.clicked.connect(self.confirm_upload_permission)
+        self.refresh_button = icon_button("Check Again", "refresh")
+        self.disconnect_button = icon_button("Disconnect…", "logout", role="Danger")
+        self.cancel_button = icon_button("Cancel", "x")
+        self.setup_button = icon_button("Open Setup", "settings", role="Ghost")
+        self.setup_button.clicked.connect(self.setup_requested.emit)
+        actions = QWidget()
+        actions.setObjectName("ActionRow")
+        flow = FlowLayout(actions)
         for widget in (
-            self.configure_button,
             self.connect_button,
+            self.confirm_button,
+            self.upload_permission,
             self.refresh_button,
             self.disconnect_button,
-            self.upload_permission,
-            self.channels,
-            self.confirm_button,
             self.cancel_button,
+            self.setup_button,
         ):
-            body.addWidget(widget)
+            flow.addWidget(widget)
+        body.addStretch()
+        body.addWidget(actions)
         self.configure_button.clicked.connect(self.choose_config)
         self.connect_button.clicked.connect(lambda: self.start("connect"))
         self.refresh_button.clicked.connect(lambda: self.start("refresh"))
@@ -149,20 +269,20 @@ class AccountsPage(QScrollArea):
         self.confirm_button.clicked.connect(
             lambda: self.start("select", self.channels.currentData())
         )
-        layout.addWidget(card)
-        self.setup_guide = Disclosure("Google Cloud setup and connection options")
-        guide = self.setup_guide
-        guide_layout = guide.body
-        guide_layout.addWidget(self.configure_button)
-        guide_layout.addWidget(text(SETUP, "Muted"))
-        layout.addWidget(guide)
+        self.grid.add(self.card)
         layout.addStretch()
+        # One-time developer setup lives in Settings; the window places this section there.
+        self.setup_guide = Section(
+            "YouTube connection",
+            "ShortsScheduler signs in to YouTube with your own Google Cloud app. Do this once.",
+        )
+        self.setup_guide.body.addWidget(text(SETUP, "Muted"))
+        self.setup_status = pill("Not set up", "Warn")
+        self.setup_guide.body.addWidget(row(self.configure_button, self.setup_status))
         self.freshness = QTimer(self)
         self.freshness.setSingleShot(True)
         self.freshness.setInterval(5 * 60 * 1000)
         self.freshness.timeout.connect(self.expire_verification)
-        primary(self.connect_button)
-        primary(self.confirm_button)
         self.present(self.view)
 
     def activate(self) -> None:
@@ -185,7 +305,9 @@ class AccountsPage(QScrollArea):
         self.worker.result.connect(self.present)
         self.worker.progress.connect(self.feedback.setText)
         self.worker.finished.connect(self.finished)
-        self.status.setText("Connecting" if action == "connect" else "Verification pending")
+        self.status.setText(
+            state_label("Connecting" if action == "connect" else "Verification pending")[0]
+        )
         self.feedback.setText(
             "Starting browser authorization…" if action == "connect" else "Working…"
         )
@@ -226,7 +348,7 @@ class AccountsPage(QScrollArea):
     def present(self, view: AccountView) -> None:
         self.view = view
         self.avatar.clear()
-        self.avatar.hide()
+        self.avatar.setPixmap(pixmap("users", 22, theme.MUTED))
         if view.thumbnail:
             buffer = QBuffer()
             buffer.setData(QByteArray(view.thumbnail))
@@ -234,20 +356,19 @@ class AccountsPage(QScrollArea):
             reader = QImageReader(buffer)
             size = reader.size()
             if 0 < size.width() <= 2048 and 0 < size.height() <= 2048:
-                reader.setScaledSize(QSize(72, 72))
+                reader.setScaledSize(QSize(88, 88))
                 image = reader.read()
                 if not image.isNull():
-                    self.avatar.setPixmap(QPixmap.fromImage(image))
-                    self.avatar.show()
-        self.status.setText(view.state)
+                    self.avatar.setPixmap(rounded(QPixmap.fromImage(image), 44))
+        shown, tone = state_label(view.state)
+        self.status.setText(shown)
+        restyle(self.status, tone)
         self.feedback.setText(view.message)
-        self.config_status.setText(
-            "Desktop client configured"
-            if view.configured
-            else "Desktop client not configured or unavailable"
-        )
-        self.setup_guide.set_expanded(not view.configured)
         connection = view.connection
+        self.setup_button.setVisible(False)  # the checklist offers setup when it is needed
+        self.setup_status.setText("Set up" if view.configured else "Not set up")
+        restyle(self.setup_status, "Good" if view.configured else "Warn")
+        self.account_row.setVisible(connection is not None)
         self.details.setVisible(connection is not None)
         if connection:
             channel = connection.channel
@@ -257,15 +378,27 @@ class AccountsPage(QScrollArea):
                 f"Last verified: {timestamp(connection.verified_at)}\n"
                 f"Verified (UTC): {connection.verified_at}"
             )
-        self.diagnostics.setVisible(connection is not None)
-        self.configure_button.setVisible(connection is None and not view.choices)
-        self.connect_button.setVisible(connection is None and not view.choices)
+            self.details.setToolTip(self.technical.text())
+            self.permission.setText(
+                "Uploads allowed · checked " + timestamp(connection.verified_at)
+                if view.upload_allowed
+                else "Uploads not allowed yet · choose Allow Uploads"
+            )
+        self.checklist.update_steps(
+            [view.configured or connection is not None, connection is not None, view.upload_allowed]
+        )
+        guided = not self.checklist.complete and not view.choices
+        self.checklist.setVisible(guided)
+        # The checklist says what to do next; the message only adds something when it matters.
+        self.feedback.setVisible(not guided or view.message not in ROUTINE)
+        self.connect_button.setVisible(connection is None and not view.choices and not guided)
         self.refresh_button.setVisible(connection is not None)
         self.disconnect_button.setVisible(connection is not None)
-        self.upload_permission.setVisible(connection is not None)
+        self.upload_permission.setVisible(connection is not None and not guided)
         self.upload_permission.setText(
-            "Reauthorize Upload Permission…" if view.upload_allowed else "Authorize Uploads…"
+            "Sign In Again for Uploads…" if view.upload_allowed else "Allow Uploads…"
         )
+        restyle(self.upload_permission, "Ghost")
         self.channels.clear()
         for channel in view.choices:
             self.channels.addItem(f"{channel.title} · {channel.id}", channel.id)
@@ -289,7 +422,8 @@ class AccountsPage(QScrollArea):
         )
         self.choice_details.setVisible(channel is not None)
         self.choice_details.setText(
-            f"Confirm channel: {channel.title}\nChannel ID: {channel.id}\nHandle / identifier: {channel.handle or 'Not provided'}"
+            f"Choose the channel to upload to: {channel.title}"
+            + (f" · {channel.handle}" if channel.handle else "")
             if channel
             else ""
         )
@@ -348,10 +482,15 @@ class AccountsPage(QScrollArea):
             self.start("discard")
             return
         if self.view.connection and self.worker is None:
+            if not self.closing and not self.hold_refresh():
+                # Check again on its own, so uploads never wait for a manual "Check Again".
+                self.start("refresh")
+                return
+            self.freshness.start(60_000)  # an upload is about to use the account; try later
             self.present(
                 AccountView(
                     "Verification pending",
-                    "Last verification is over five minutes old. Refresh Channel to verify again; no background polling occurs.",
+                    "Checking again shortly, once the upload that is due has started.",
                     self.view.configured,
                     self.view.connection,
                 )

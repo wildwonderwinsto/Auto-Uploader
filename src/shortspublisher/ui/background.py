@@ -5,12 +5,22 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from PySide6.QtCore import QThread, QTimer, Signal
-from PySide6.QtWidgets import QCheckBox, QMessageBox, QPushButton, QScrollArea, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QCheckBox,
+    QHBoxLayout,
+    QMessageBox,
+    QPushButton,
+    QScrollArea,
+    QVBoxLayout,
+    QWidget,
+)
 
 from ..background import LaunchAgent, ServiceError
 from ..background_state import SERVICE_CONSENT
-from .components import Disclosure, primary
+from . import theme
+from .components import Section, card, flow, icon_button, pill, restyle
 from .formatting import timestamp
+from .icons import image, pixmap
 from .scheduling import text
 
 if TYPE_CHECKING:
@@ -56,13 +66,24 @@ class BackgroundPage(QScrollArea):
         content = QWidget()
         layout = QVBoxLayout(content)
         self.content_layout = layout
-        layout.setContentsMargins(28, 28, 28, 28)
-        layout.setSpacing(16)
+        layout.setContentsMargins(32, 32, 32, 32)
+        layout.setSpacing(18)
         layout.addWidget(text("Settings", "Title"))
-        layout.addWidget(text("Background Publishing", "Heading"))
         layout.addWidget(
+            text("Everything here is optional. Each section says what it does.", "Muted")
+        )
+        service, body = card(20, 12)
+        heading = QHBoxLayout()
+        heading.setSpacing(10)
+        heading.addWidget(image(pixmap("monitor", 20, theme.ACCENT_TEXT)))
+        heading.addWidget(text("Background uploading", "Heading"), 1)
+        self.state_pill = pill("Not checked")
+        heading.addWidget(self.state_pill)
+        body.addLayout(heading)
+        body.addWidget(
             text(
-                "Publish approved schedules while this window is closed. Your Mac must stay awake, logged in and online.",
+                "Keeps scheduled and auto uploads going while ShortsScheduler is closed. Your Mac "
+                "must stay awake, logged in and online.",
                 "Muted",
             )
         )
@@ -70,43 +91,86 @@ class BackgroundPage(QScrollArea):
         self.dashboard = text("Background service: not checked")
         self.service_status: str | None = None
         self.feedback = text("", "Muted")
-        layout.addWidget(self.feedback)
         self.feedback.hide()
-        self.advanced = Disclosure("Service options and diagnostics")
-        self.diagnostics = text("Status has not been checked.", "Muted")
-        self.advanced.body.addWidget(self.diagnostics)
-        layout.addWidget(self.status)
-        self.login = QCheckBox("Also start at login (requires Start once after enabling)")
-        layout.addWidget(self.login)
+        body.addWidget(self.status)
+        self.login = QCheckBox("Also start when I log in to my Mac")
+        self.login.setToolTip("Takes effect after the service has been started once")
+        body.addWidget(self.login)
         self.buttons: dict[str, QPushButton] = {}
-        for action, title in (
-            ("enable", "Enable Background Publishing…"),
-            ("start", "Start Background Service"),
-            ("stop", "Stop Background Service…"),
-            ("restart", "Restart Background Service…"),
-            ("disable", "Disable Background Publishing…"),
-            ("remove", "Remove Background Service…"),
-            ("status", "Refresh Service Status"),
+        for action, title, glyph, role in (
+            ("enable", "Turn On Background Uploading…", "power", "Primary"),
+            ("start", "Start", "play", "Primary"),
+            ("stop", "Stop…", "pause", ""),
+            ("restart", "Restart…", "refresh", ""),
+            ("disable", "Turn Off…", "power", ""),
+            ("remove", "Remove Service…", "trash", "Danger"),
+            ("status", "Check Status", "refresh", "Ghost"),
         ):
-            button = QPushButton(title)
+            button = icon_button(title, glyph, role=role)
             button.clicked.connect(lambda checked=False, a=action: self.act(a))
             self.buttons[action] = button
-            (
-                self.advanced.body
-                if action in {"restart", "disable", "remove", "status"}
-                else layout
-            ).addWidget(button)
-            if action in {"enable", "start"}:
-                primary(button)
-        self.quit_button = QPushButton("Stop Background Publishing and Quit…")
+        self.buttons["enable"].setAccessibleName("Enable Background Publishing…")
+        self.quit_button = icon_button("Stop and Quit…", "power")
+        self.quit_button.setAccessibleName("Stop Background Publishing and Quit…")
         self.quit_button.clicked.connect(self.stop_and_quit)
-        layout.addWidget(self.quit_button)
-        layout.addWidget(self.advanced)
-        self.advanced.body.addWidget(
-            text(
-                "Closing this window or quitting the interface leaves an explicitly started background service running. Pause All Scheduled Publishing prevents new starts. Stop waits for an active request; it does not delete remote content. A stopped service permits desktop scheduling while this interface remains open. Disable or Remove also turns off login startup.\n\nThis checkout and its Python environment must stay at their current paths. The service cannot publish while logged out or powered off and does not wake the Mac."
+        # Until the first status check, only the actions that always apply are offered.
+        for hidden in (
+            self.buttons["enable"],
+            self.buttons["start"],
+            self.buttons["stop"],
+            self.quit_button,
+        ):
+            hidden.hide()
+        body.addWidget(
+            flow(
+                self.buttons["enable"],
+                self.buttons["start"],
+                self.buttons["stop"],
+                self.quit_button,
             )
         )
+        body.addWidget(self.feedback)
+        # Less common service actions; their details are in the tooltip of the status line.
+        self.advanced = Section("")
+        self.diagnostics = text("Status has not been checked.", "Subtle")
+        self.diagnostics.hide()
+        self.advanced.body.addWidget(self.diagnostics)
+        self.advanced.body.addWidget(
+            flow(
+                self.buttons["restart"],
+                self.buttons["disable"],
+                self.buttons["remove"],
+                self.buttons["status"],
+            )
+        )
+        self.advanced.body.addWidget(
+            text(
+                "Quitting leaves a started service running. Stop waits for an upload in progress "
+                "and never deletes anything online. This folder and its Python environment must "
+                "stay where they are.",
+                "Subtle",
+            )
+        )
+        body.addWidget(self.advanced)
+        layout.addWidget(service)
+        # Sections from other pages are placed in these slots by the window.
+        self.limits_slot = QVBoxLayout()
+        layout.addLayout(self.limits_slot)
+        self.connections_slot = QVBoxLayout()
+        layout.addLayout(self.connections_slot)
+        self.hosting_slot = QVBoxLayout()
+        layout.addLayout(self.hosting_slot)
+        about, about_body = card(20, 8)
+        about_body.addWidget(text("About & privacy", "Heading"))
+        about_body.addWidget(
+            text(
+                "ShortsScheduler runs on this Mac. Your original video files are never changed, "
+                "moved or deleted. Sign-ins are kept in the macOS Keychain. Nothing uploads "
+                "without your approval.",
+                "Muted",
+            )
+        )
+        layout.addWidget(about)
         layout.addStretch()
         self.setWidget(content)
         self.timer = QTimer(self)
@@ -204,14 +268,21 @@ class BackgroundPage(QScrollArea):
             "Credentials and channel are checked before each upload. Global publishing and per-job approval are separate."
         )
         self.diagnostics.setText(value)
+        self.status.setToolTip(value)
+        running = bool(result["pid"])
+        self.state_pill.setText(
+            "Running" if running else "Set up · stopped" if result["enabled"] else "Off"
+        )
+        restyle(self.state_pill, "Good" if running else "Info" if result["enabled"] else "Neutral")
+        self.buttons["enable"].setVisible(not result["enabled"])
         self.status.setText(
             f"Background service: {result['status']}\n"
             + (
-                "Configured. Select Start to run it."
+                "Set up. Choose Start to run it."
                 if result["enabled"] and not result["requested"]
-                else "Enable background publishing to set it up."
+                else "Turn it on to set it up. Nothing is installed until you do."
                 if not result["enabled"]
-                else "Global publishing and each job’s background approval must also be enabled."
+                else "Auto uploading must also be on (sidebar), and each upload must allow background uploading."
             )
         )
         self.dashboard.setText(f"Background service: {result['status']}")

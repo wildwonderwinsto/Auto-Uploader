@@ -1,4 +1,4 @@
-"""Read-only channels.list adapter with bounded retries and sanitized errors."""
+"""Read-only channels.list / videos.list adapter with bounded retries and sanitized errors."""
 
 from dataclasses import dataclass
 from threading import Event
@@ -17,6 +17,23 @@ class Channel:
     handle: str = ""
     description: str = ""
     thumbnail: str = ""
+
+
+def counters(statistics: dict[str, Any]) -> dict[str, int]:
+    """YouTube sends counts as strings and omits hidden ones; keep only readable numbers."""
+    values = {}
+    for key, name in (
+        ("viewCount", "views"),
+        ("likeCount", "likes"),
+        ("commentCount", "comments"),
+        ("subscriberCount", "subscribers"),
+        ("videoCount", "videos"),
+    ):
+        try:
+            values[name] = int(statistics[key])
+        except (KeyError, TypeError, ValueError):
+            continue
+    return values
 
 
 class YouTubeClient:
@@ -62,13 +79,41 @@ class YouTubeClient:
             "identity",
         )
 
-    def request(self, tokens: Tokens, params: dict[str, str], cancel: Event) -> dict[str, Any]:
+    def statistics(
+        self, tokens: Tokens, channel_id: str, video_ids: list[str], cancel: Event
+    ) -> dict[str, Any]:
+        """Public counters for one channel and its uploaded videos. Read-only; nothing changes."""
+        result: dict[str, Any] = {"channel": {}, "videos": {}}
+        try:
+            body = self.request(tokens, {"id": channel_id, "part": "statistics"}, cancel)
+            for item in body.get("items", [])[:1]:
+                result["channel"] = counters(item.get("statistics", {}))
+            unique = list(dict.fromkeys(v for v in video_ids if v))
+            for start in range(0, min(len(unique), 500), 50):
+                params = {"id": ",".join(unique[start : start + 50]), "part": "statistics"}
+                body = self.request(tokens, params, cancel, endpoint="videos")
+                for item in body.get("items", []):
+                    if isinstance(item.get("id"), str):
+                        result["videos"][item["id"]] = counters(item.get("statistics", {}))
+        except (AttributeError, TypeError):
+            raise AccountError("YouTube returned unreadable statistics. Retry later.") from None
+        return result
+
+    def request(
+        self,
+        tokens: Tokens,
+        params: dict[str, str],
+        cancel: Event,
+        *,
+        endpoint: str = "channels",
+    ) -> dict[str, Any]:
+        assert endpoint in ("channels", "videos")
         for attempt in range(3):
             check_cancel(cancel)
             retry = False
             try:
                 with requests.get(
-                    "https://www.googleapis.com/youtube/v3/channels",
+                    f"https://www.googleapis.com/youtube/v3/{endpoint}",
                     params=params,
                     headers={"Authorization": f"Bearer {tokens.access}"},
                     timeout=(5, 15),

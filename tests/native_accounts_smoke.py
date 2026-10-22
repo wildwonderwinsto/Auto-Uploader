@@ -69,7 +69,7 @@ if args.phase == "prepare":
     capture("connecting-controlled")
     page.cancel_button.click()
     settle(app, page)
-    assert page.status.text() == "Disconnected"
+    assert page.status.text() == "Not connected"
     capture("cancelled")
     oauth.wait = False
     page.connect_button.click()
@@ -89,7 +89,7 @@ else:
     youtube.error = AccountError("Controlled offline test. Cached details retained.", "offline")
     page.refresh_button.click()
     settle(app, page)
-    assert page.status.text() == "Temporarily offline"
+    assert page.status.text() == "Offline"
     capture("offline-controlled")
     youtube.error = None
     page.refresh_button.click()
@@ -99,7 +99,7 @@ else:
     with patch.object(QMessageBox, "exec", return_value=QMessageBox.StandardButton.Yes):
         page.disconnect_button.click()
     settle(app, page)
-    assert page.status.text() == "Disconnected"
+    assert page.status.text() == "Not connected"
     assert service.repository.connection() is None
     assert credentials.get(removed_key) is None
     capture("disconnected-after-removal")

@@ -158,8 +158,8 @@ class CallbackListener:
                     return
                 listener.result = query
                 body = (
-                    b"<!doctype html><meta charset=utf-8><title>ShortsPublisher</title>"
-                    b"<p style='font:16px system-ui'>You can close this tab and return to ShortsPublisher.</p>"
+                    b"<!doctype html><meta charset=utf-8><title>ShortsScheduler</title>"
+                    b"<p style='font:16px system-ui'>You can close this tab and return to ShortsScheduler.</p>"
                 )
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -326,7 +326,7 @@ class BufferAuthority:
                 return renewed.access_token
         except Timeout:
             raise BufferError(
-                "Another ShortsPublisher process is renewing the Buffer sign-in. Try again shortly.",
+                "Another ShortsScheduler process is renewing the Buffer sign-in. Try again shortly.",
                 "network",
             ) from None
 
@@ -353,6 +353,10 @@ POSTS = """query Posts($input: PostsInput!, $first: Int) {
   posts(input: $input, first: $first) {
     edges { node { id status schedulingType dueAt sentAt externalLink assets { source } } }
   }
+}"""
+# Read-only. Buffer serves metrics only to a personal API key (insightsRead), not app clients.
+POST_METRICS = """query PostMetrics($input: PostInput!) {
+  post(input: $input) { id metrics { type value } metricsUpdatedAt }
 }"""
 DELETE_POST = """mutation DeletePost($input: DeletePostInput!) {
   deletePost(input: $input) { __typename ... on MutationError { message } }
@@ -432,6 +436,17 @@ class BufferAPI:
 
     def post(self, identity: str) -> dict[str, Any] | None:
         return self.call(POST, {"input": {"id": identity}}).get("post")
+
+    def post_metrics(self, identity: str) -> dict[str, int]:
+        """Counts Buffer has gathered for one post (daily); missing types mean "not reported"."""
+        post = self.call(POST_METRICS, {"input": {"id": identity}}).get("post") or {}
+        values: dict[str, int] = {}
+        for metric in post.get("metrics") or []:
+            try:
+                values[str(metric["type"])] = int(float(metric["value"]))
+            except (KeyError, TypeError, ValueError):
+                continue
+        return values
 
     def recent_posts(
         self, organization: str, channel: str, first: int = 50

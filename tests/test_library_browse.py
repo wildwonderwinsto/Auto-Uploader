@@ -222,10 +222,10 @@ class BrowseUiTests(unittest.TestCase):
         self.assertTrue(self.p.preview.video.frame.isNull())
         self.assertFalse(self.p.preview.seek.isEnabled())
 
-    def test_collapsing_library_does_not_start_work(self):
-        self.p.library_section.set_expanded(True)
+    def test_library_section_is_always_open_without_extra_work(self):
+        self.p.show_library()
         settle(self.app, self.p)
-        self.p.library_section.set_expanded(False)
+        self.assertFalse(self.p.library_section.content.isHidden())
         self.assertIsNone(self.p.worker)
 
     def test_removed_selection_does_not_keep_review_summary(self):

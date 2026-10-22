@@ -42,11 +42,11 @@ class HeadlineTests(unittest.TestCase):
 
     def test_active_says_when_it_can_post(self):
         self.assertIn(
-            "while ShortsPublisher is open", automation.headline(profile(), True, False, None)
+            "while ShortsScheduler is open", automation.headline(profile(), True, False, None)
         )
         background = profile(settings={"mode": "automatic", "background": True})
         self.assertIn(
-            "while ShortsPublisher is open", automation.headline(background, True, False, "Stopped")
+            "while ShortsScheduler is open", automation.headline(background, True, False, "Stopped")
         )
         self.assertIn("including while", automation.headline(background, True, False, "Running"))
         review = profile(settings={"mode": "review", "background": False})
@@ -98,7 +98,7 @@ class LayoutTests(unittest.TestCase):
         self.assertNotIn("Analytics", texts)
 
     def test_sidebar_shows_global_publishing_state(self):
-        self.assertIn("Automatic publishing", self.window.automatic.state.text())
+        self.assertIn("Auto uploading", self.window.automatic.state.text())
         self.assertTrue(self.window.automatic.state.isVisible())
 
     def test_stop_hidden_without_active_upload(self):
@@ -112,9 +112,10 @@ class LayoutTests(unittest.TestCase):
         self.app.processEvents()
         self.assertTrue(v.back_button.isVisible())
         self.assertTrue(v.import_button.isVisible())
-        for hidden in (v.reload_button, v.history_button, v.recurring_button):
+        for hidden in (v.reload_button, v.history_button):
             self.assertFalse(hidden.isVisible(), hidden.text())
-        self.assertIs(v.back_button.parentWidget(), v.import_button.parentWidget())
+        self.assertIsNone(v.recurring_button)  # recurring queues are created from Upload Queue
+        self.assertLess(v.back_button.y(), v.card.y())
         v.show_library()
         self.app.processEvents()
         self.assertTrue(v.reload_button.isVisible())
@@ -189,6 +190,8 @@ class SetupStepTests(unittest.TestCase):
             window.watching,
             window.automatic,
             window.background,
+            window.tiktok,
+            window.dashboard,
         ):
             c.stop_for_quit()
         window.close()

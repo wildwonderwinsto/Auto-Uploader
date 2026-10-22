@@ -317,7 +317,8 @@ class WorkflowTests(unittest.TestCase):
         identity = page.view.connection.channel.id
         self.assertNotIn(identity, page.details.text())
         self.assertIn(identity, page.technical.text())
-        self.assertFalse(page.diagnostics.toggle.isChecked())
+        self.assertTrue(page.technical.isHidden())
+        self.assertIn(identity, page.details.toolTip())
 
     def test_selection_from_library_reopens_same_video(self):
         self.landing()
@@ -354,14 +355,10 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(len(self.p.records), 1)
         self.assertTrue(self.p.editor.dirty)
 
-    def test_import_errors_expand_with_keyboard(self):
-        from PySide6.QtTest import QTest
-
+    def test_import_errors_are_shown_without_expanding(self):
         self.p.start("import_many", ["/missing/video.mp4"])
         settle(self.app, self.p)
         self.assertTrue(self.p.import_issues.isVisible())
-        self.p.import_issues.toggle.setFocus()
-        QTest.keyClick(self.p.import_issues.toggle, Qt.Key.Key_Space)
         self.assertTrue(self.p.import_error_text.isVisible())
         self.assertIn("video.mp4", self.p.import_error_text.text())
 

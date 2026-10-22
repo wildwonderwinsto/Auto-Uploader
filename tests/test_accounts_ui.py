@@ -11,7 +11,7 @@ from account_support import CHANNEL, CONFIG, ControlledOAuth, ControlledYouTube,
 from PySide6.QtCore import QEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QFileDialog, QMessageBox
-from support import settle
+from support import settle, shutdown
 
 from shortspublisher.accounts import AccountRepository, AccountService
 from shortspublisher.app import build
@@ -39,11 +39,7 @@ class AccountsUiTests(unittest.TestCase):
         settle(self.app, self.page)
 
     def tearDown(self):
-        self.window.close()
-        settle(self.app, self.page)
-        settle(self.app, self.window.videos)
-        self.window.deleteLater()
-        self.app.processEvents()
+        shutdown(self.app, self.window)
         self.temp.cleanup()
 
     def configure(self):
@@ -58,13 +54,13 @@ class AccountsUiTests(unittest.TestCase):
         self.configure()
         self.page.connect_button.click()
         settle(self.app, self.page)
-        self.assertEqual(self.page.status.text(), "Confirm channel")
+        self.assertEqual(self.page.status.text(), "Choose channel")
         self.page.confirm_button.click()
         settle(self.app, self.page)
         self.assertTrue(self.page.status.text().startswith("Connected"))
 
     def test_disconnected_guidance_and_unconfigured_connect(self):
-        self.assertEqual(self.page.status.text(), "Disconnected")
+        self.assertEqual(self.page.status.text(), "Not connected")
         self.page.connect_button.click()
         settle(self.app, self.page)
         self.assertIn("JSON", self.page.feedback.text())
@@ -89,9 +85,18 @@ class AccountsUiTests(unittest.TestCase):
         self.page.refresh_button.click()
         settle(self.app, self.page)
         self.assertEqual(self.youtube.calls, 2)
+        # A stale verification checks again by itself; no "Check Again" click is needed.
         self.page.expire_verification()
-        self.assertEqual(self.page.status.text(), "Verification pending")
-        self.assertIn("five minutes", self.page.feedback.text())
+        settle(self.app, self.page)
+        self.assertEqual(self.youtube.calls, 3)
+        self.assertTrue(self.page.status.text().startswith("Connected"))
+        # ...but never while an upload is due, because uploads need the account first.
+        self.page.hold_refresh = lambda: True
+        self.page.expire_verification()
+        self.assertIsNone(self.page.worker)
+        self.assertEqual(self.youtube.calls, 3)
+        self.assertEqual(self.page.status.text(), "Checking…")
+        self.assertIn("shortly", self.page.feedback.text())
 
     def test_connect_cancellation_responsive_repeated_clicks(self):
         self.configure()
@@ -105,7 +110,7 @@ class AccountsUiTests(unittest.TestCase):
         self.assertEqual(self.window.stack.currentWidget().objectName(), "settings")
         self.page.cancel_button.click()
         settle(self.app, self.page)
-        self.assertEqual(self.page.status.text(), "Disconnected")
+        self.assertEqual(self.page.status.text(), "Not connected")
         self.assertFalse(self.credentials.values)
         self.assertFalse(self.page.progress.isVisible())
 
@@ -135,7 +140,7 @@ class AccountsUiTests(unittest.TestCase):
         self.youtube.error = AccountError("Controlled offline test", "offline")
         self.page.refresh_button.click()
         settle(self.app, self.page)
-        self.assertEqual(self.page.status.text(), "Temporarily offline")
+        self.assertEqual(self.page.status.text(), "Offline")
         self.assertIn(CHANNEL.id, self.page.technical.text())
         self.assertNotIn(CHANNEL.id, self.page.details.text())
         self.assertTrue(self.credentials.values)
@@ -148,7 +153,7 @@ class AccountsUiTests(unittest.TestCase):
         with patch.object(QMessageBox, "exec", return_value=QMessageBox.StandardButton.Yes):
             self.page.disconnect_button.click()
         settle(self.app, self.page)
-        self.assertEqual(self.page.status.text(), "Disconnected")
+        self.assertEqual(self.page.status.text(), "Not connected")
         self.assertFalse(self.credentials.values)
         self.assertFalse(self.page.details.isVisible())
 

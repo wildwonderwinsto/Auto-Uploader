@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from pathlib import Path
 from threading import Event
 from typing import TYPE_CHECKING, Any
@@ -32,8 +33,10 @@ from PySide6.QtWidgets import (
 
 from ..automation import CONSENT, AutomationService, title_for
 from ..cadence import Rule
-from .components import Disclosure, day_row, natural, primary
+from . import theme
+from .components import CardGrid, Section, card, day_row, flow, icon_button, natural
 from .formatting import system_zone, time_pattern, timestamp
+from .icons import image, logo, pixmap
 from .recurring import outcome, rule_label
 from .scheduling import text
 from .watching import FolderConsent
@@ -211,7 +214,7 @@ class ProfileEditor(QDialog):
         for day, name in zip(self.days, DAY_NAMES, strict=True):
             day.setChecked(True)
             day.setAccessibleName(name)
-        self.background = QCheckBox("Also post while ShortsPublisher is closed")
+        self.background = QCheckBox("Also post while ShortsScheduler is closed")
         self.background.setToolTip(
             "Requires Background Publishing to be enabled and started in Settings"
         )
@@ -251,7 +254,7 @@ class ProfileEditor(QDialog):
         self.day_preset.addItems(["Every day", "Weekdays", "Weekends", "Custom days"])
         self.day_preset.currentIndexChanged.connect(self.set_days)
         body.addWidget(self.day_preset)
-        days_box = Disclosure("Posting days", expanded=True)
+        days_box = Section("Posting days")
         days_box.body.addWidget(day_row(list(self.days)))
         body.addWidget(days_box)
         pages[0].addWidget(self.background)
@@ -454,6 +457,19 @@ class AutomationWorker(QThread):
     def run(self) -> None:
         try:
             result: dict[str, Any] = {}
+            if self.action == "load" and not self.service.library.path.exists():
+                # No library yet: nothing to show, and reading must not create one.
+                self.result.emit(
+                    {
+                        "state": {"profiles": [], "decisions": []},
+                        "recurring": {"items": [], "plans": [], "control": {"daily_limit": 3}},
+                        "folders": [],
+                        "files": {},
+                        "account": {},
+                    }
+                )
+                return
+            self.service.library.initialize()
             if self.action == "folder_preview":
                 result["folder_proposal"] = self.scanner.preview(self.argument, self.cancel)
             elif self.action == "folder_add":
@@ -500,16 +516,16 @@ def headline(p: dict[str, Any], watching: bool, global_paused: bool, service: st
     if p["settings"]["mode"] == "review":
         return "Active · new videos wait for your review before they are queued"
     if p["settings"]["background"] and service == "Running":
-        return "Active · posts on schedule, including while ShortsPublisher is closed"
-    return "Active · posts on schedule while ShortsPublisher is open"
+        return "Active · posts on schedule, including while ShortsScheduler is closed"
+    return "Active · posts on schedule while ShortsScheduler is open"
 
 
 def runs_when(p: dict[str, Any], service: str | None) -> str:
     state = f"Background service: {service or 'not checked'}"
     if not p["settings"]["background"]:
-        return f"Posts only while ShortsPublisher is open · {state}"
+        return f"Posts only while ShortsScheduler is open · {state}"
     if service == "Running":
-        return f"Also posts while ShortsPublisher is closed · {state}"
+        return f"Also posts while ShortsScheduler is closed · {state}"
     return f"Background posting allowed, but it only happens once the service runs (Settings) · {state}"
 
 
@@ -520,7 +536,11 @@ class AutomationController(QObject):
         super().__init__(window)
         self.service, self.window = service, window
         self.worker: AutomationWorker | None = None
-        self.editor: ProfileEditor | None = None
+        # The editor shown for New/Edit; the window swaps in the all-platform AutoUploadEditor.
+        self.editor: Any = None
+        self.editor_factory: Callable[[AutomationController, dict[str, Any] | None], Any] = (
+            ProfileEditor
+        )
         self.closing = False
         self.pending: dict[str, Any] = {}
         self.data: dict[str, Any] = {"profiles": [], "decisions": []}
@@ -535,74 +555,90 @@ class AutomationController(QObject):
         content = QWidget()
         body = QVBoxLayout(content)
         self.body = body
-        body.setContentsMargins(28, 28, 28, 28)
-        body.setSpacing(14)
-        body.addWidget(text("Automatic Posting", "Title"))
-        body.addWidget(
+        body.setContentsMargins(32, 32, 32, 32)
+        body.setSpacing(18)
+        top = QHBoxLayout()
+        names = QVBoxLayout()
+        names.setSpacing(4)
+        names.addWidget(text("Auto Upload", "Title"))
+        names.addWidget(
             text(
-                "Post new videos from a watched folder on a schedule you approve. Videos already in the folder are never posted.",
+                "Add videos to a folder and they upload by themselves, on your schedule, to every "
+                "platform you pick.",
                 "Muted",
             )
         )
-        body.addWidget(text("YouTube Automations", "Heading"))
-        self.new = QPushButton("New YouTube Automation…")
-        primary(self.new)
+        top.addLayout(names, 1)
+        self.new = icon_button("New Auto Upload…", "plus", role="Primary")
         self.new.clicked.connect(lambda: self.start("open"))
-        body.addWidget(self.new)
+        top.addWidget(self.new, 0, Qt.AlignmentFlag.AlignBottom)
+        body.addLayout(top)
+        # Shown until the first auto upload exists.
+        self.intro = CardGrid(minimum=200, spacing=14, maximum=3)
+        for number, glyph, title, detail in (
+            (1, "folder", "Pick a folder", "Only new videos you add later are uploaded."),
+            (2, "edit", "Write the details once", "One title, description and tags for all."),
+            (3, "calendar", "Choose times and platforms", "YouTube, TikTok, or both."),
+        ):
+            tile, tile_body = card(16, 6, "Tile")
+            tile_body.addWidget(image(pixmap(glyph, 22, theme.ACCENT_TEXT)))
+            tile_body.addWidget(text(f"{number}. {title}", "Subheading"))
+            tile_body.addWidget(text(detail, "Subtle"))
+            self.intro.add(tile)
+        body.addWidget(self.intro)
+
+        self.youtube_card, youtube = card(20, 12)
+        heading = QHBoxLayout()
+        heading.setSpacing(10)
+        heading.addWidget(image(logo("youtube", 24)))
+        heading.addWidget(text("YouTube", "Heading"), 1)
         self.profiles = QComboBox()
+        self.profiles.setAccessibleName("YouTube auto uploads")
         self.profiles.setSizeAdjustPolicy(
             QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
         )
         self.profiles.currentIndexChanged.connect(self.render)
-        body.addWidget(self.profiles)
-        self.headline = text("No YouTube automations yet", "Badge")
-        body.addWidget(self.headline)
+        heading.addWidget(self.profiles)
+        youtube.addLayout(heading)
+        self.headline = text("No YouTube auto uploads yet", "Notice")
+        youtube.addWidget(self.headline)
         self.status = text(
-            "Choose New YouTube Automation… to pick a folder, channel, video details and schedule. Manual importing and publishing remain available in Videos."
+            "Choose New Auto Upload to pick a folder, details, times and platforms.", "Muted"
         )
-        body.addWidget(self.status)
+        youtube.addWidget(self.status)
         self.activity = QListWidget()
         self.activity.setWordWrap(True)
-        self.activity.setFixedHeight(190)
+        self.activity.setFixedHeight(170)
         self.activity.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        body.addWidget(self.activity)
+        youtube.addWidget(self.activity)
         self.buttons: dict[str, QPushButton] = {}
-        for action, label in (
-            ("pause", "Pause"),
-            ("resume", "Resume"),
-            ("edit", "Edit…"),
-            ("review", "Open Selected Video"),
-            ("queue", "View Queue"),
-            ("history", "Upload History"),
-            ("disable", "Revoke Approval…"),
-            ("remove", "Remove…"),
+        for action, label, glyph, role in (
+            ("pause", "Pause", "pause", ""),
+            ("resume", "Resume", "play", "Primary"),
+            ("edit", "Edit…", "edit", ""),
+            ("review", "Open Selected Video", "film", ""),
+            ("queue", "Schedule", "calendar", "Ghost"),
+            ("history", "Upload History", "history", "Ghost"),
+            ("disable", "Turn Off…", "power", "Danger"),
+            ("remove", "Remove…", "trash", "Danger"),
         ):
-            button = QPushButton(label)
+            button = icon_button(label, glyph, role=role)
             button.clicked.connect(lambda checked=False, a=action: self.action(a))
             self.buttons[action] = button
-            body.addWidget(button)
-        # App-wide control: kept apart from the per-automation actions above.
-        body.addSpacing(6)
-        body.addWidget(text("Stop everything at once:", "Muted"))
-        global_pause = QPushButton("Pause All Automatic Publishing")
-        global_pause.clicked.connect(self.pause_all)
-        body.addWidget(global_pause)
-        self.feedback = text("")
-        body.addWidget(self.feedback)
-        explained = Disclosure("How pausing works")
-        explained.body.addWidget(
-            text(
-                "Pause stops this automation from queuing or posting new videos. Pause All Automatic Publishing stops every scheduled and automatic upload in the app. Pausing a watched folder (Videos → Automatically Import Videos) stops new files being discovered. The background service is controlled in Settings. None of these delete videos already on YouTube.",
-                "Muted",
-            )
-        )
-        body.addWidget(explained)
-        diagnostics = Disclosure("Technical details")
+        self.buttons["disable"].setAccessibleName("Revoke Approval…")
+        youtube.addWidget(flow(*self.buttons.values()))
+        self.feedback = text("", "Muted")
+        youtube.addWidget(self.feedback)
+        # Raw profile and decisions, for support; available as a tooltip on the headline.
         self.details = QPlainTextEdit()
         self.details.setReadOnly(True)
-        self.details.setFixedHeight(180)
-        diagnostics.body.addWidget(self.details)
-        body.addWidget(diagnostics)
+        self.details.hide()
+        body.addWidget(self.youtube_card)
+        # TikTok auto uploads and watched folders are placed here by the window.
+        self.tiktok_slot = QVBoxLayout()
+        body.addLayout(self.tiktok_slot)
+        self.folders_slot = QVBoxLayout()
+        body.addLayout(self.folders_slot)
         body.addStretch()
         self.page.setWidget(content)
         self.summary = text("Automatic Posting · no profile loaded.", "Muted")
@@ -707,6 +743,7 @@ class AutomationController(QObject):
             for folder in self.folders:
                 self.editor.folder.addItem(folder["name"], folder["id"])
             self.editor.folder.setCurrentIndex(self.editor.folder.findData(result["folder_id"]))
+            self.window.watching.activate()
         if "proposal" in result and self.editor:
             confirmation = ProfileConsent(result["proposal"], self.editor)
             if confirmation.exec() == QDialog.DialogCode.Accepted and all(
@@ -717,15 +754,18 @@ class AutomationController(QObject):
             confirmation.deleteLater()
         if "approved" in result and self.editor:
             self.editor.dirty = False
-            self.editor.accept()
             self.feedback.setText(
-                "Profile enabled. Global publishing and the background service were not enabled. Add a new completed matching video after this approval."
+                "Auto upload turned on. Videos added to the folder from now on will upload on schedule once Auto uploading is on in the sidebar."
             )
+            if hasattr(self.editor, "approved"):
+                self.editor.approved()  # other platforms ask for their own approval next
+            else:
+                self.editor.accept()
         if (action == "open" or "edit_id" in result) and "state" in result and not self.editor:
             profile = next(
                 (p for p in self.data["profiles"] if p["id"] == result.get("edit_id")), None
             )
-            self.editor = ProfileEditor(self, profile)
+            self.editor = self.editor_factory(self, profile)
             self.editor.exec()
             self.editor.deleteLater()
             self.editor = None
@@ -749,11 +789,18 @@ class AutomationController(QObject):
         for key in ("pause", "resume", "disable", "edit", "remove", "review"):
             self.buttons[key].setVisible(p is not None)
         self.activity.setVisible(p is not None)  # no empty list box before the first automation
-        self.profiles.setVisible(bool(self.data["profiles"]))
+        self.profiles.setVisible(len(self.data["profiles"]) > 1)
+        tiktok = getattr(self.window, "tiktok", None)
+        self.intro.setVisible(
+            not self.data["profiles"] and not (tiktok and tiktok.data["profiles"])
+        )
+        # A platform's card appears once it has an auto upload; until then the steps explain.
+        self.youtube_card.setVisible(any(not x["removed"] for x in self.data["profiles"]))
         if not p:
-            self.headline.setText("No YouTube automations yet")
+            self.headline.setText("No YouTube auto uploads yet")
             self.status.setText(
-                "Choose New YouTube Automation… to pick a folder, channel, video details and schedule. Manual importing and publishing remain available in Videos."
+                "Choose New Auto Upload to pick a folder, details, times and platforms. You can "
+                "still upload single videos from Videos."
             )
             return
         plan = next((x for x in self.recurring["plans"] if x["id"] == p["plan_id"]), None)
@@ -814,6 +861,7 @@ class AutomationController(QObject):
         self.details.setPlainText(
             json.dumps({"profile": p, "decisions": decisions}, indent=2, ensure_ascii=False)
         )
+        self.headline.setToolTip(f"{p['name']} · approved {timestamp(p['consent_at'])}")
 
     def action(self, action: str) -> None:
         p = self.current()

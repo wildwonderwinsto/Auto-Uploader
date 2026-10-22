@@ -77,9 +77,7 @@ class VideosUiTests(unittest.TestCase):
         self.assertIn("160 × 240", self.page.details.toPlainText())
         self.assertIn("h264", self.page.details.toPlainText())
         self.assertIn("aac", self.page.details.toPlainText())
-        self.assertEqual(
-            self.page.readiness.text(), "Ready for YouTube Shorts · local checks passed"
-        )
+        self.assertEqual(self.page.readiness.text(), "Fits")
         self.assertFalse(self.page.empty.isVisible())
         self.assertEqual(self.page.thread(), QThread.currentThread())
         with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes):
@@ -193,9 +191,7 @@ class VideosUiTests(unittest.TestCase):
         self.page.service.inspector = Inspector()
         self.page.refresh()
         settle(self.app, self.page)
-        self.assertEqual(
-            self.page.readiness.text(), "Ready for YouTube Shorts · local checks passed"
-        )
+        self.assertEqual(self.page.readiness.text(), "Fits")
 
     def test_small_layout_long_filename(self):
         source = Path(self.temp.name) / ("雪" * 70 + ".mp4")

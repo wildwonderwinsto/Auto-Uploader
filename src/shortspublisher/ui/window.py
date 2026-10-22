@@ -2,8 +2,9 @@
 
 import logging
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 
-from PySide6.QtCore import QEvent, QObject, Qt, QTimer
+from PySide6.QtCore import QEvent, QObject, QSize, Qt, QTimer
 from PySide6.QtGui import QCloseEvent, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QButtonGroup,
@@ -20,7 +21,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..accounts import AccountService, AccountView
+from ..accounts import AccountService
 from ..automation import AutomationService
 from ..background import LaunchAgent
 from ..credentials import KeychainSecrets
@@ -31,15 +32,16 @@ from ..scheduling import ScheduleService
 from ..tiktok import TikTokService
 from ..uploads import UploadService
 from ..watching import WatchService
-from .accounts import AccountsPage
+from . import icons, theme
+from .accounts import AccountsPage, coming_soon
 from .automation import AutomationController
+from .autoupload import AutoUploadEditor
 from .background import BackgroundPage
-from .components import Disclosure, primary, tidy_buttons
+from .components import card, divider, icon_button, row, tidy_buttons
+from .dashboard import DashboardPage
 from .execution import ExecutionController
-from .formatting import upload_status
 from .recurring import RecurringController
 from .scheduling import ScheduleController
-from .theme import SPACE
 from .tiktok import TikTokController
 from .uploads import UploadPanel
 from .videos import VideosPage
@@ -47,67 +49,26 @@ from .watching import WatchPanel
 
 logger = logging.getLogger(__name__)
 
+APP_NAME = "ShortsScheduler"
+
 
 @dataclass(frozen=True)
 class Page:
     key: str
     title: str
+    glyph: str
     purpose: str
-    heading: str
-    detail: str
+    nav: str = ""  # the sidebar entry that shows this page, when it has none of its own
 
 
 PAGES = (
-    Page(
-        "dashboard",
-        "Dashboard",
-        "What is scheduled, what needs attention, and what was published.",
-        "A home for your next release",
-        "Review a finished video, authorize its exact publishing plan, and follow its upload here.",
-    ),
-    Page(
-        "videos",
-        "Videos",
-        "Prepare your short-form videos for publishing.",
-        "Your videos will start here",
-        "Import, inspect and review a video before explicitly confirming a Private or Public upload.",
-    ),
-    Page(
-        "queue",
-        "Publishing Queue",
-        "Follow each video from preparation to publication.",
-        "A clear path to publication",
-        "Publishing queues and automatic posting are not implemented. Upload one reviewed video privately from Videos.",
-    ),
-    Page(
-        "calendar",
-        "Calendar",
-        "Give every release its own moment.",
-        "Plan your publishing rhythm",
-        "Calendar planning, time zone controls, and scheduled publication are not implemented yet.",
-    ),
-    Page(
-        "automation",
-        "Automatic Posting",
-        "Configure approved folder publishing.",
-        "Automatic Posting",
-        "Explicit standing approval for matching future files.",
-    ),
-    Page(
-        "accounts",
-        "Accounts",
-        "Manage the channels you publish to.",
-        "YouTube comes first",
-        "Connect and verify your YouTube channel. Uploads require separate permission and confirmation.",
-    ),
-    Page(
-        "settings",
-        "Settings",
-        "Make this workspace your own.",
-        "A focused foundation",
-        "Preferences are not implemented yet. This version uses the ShortsStudio-inspired "
-        "dark theme. Account, publishing, and notification settings will follow.",
-    ),
+    Page("dashboard", "Dashboard", "dashboard", "Upcoming and recent uploads on every platform"),
+    Page("videos", "Videos", "videos", "Add videos, write their details and upload them"),
+    Page("queue", "Schedule", "calendar", "Everything waiting to upload, and when"),
+    Page("calendar", "Calendar", "calendar", "Your uploads by day", nav="queue"),
+    Page("automation", "Auto Upload", "auto", "Upload new videos from a folder automatically"),
+    Page("accounts", "Accounts", "accounts", "Connect the platforms you upload to"),
+    Page("settings", "Settings", "settings", "Background uploading, limits and connections"),
 )
 
 
@@ -129,7 +90,7 @@ class MainWindow(QMainWindow):
         background: LaunchAgent | None = None,
     ) -> None:
         super().__init__()
-        self.setWindowTitle("ShortsPublisher")
+        self.setWindowTitle(APP_NAME)
         self.setMinimumSize(760, 560)
         self.resize(1180, 780)
         root = QWidget()
@@ -139,19 +100,23 @@ class MainWindow(QMainWindow):
         layout.setSpacing(0)
         rail = QFrame()
         rail.setObjectName("Rail")
-        rail.setFixedWidth(214)
+        rail.setFixedWidth(220)
         nav = QVBoxLayout(rail)
-        nav.setContentsMargins(16, 28, 16, 20)
-        nav.setSpacing(8)
+        nav.setContentsMargins(14, 22, 14, 16)
+        nav.setSpacing(4)
         nav.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
-        nav.addWidget(label("ShortsPublisher", "Brand", wrap=False))
-        nav.addWidget(label("From creation to release", "Muted"))
-        nav.addSpacing(28)
-        nav.addWidget(label("WORKSPACE", "Eyebrow"))
+        brand = QHBoxLayout()
+        brand.setContentsMargins(6, 0, 0, 0)
+        brand.setSpacing(10)
+        brand.addWidget(icons.image(icons.mark(30)))
+        brand.addWidget(label(APP_NAME, "Brand", wrap=False), 1)
+        nav.addLayout(brand)
+        nav.addSpacing(22)
         self.buttons: dict[str, QPushButton] = {}
         self.group = QButtonGroup(self)
         self.group.setExclusive(True)
         self.stack = QStackedWidget()
+        self.stack.setObjectName("Pages")
         self.indices: dict[str, int] = {}
         self.accounts = AccountsPage(accounts)
         self.accounts.idle.connect(self._finish_close)
@@ -160,8 +125,6 @@ class MainWindow(QMainWindow):
         self.watching = WatchPanel(WatchService(service))
         self.watching.idle.connect(self._finish_close)
         self.watching.library_changed.connect(self.videos.discovery_changed)
-        self.videos.content_layout.insertWidget(4, self.watching)
-        self.videos.watch_panel = self.watching
         QTimer.singleShot(0, self.watching.activate)
         self.schedules = ScheduleController(
             scheduling or ScheduleService(uploads.store.library), self
@@ -169,18 +132,21 @@ class MainWindow(QMainWindow):
         self.schedules.idle.connect(self._finish_close)
         self.schedule_panel = QWidget()
         schedule_layout = QVBoxLayout(self.schedule_panel)
+        schedule_layout.setContentsMargins(0, 4, 0, 4)
+        schedule_layout.setSpacing(12)
+        schedule_layout.addWidget(label("Schedule a YouTube upload", "Heading"))
         self.schedule_reason = label(
-            "Save Public metadata and complete review, then connect the intended channel."
+            "Save Public metadata and complete review, then connect the intended channel.", "Muted"
         )
         schedule_layout.addWidget(self.schedule_reason)
-        self.schedule_button = QPushButton("Schedule Video…")
-        primary(self.schedule_button)
+        self.schedule_button = icon_button("Pick a Time…", "calendar", role="Primary")
         self.schedule_button.clicked.connect(self.schedule_video)
-        schedule_layout.addWidget(self.schedule_button)
+        schedule_layout.addWidget(self.schedule_button, 0, Qt.AlignmentFlag.AlignLeft)
+        schedule_layout.addStretch()
         self.uploads = UploadPanel(uploads)
-        self.history_button = QPushButton("Upload History")
+        self.history_button = icon_button("Upload History", "history")
         self.history_button.clicked.connect(self.show_upload_history)
-        self.videos.action_layout.insertWidget(2, self.history_button)
+        self.videos.action_layout.insertWidget(0, self.history_button)
         self.videos.history_button = self.history_button
         self.automatic = ExecutionController(
             AutomaticPublisher(self.schedules.service, uploads), self
@@ -191,11 +157,7 @@ class MainWindow(QMainWindow):
         self.automation = AutomationController(AutomationService(self.schedules.service), self)
         self.automation.idle.connect(self._finish_close)
         self.automatic.recurring_updated.connect(self.recurring.render)
-        self.schedules.queue.body.insertWidget(2, self.recurring.queue)
-        self.schedules.calendar.body.insertWidget(2, self.recurring.calendar)
-        self.videos.recurring_button = QPushButton("Recurring Posting…")
-        self.videos.recurring_button.clicked.connect(lambda: self.recurring.start("open"))
-        self.videos.action_layout.insertWidget(3, self.videos.recurring_button)
+        self.schedules.queue.recurring_slot.addWidget(self.recurring.queue)
         self.background = BackgroundPage(background or LaunchAgent(uploads.store.library), self)
         self.background.idle.connect(self._finish_close)
         self.background.status_changed.connect(self.automation.render)
@@ -207,16 +169,43 @@ class MainWindow(QMainWindow):
         )
         self.tiktok.idle.connect(self._finish_close)
         self.videos.tabs.addTab(self.tiktok.video_panel, "TikTok")
-        accounts_layout = self.accounts.content_layout
-        accounts_layout.insertWidget(
-            accounts_layout.indexOf(self.accounts.card) + 1, self.tiktok.card
+        # One set of details: TikTok's only own setting sits with them, and its caption follows them.
+        self.videos.editor.tiktok_slot.insertWidget(0, self.tiktok.ai_field)
+        self.videos.editor.changed.connect(
+            lambda: self.tiktok.follow_details(self.videos.editor.value())
         )
-        settings_layout = self.background.content_layout
-        settings_layout.insertWidget(
-            settings_layout.indexOf(self.background.advanced) + 1, self.tiktok.hosting
+        self.tiktok.changed.connect(self.mark_tiktok_posts)
+        self.videos.when_changed = self.tiktok.set_when
+        self.tiktok.set_when("now")
+        self.accounts.grid.add(self.tiktok.card)
+        for platform in ("instagram", "facebook", "snapchat"):
+            self.accounts.soon.add(coming_soon(platform))
+        self.accounts.setup_requested.connect(lambda: self.navigate("settings"))
+        self.accounts.hold_refresh = self.upload_due_soon
+        self.uploads.fix_button.clicked.connect(lambda: self.navigate("accounts"))
+        # Settings: one card per topic, each with a plain explanation.
+        connections, connections_body = card(20, 14)
+        connections_body.addWidget(label("Connections · one-time setup", "Heading"))
+        connections_body.addWidget(
+            label(
+                "Developer details each platform needs before you can connect it in Accounts. "
+                "You only do this once.",
+                "Muted",
+            )
         )
-        self.automation.body.insertWidget(self.automation.body.count() - 1, self.tiktok.automation)
-        self.schedules.queue.body.insertWidget(3, self.tiktok.queue)
+        connections_body.addWidget(self.accounts.setup_guide)
+        connections_body.addWidget(divider())
+        connections_body.addWidget(self.tiktok.client_setup)
+        connections_body.addWidget(divider())
+        connections_body.addWidget(self.tiktok.insights_setup)
+        self.background.connections_slot.addWidget(connections)
+        self.background.hosting_slot.addWidget(self.tiktok.hosting)
+        self.automation.tiktok_slot.addWidget(self.tiktok.automation)
+        self.automation.folders_slot.addWidget(self.watching)
+        self.automation.editor_factory = lambda controller, profile: AutoUploadEditor(
+            controller, self.tiktok, profile
+        )
+        self.schedules.queue.tiktok_slot.addWidget(self.tiktok.queue)
         self.uploads.changed.connect(self.videos.tabs.resize_to_current)
         self.uploads.idle.connect(self._finish_close)
         self.uploads.idle.connect(self.update_upload_context)
@@ -225,22 +214,32 @@ class MainWindow(QMainWindow):
         self.videos.idle.connect(self.update_upload_context)
         self.videos.editor.changed.connect(self.update_upload_context)
         self.videos.tabs.currentChanged.connect(self.update_upload_context)
-        for index, page in enumerate(PAGES):
-            if page.key == "accounts":
-                nav.addSpacing(16)
-                nav.addWidget(label("MANAGE", "Eyebrow"))
-            button = QPushButton(page.title)
-            button.setObjectName("Nav")
-            button.setCheckable(True)
-            button.setCursor(Qt.CursorShape.PointingHandCursor)
-            button.setAccessibleName(page.title)
-            button.setToolTip(f"{page.purpose} (Ctrl+{index + 1})")
-            button.clicked.connect(lambda checked=False, key=page.key: self.navigate(key))
-            shortcut = QShortcut(QKeySequence(f"Ctrl+{index + 1}"), self)
-            shortcut.activated.connect(lambda key=page.key: self.navigate(key))
-            self.group.addButton(button)
-            self.buttons[page.key] = button
-            nav.addWidget(button)
+        self.dashboard = DashboardPage(self)
+        for schedule_page in (self.schedules.queue, self.schedules.calendar):
+            self.dashboard.entries_changed.connect(schedule_page.render_agenda)
+        self.accounts.state_changed.connect(lambda _: self.dashboard.refresh())
+        for signal in (
+            self.uploads.changed,
+            self.automatic.changed,
+            self.automatic.recurring_updated,
+            self.tiktok.changed,
+        ):
+            signal.connect(self.dashboard.schedule)
+        limits, limits_body = card(20, 10)
+        limits_body.addWidget(label("Daily upload limit", "Heading"))
+        limits_body.addWidget(
+            label(
+                "The most scheduled and automatic uploads ShortsScheduler starts in one day, "
+                "across all your schedules. Uploads you start by hand don't count.",
+                "Muted",
+            )
+        )
+        self.automatic.limit.setPrefix("")
+        self.automatic.limit.setSuffix(" per day")
+        self.automatic.save_limit.setText("Save")
+        limits_body.addWidget(row(self.automatic.limit, self.automatic.save_limit))
+        self.background.limits_slot.addWidget(limits)
+        for page in PAGES:
             self.indices[page.key] = self.stack.addWidget(
                 self.videos
                 if page.key == "videos"
@@ -254,100 +253,110 @@ class MainWindow(QMainWindow):
                 if page.key == "calendar"
                 else self.background
                 if page.key == "settings"
-                else self._page(page)
+                else self.dashboard
             )
-        nav.addSpacing(16)
-        nav.addWidget(self.automatic.state)
-        nav.addWidget(self.automatic.button)
+        for index, page in enumerate(p for p in PAGES if not p.nav):
+            if page.key == "accounts":
+                nav.addSpacing(18)
+                manage = label("MANAGE", "Eyebrow")
+                manage.setContentsMargins(12, 0, 0, 4)
+                nav.addWidget(manage)
+            button = QPushButton(page.title)
+            button.setObjectName("Nav")
+            button.setIcon(icons.icon(page.glyph, theme.MUTED, theme.ACCENT_TEXT))
+            button.setIconSize(QSize(18, 18))
+            button.setCheckable(True)
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            button.setAccessibleName(page.title)
+            button.setToolTip(f"{page.purpose} (Ctrl+{index + 1})")
+            button.clicked.connect(lambda checked=False, key=page.key: self.navigate(key))
+            shortcut = QShortcut(QKeySequence(f"Ctrl+{index + 1}"), self)
+            shortcut.activated.connect(lambda key=page.key: self.navigate(key))
+            self.group.addButton(button)
+            self.buttons[page.key] = button
+            nav.addWidget(button)
         nav.addStretch()
-        nav.addWidget(label("SHORTSPUBLISHER", "Eyebrow"))
-        nav.addWidget(label("Local library · YouTube · TikTok", "Muted"))
+        status, status_layout = card(14, 8, "RailStatus")
+        status_layout.addWidget(self.automatic.state)
+        status_layout.addWidget(self.automatic.button)
+        nav.addWidget(status)
         navigation = QScrollArea()
-        navigation.setFixedWidth(224)
+        navigation.setFixedWidth(220)
         navigation.setWidgetResizable(True)
         navigation.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         navigation.setWidget(rail)
         layout.addWidget(navigation)
         layout.addWidget(self.stack, 1)
         tidy_buttons(self.stack)
+        self.adopt_unplaced()
         self.navigate("dashboard")
 
-    def _page(self, page: Page) -> QScrollArea:
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setObjectName(page.key)
-        content = QWidget()
-        layout = QVBoxLayout(content)
-        layout.setContentsMargins(SPACE + 8, SPACE + 12, SPACE + 8, SPACE)
-        layout.setSpacing(16)
-        layout.addWidget(label(page.title, "Title"))
-        layout.addWidget(label(page.purpose, "Muted"))
-        if page.key == "dashboard":
-            self.channel_summary = label("Channel: not checked. Open Accounts to connect.", "Badge")
-            layout.addWidget(self.channel_summary)
-            self.accounts.state_changed.connect(self.update_channel_summary)
-            card = QFrame()
-            card.setObjectName("Card")
-            body = QVBoxLayout(card)
-            body.setContentsMargins(20, 20, 20, 20)
-            body.setSpacing(14)
-            body.addWidget(label("Publishing status", "Heading"))
-            body.addWidget(self.automatic.summary)
-            body.addWidget(self.recurring.summary)
-            body.addWidget(self.automation.summary)
-            body.addWidget(self.tiktok.summary)
-            body.addWidget(self.background.dashboard)
-            body.addWidget(self.automatic.stop)
-            layout.addWidget(card)
-            layout.addWidget(label("Latest activity", "Heading"))
-            layout.addWidget(self.automatic.notification)
-            self.recent_results = label("No upload history loaded.", "Muted")
-            layout.addWidget(self.recent_results)
-            self.uploads.changed.connect(self.update_recent_results)
-            for index, (title, target) in enumerate(
-                (
-                    ("Prepare a video →", "videos"),
-                    ("Automatic Posting", "automation"),
-                    ("Publishing Queue", "queue"),
-                )
-            ):
-                button = QPushButton(title)
-                button.clicked.connect(lambda checked=False, key=target: self.navigate(key))
-                if target == "videos":
-                    primary(button)
-                # Quick actions sit directly under the channel summary, as one row.
-                layout.insertWidget(3 + index, button)
-            limits = Disclosure("Publishing limits")
-            limits.body.addWidget(self.automatic.limit)
-            limits.body.addWidget(self.automatic.save_limit)
-            layout.addWidget(limits)
-        else:
-            layout.addWidget(label("Not implemented yet", "Badge"))
-            layout.addWidget(label(page.heading, "Heading"))
-            layout.addWidget(label(page.detail, "Muted"))
-        layout.addStretch(1)
-        scroll.setWidget(content)
-        return scroll
-
-    def update_channel_summary(self, view: AccountView) -> None:
-        channel = view.connection.channel if view.connection else None
-        self.channel_summary.setText(
-            f"{channel.title} · {view.state}\nUpload permission: {'Authorized' if view.upload_allowed else 'Not authorized'}"
-            if channel
-            else f"YouTube · {view.state}"
+    def upload_due_soon(self) -> bool:
+        """An upload needs the account lock now or within two minutes."""
+        if self.uploads.worker is not None:
+            return True
+        soon = datetime.now(UTC) + timedelta(minutes=2)
+        jobs = any(
+            job.execution_enabled
+            and job.state == "Scheduled"
+            and datetime.fromisoformat(job.scheduled_utc) <= soon
+            for job in self.automatic.data.get("jobs", [])
         )
-        self.channel_summary.setToolTip(channel.id if channel else "Open Accounts to connect")
-
-    def update_recent_results(self) -> None:
-        results = self.uploads.attempts[:3]
-        self.recent_results.setText(
-            "\n".join(
-                f"{a.snapshot.get('metadata', {}).get('title', a.snapshot.get('filename', 'Video'))} · {upload_status(a.state, a.processing)}"
-                for a in results
-            )
-            if results
-            else "No uploads yet. Prepare a video to begin."
+        # Posting times and auto uploads start their uploads at each plan's next slot.
+        plans = any(
+            plan["enabled"] and datetime.fromisoformat(plan["next_slot"]) <= soon
+            for plan in (self.recurring.data or {}).get("plans", [])
         )
+        return jobs or plans
+
+    def mark_tiktok_posts(self) -> None:
+        posted = {
+            p["video_id"]
+            for p in self.tiktok.data.get("posts", [])
+            if p.get("state") == "Sent by Buffer" and p.get("video_id") is not None
+        }
+        hosting = self.tiktok.data.get("hosting") or {}
+        self.videos.tiktok_limit = hosting.get("max_bytes") or self.videos.tiktok_limit
+        if posted != self.videos.tiktok_posted:
+            self.videos.tiktok_posted = posted
+            self.videos.render_library()
+
+    def adopt_unplaced(self) -> None:
+        """Widgets kept for their state but never shown still need a Qt parent.
+
+        Without one, Python owns them, and its cycle collector can free them on a worker thread;
+        Qt objects destroyed off the GUI thread crash the app."""
+        self.unplaced = QWidget(self)
+        self.unplaced.hide()
+        owners = (
+            self,
+            self.videos,
+            self.videos.editor,
+            self.accounts,
+            self.uploads,
+            self.schedules,
+            self.schedules.queue,
+            self.schedules.calendar,
+            self.automatic,
+            self.recurring,
+            self.automation,
+            self.background,
+            self.watching,
+            self.tiktok,
+            self.dashboard,
+        )
+        for owner in owners:
+            for value in list(vars(owner).values()):
+                if (
+                    isinstance(value, QWidget)
+                    and value.parentWidget() is None
+                    and not isinstance(value, (QDialog, QMainWindow))
+                ):
+                    value.setParent(self.unplaced)
+
+    @property
+    def channel_summary(self) -> QLabel:
+        return self.dashboard.channel_summary
 
     def navigate(self, key: str) -> None:
         if key not in self.indices:
@@ -363,8 +372,9 @@ class MainWindow(QMainWindow):
         if key != "videos":
             self.videos.preview.release()
         self.stack.setCurrentIndex(self.indices[key])
-        self.buttons[key].setChecked(True)
-        self.buttons[key].setFocus(Qt.FocusReason.OtherFocusReason)
+        button = self.buttons[next(p.nav or p.key for p in PAGES if p.key == key)]
+        button.setChecked(True)
+        button.setFocus(Qt.FocusReason.OtherFocusReason)
         if key == "videos":
             self.videos.activate()
             self.watching.activate()
@@ -373,12 +383,16 @@ class MainWindow(QMainWindow):
         elif key in ("queue", "calendar"):
             self.schedules.activate()
             self.recurring.activate()
+            self.dashboard.refresh()
         elif key == "automation":
             self.automation.activate()
+            self.watching.activate()
         elif key == "settings":
             self.background.activate()
         elif key == "accounts":
             self.accounts.activate()
+        elif key == "dashboard":
+            self.dashboard.activate()
         logger.info("Navigated to %s", key)
 
     def show_upload_history(self) -> None:
@@ -387,6 +401,7 @@ class MainWindow(QMainWindow):
             self.videos.mode = "history"
             self.videos.sync_navigation()
             self.videos.tabs.setCurrentWidget(self.uploads)
+            self.update_upload_context()
 
         self.videos.guard(show)
 
@@ -397,7 +412,10 @@ class MainWindow(QMainWindow):
         for index in range(3):
             self.videos.tabs.setTabEnabled(index, self.videos.selected is not None)
         self.videos.tabs.setTabEnabled(5, self.videos.selected is not None)
+        self.uploads.set_history_mode(self.videos.mode == "history")
         self.tiktok.context(video.id if video else None)
+        if prep:
+            self.tiktok.follow_details(self.videos.editor.value())
         self.videos.sync_navigation()
         self.uploads.context(
             video.id if video else None,
@@ -420,9 +438,9 @@ class MainWindow(QMainWindow):
         )
         self.schedule_button.setEnabled(eligible and self.schedules.worker is None)
         self.schedule_reason.setText(
-            "Choose when the Public upload starts. Review the plan, then activate automatic publishing. YouTube processing can delay availability."
+            "Pick the day and time the public upload starts. You'll see the exact plan and approve it before anything is scheduled."
             if eligible
-            else "Save Public metadata, complete review and connect the intended channel before scheduling."
+            else "To schedule: set Visibility to Public in Details, mark the video as ready in Review, and connect YouTube in Accounts."
         )
 
     def schedule_video(self) -> None:
@@ -471,6 +489,11 @@ class MainWindow(QMainWindow):
         ):
             watched.setProperty("tidied", True)
             tidy_buttons(watched)
+            frame = watched.layout()
+            if frame is not None and 0 < frame.contentsMargins().left() < 16:
+                # Every dialog gets the same breathing room as the pages.
+                frame.setContentsMargins(24, 22, 24, 18)
+                frame.setSpacing(max(frame.spacing(), 12))
         # Application-level Quit must honor the same unsaved-data guard as window closure.
         if event.type() == QEvent.Type.Quit and self.isVisible():
             if (

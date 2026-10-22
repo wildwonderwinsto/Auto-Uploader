@@ -1,5 +1,6 @@
 """Workflow, disclosure and preview boundaries using real Qt and isolated providers."""
 
+import time
 import unittest
 from unittest.mock import patch
 
@@ -11,7 +12,7 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QBoxLayout
 from support import settle
 
-from shortspublisher.ui.components import Disclosure
+from shortspublisher.ui.components import Section
 
 
 class PolishUiTests(unittest.TestCase):
@@ -35,11 +36,15 @@ class PolishUiTests(unittest.TestCase):
             editor.load(editor.preparation)
         self.f.tearDown()
 
-    def test_preview_selection_does_not_autoplay_or_upload(self):
+    def test_preview_selection_shows_first_frame_without_playing_or_uploading(self):
         preview = self.w.videos.preview
         self.assertEqual(preview.path, str(self.f.fixture.path))
-        self.assertTrue(preview.player.source().isEmpty())
-        self.assertEqual(preview.player.playbackState(), QMediaPlayer.PlaybackState.StoppedState)
+        deadline = time.monotonic() + 5
+        while (preview.priming or preview.video.frame.isNull()) and time.monotonic() < deadline:
+            QTest.qWait(20)
+        self.assertFalse(preview.video.frame.isNull())  # visible straight away
+        self.assertNotEqual(preview.player.playbackState(), QMediaPlayer.PlaybackState.PlayingState)
+        self.assertFalse(preview.video.playing)
         self.assertTrue(preview.audio.isMuted())
         self.assertEqual(self.f.fixture.http.initiations, 0)
 
@@ -59,22 +64,18 @@ class PolishUiTests(unittest.TestCase):
             self.w.videos.request_close()
             release.assert_called_once()
 
-    def test_selected_library_collapses_but_can_reopen_with_keyboard(self):
-        section = self.w.videos.library_section
-        self.assertFalse(section.toggle.isChecked())
+    def test_back_to_library_with_keyboard_shows_the_list(self):
         self.w.videos.back_button.setFocus()
         QTest.keyClick(self.w.videos.back_button, Qt.Key.Key_Space)
         settle(self.app, self.w.videos)
-        self.assertTrue(section.toggle.isChecked())
+        self.assertTrue(self.w.videos.library_section.isVisible())
         self.assertTrue(self.w.videos.list.isVisible())
 
-    def test_optional_tags_retain_values_while_collapsed(self):
+    def test_optional_tags_are_always_visible(self):
         editor = self.w.videos.editor
-        section = next(d for d in editor.findChildren(Disclosure) if d.title.startswith("Tags"))
+        section = next(d for d in editor.findChildren(Section) if d.title.startswith("Tags"))
         editor.tags = ("test tag",)
-        section.set_expanded(False)
-        self.assertIn("test tag", editor.value().tags)
-        section.set_expanded(True)
+        self.assertFalse(section.content.isHidden())
         self.assertIn("test tag", editor.value().tags)
 
     def test_review_next_step_does_not_authorize_upload(self):
@@ -108,7 +109,10 @@ class PolishUiTests(unittest.TestCase):
         self.assertFalse(self.w.background.quit_after_stop)
 
     def test_connected_account_hides_developer_setup(self):
-        self.assertFalse(self.w.accounts.setup_guide.toggle.isChecked())
+        # Developer setup lives in Settings, never on the Accounts page.
+        self.assertFalse(self.w.accounts.isAncestorOf(self.w.accounts.setup_guide))
+        self.assertTrue(self.w.background.isAncestorOf(self.w.accounts.setup_guide))
+        self.assertFalse(self.w.accounts.setup_button.isVisible())
         self.assertIn(self.f.fixture.repo.connection().channel.title, self.w.channel_summary.text())
 
     def test_age_restriction_does_not_claim_api_support(self):
