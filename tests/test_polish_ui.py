@@ -83,7 +83,7 @@ class PolishUiTests(unittest.TestCase):
         settle(self.app, self.w.videos)
         self.assertTrue(self.w.videos.publish_next.isEnabled())
         self.w.videos.publish_next.click()
-        self.assertEqual(self.w.videos.tabs.currentIndex(), 3)
+        self.assertIs(self.w.videos.tabs.currentWidget(), self.w.upload_all)  # every platform
         self.assertEqual(self.f.fixture.http.initiations, 0)
 
     def test_unsaved_edit_disables_review_forward_action(self):

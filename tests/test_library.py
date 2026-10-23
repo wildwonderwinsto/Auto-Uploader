@@ -12,7 +12,14 @@ from unittest.mock import Mock, patch
 
 from support import make_video
 
-from shortspublisher.library import Library, LibraryError, LibraryService, canonical, source_status
+from shortspublisher.library import (
+    SCHEMA_VERSION,
+    Library,
+    LibraryError,
+    LibraryService,
+    canonical,
+    source_status,
+)
 from shortspublisher.media import Cancelled, InspectionError, Inspector, Media, parse_metadata
 from shortspublisher.readiness import evaluate
 
@@ -106,7 +113,7 @@ class StorageTests(unittest.TestCase):
         self.assertEqual(reopened.all(), [])
         self.assertEqual(source.read_bytes(), b"original")
         with sqlite3.connect(self.library.path) as db:
-            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 12)
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], SCHEMA_VERSION)
 
     def test_concurrent_duplicates(self):
         with ThreadPoolExecutor(max_workers=2) as pool:

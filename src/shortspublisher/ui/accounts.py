@@ -40,6 +40,7 @@ from .components import (
     FlowLayout,
     Section,
     card,
+    guide,
     header,
     icon_button,
     pill,
@@ -52,11 +53,27 @@ from .icons import PLATFORM_NAMES, image, logo, pixmap
 from .videos import text
 
 SETUP = (
-    "1. In Google Cloud Console, create a project and turn on YouTube Data API v3.\n"
-    "2. Set up the Google Auth Platform consent screen. While it is in Testing, add your Google "
-    "account as a test user (Testing sign-ins expire after seven days).\n"
-    "3. Create an OAuth client of type Desktop app, download its JSON file and choose it below.\n"
-    "Your sign-in tokens are kept only in the macOS Keychain."
+    (
+        "In Google Cloud Console, create a project and turn on YouTube Data API v3.",
+        "Open YouTube API",
+        "https://console.cloud.google.com/apis/library/youtube.googleapis.com",
+    ),
+    (
+        "Set up the Google Auth Platform and add your Google account as a test user (while it "
+        "is in Testing, sign-ins expire after seven days).",
+        "Open Test Users",
+        "https://console.cloud.google.com/auth/audience",
+    ),
+    (
+        "Create an OAuth client of type Desktop app and download its JSON file.",
+        "Open Clients",
+        "https://console.cloud.google.com/auth/clients",
+    ),
+    (
+        "Choose the downloaded file below. Your sign-in is kept only in the macOS Keychain.",
+        "",
+        "",
+    ),
 )
 # Messages that only repeat what the setup checklist already says.
 ROUTINE = {
@@ -277,8 +294,9 @@ class AccountsPage(QScrollArea):
         self.setup_guide = Section(
             "YouTube connection",
             "ShortsScheduler signs in to YouTube with your own Google Cloud app. Do this once.",
+            ("youtube",),
         )
-        self.setup_guide.body.addWidget(text(SETUP, "Muted"))
+        self.setup_guide.body.addWidget(guide(SETUP))
         self.setup_status = pill("Not set up", "Warn")
         self.setup_guide.body.addWidget(row(self.configure_button, self.setup_status))
         self.freshness = QTimer(self)

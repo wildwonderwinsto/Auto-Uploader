@@ -148,7 +148,7 @@ read real credential/session secrets. Native credential operations use isolated 
 real account is refreshed. No source file or YouTube record is changed. The live schema remains 8.
 The Stage 13 before/after snapshots match all 15 tables in both databases, all three sources,
 and all 250 reference files (`preservation-result.json`). The retained remote IDs are
-`bfNDN1Gq540`, `OxgK8zkDmkI` and `vmbsEJ4E9Rc`. No ShortsPublisher LaunchAgent remains loaded;
+`<youtube-video-1>`, `<youtube-video-2>` and `<youtube-video-3>`. No ShortsPublisher LaunchAgent remains loaded;
 production login plists are absent. Real Keychain contents were deliberately not read, so their
 preservation claim rests on unchanged credential code and use of isolated test identifiers, not
 on an inspection of secret values. The Stage 13 baseline was captured during implementation before

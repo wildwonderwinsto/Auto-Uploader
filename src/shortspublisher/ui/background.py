@@ -154,8 +154,6 @@ class BackgroundPage(QScrollArea):
         body.addWidget(self.advanced)
         layout.addWidget(service)
         # Sections from other pages are placed in these slots by the window.
-        self.limits_slot = QVBoxLayout()
-        layout.addLayout(self.limits_slot)
         self.connections_slot = QVBoxLayout()
         layout.addLayout(self.connections_slot)
         self.hosting_slot = QVBoxLayout()
@@ -297,6 +295,12 @@ class BackgroundPage(QScrollArea):
                     "remove": "Service removed. Your library and connection were kept.",
                 }[self.worker.action]
             )
+        # Only the actions that apply now: nothing to restart or turn off before it's set up.
+        self.buttons["restart"].setVisible(bool(result["enabled"]))
+        self.buttons["disable"].setVisible(bool(result["enabled"]))
+        self.buttons["remove"].setVisible(
+            bool(result["enabled"]) or result["status"] != "Not Installed"
+        )
         self.buttons["start"].setVisible(bool(result["enabled"]) and not bool(result["pid"]))
         self.buttons["stop"].setVisible(bool(result["pid"] or result["requested"]))
         self.quit_button.setVisible(bool(result["pid"] or result["requested"]))

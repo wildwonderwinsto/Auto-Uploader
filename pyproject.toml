@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "shortspublisher"
 version = "0.1.0"
-description = "Local-first short-form publishing desktop application"
+description = "ShortsScheduler: write a short video's details once and upload it to YouTube, TikTok, Instagram and Facebook (macOS)"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [

@@ -19,3 +19,6 @@ client_secret*.json
 client_secrets*.json
 token*.json
 credentials*.json
+
+# Built locally by install.sh / scripts/make_app.py (it points at this checkout).
+ShortsScheduler.app/

@@ -26,7 +26,7 @@ from shortspublisher.auth import (
     Tokens,
 )
 from shortspublisher.credentials import KeychainStore
-from shortspublisher.library import Library, LibraryError
+from shortspublisher.library import SCHEMA_VERSION, Library, LibraryError
 from shortspublisher.youtube import Channel, YouTubeClient
 
 
@@ -665,7 +665,7 @@ class AccountServiceTests(unittest.TestCase):
             videos = [tuple(row) for row in db.execute("SELECT * FROM videos")]
         self.library.initialize()
         with closing(self.library.connect()) as db:
-            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 12)
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], SCHEMA_VERSION)
             self.assertEqual(
                 before, [tuple(row) for row in db.execute("SELECT * FROM preparations")]
             )

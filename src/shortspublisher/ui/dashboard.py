@@ -29,13 +29,14 @@ from .components import (
     platform_top,
     restyle,
 )
-from .formatting import compact, friendly
+from .formatting import compact, friendly, handle
 from .icons import PLATFORM_NAMES, image, logo_icon, pixmap
 
 if TYPE_CHECKING:
     from .window import MainWindow
 
 STATS_EVERY = 15 * 60  # seconds between automatic view-count refreshes
+STATS_RETRY = 60  # seconds before trying again when counts couldn't be loaded yet
 TONES = {
     activity.UPCOMING: "Info",
     activity.UPLOADING: "Info",
@@ -50,24 +51,21 @@ class StatsWorker(QThread):
     def __init__(self, window: MainWindow, ids: list[str], parent: QObject) -> None:
         super().__init__(parent)
         self.youtube = window.accounts.service if window.accounts.view.connection else None
-        self.tiktok = window.tiktok.service if window.tiktok.data.get("insights") else None
+        # Buffer platforms share one optional view-count key, read by the TikTok controller.
+        insights = bool(window.tiktok.data.get("insights"))
+        self.buffer = [s.service for s in window.socials] if insights else []
         self.ids, self.cancel = ids, Event()
 
     def run(self) -> None:
         """Each platform's counts are optional: one failing never hides the others."""
         stats: dict[str, Any] = {"channel": {}, "videos": {}, "platforms": []}
-        for platform, read in (
-            (
-                "youtube",
-                lambda: self.youtube.statistics(self.ids, self.cancel) if self.youtube else None,
-            ),
-            (
-                "tiktok",
-                lambda: {"videos": self.tiktok.statistics(self.cancel)} if self.tiktok else None,
-            ),
-        ):
+        for platform, service in (("youtube", None), *((s.spec.key, s) for s in self.buffer)):
+            found: dict[str, Any] | None
             try:
-                found = read()
+                if service is None:
+                    found = self.youtube.statistics(self.ids, self.cancel) if self.youtube else None
+                else:
+                    found = {"videos": service.statistics(self.cancel)}
             except Exception:  # noqa: BLE001 - shown as "not available", never fatal
                 found = None
             if found:
@@ -256,6 +254,8 @@ class DashboardPage(QScrollArea):
         top.addWidget(self.auto, 0, Qt.AlignmentFlag.AlignBottom)
         top.addWidget(self.add_videos, 0, Qt.AlignmentFlag.AlignBottom)
         layout.addLayout(top)
+        self.banner_slot = QVBoxLayout()  # the "auto uploading is off" warning, from the window
+        layout.addLayout(self.banner_slot)
 
         tiles = CardGrid(minimum=190, spacing=14, maximum=4)
         self.upcoming_tile = StatTile("COMING UP", "clock")
@@ -294,14 +294,19 @@ class DashboardPage(QScrollArea):
 
         heading = QHBoxLayout()
         heading.addWidget(muted("Platforms", "Heading"), 1)
+        # Counts reload by themselves every 15 minutes; this only asks for them right now.
         self.refresh_stats = icon_button("Refresh Views", "refresh", role="Ghost")
+        self.refresh_stats.setToolTip("Views update by themselves every 15 minutes")
         self.refresh_stats.clicked.connect(lambda: self.load_stats(force=True))
         heading.addWidget(self.refresh_stats)
         layout.addLayout(heading)
         platforms = CardGrid(minimum=340)
         self.youtube = PlatformCard("youtube", "Your channel")
-        self.tiktok = PlatformCard("tiktok", "Through Buffer")
-        for platform in (self.youtube, self.tiktok):
+        self.buffer_cards = {
+            social.key: PlatformCard(social.key, "Through Buffer") for social in window.socials
+        }
+        self.tiktok = self.buffer_cards["tiktok"]
+        for platform in (self.youtube, *self.buffer_cards.values()):
             platform.connect_button.clicked.connect(lambda: window.navigate("accounts"))
             platforms.add(platform)
         layout.addWidget(platforms)
@@ -313,6 +318,13 @@ class DashboardPage(QScrollArea):
         self.pending.setSingleShot(True)
         self.pending.setInterval(50)
         self.pending.timeout.connect(self.refresh)
+        # View counts reload by themselves: tried every minute until they load (the YouTube
+        # connection may still be checking at startup), then every 15 minutes.
+        self.stats_tried = 0.0
+        self.stats_timer = QTimer(self)
+        self.stats_timer.setInterval(STATS_RETRY * 1000)
+        self.stats_timer.timeout.connect(lambda: self.load_stats())
+        self.stats_timer.start()
 
     # Data ------------------------------------------------------------------------------------
 
@@ -340,6 +352,7 @@ class DashboardPage(QScrollArea):
             started,
             w.recurring.data or {},
             w.tiktok.data.get("posts", []),
+            {s.key: s.data.get("posts", []) for s in w.socials if s is not w.tiktok},
         )
 
     def load_stats(self, *, force: bool = False) -> None:
@@ -350,8 +363,10 @@ class DashboardPage(QScrollArea):
             or not (youtube or self.window_.tiktok.data.get("insights"))
             or self.window_.accounts.worker
             or (not force and time.monotonic() - self.stats_at < STATS_EVERY and self.stats_at)
+            or (not force and time.monotonic() - self.stats_tried < STATS_RETRY)
         ):
             return
+        self.stats_tried = time.monotonic()
         ids = [e.remote_id for e in self.entries if e.platform == "youtube" and e.remote_id]
         # A YouTube refresh never waits: scheduled uploads need the account lock on time.
         self.refresh_stats.setEnabled(False)
@@ -375,6 +390,7 @@ class DashboardPage(QScrollArea):
         self.refresh_stats.setText("Refresh Views")
 
     def stop_for_quit(self) -> None:
+        self.stats_timer.stop()
         if self.stats_worker:
             self.stats_worker.cancel.set()
             self.stats_worker.wait()
@@ -428,11 +444,16 @@ class DashboardPage(QScrollArea):
             if totals
             else "Connect an account to see views"
             if not (connected or insights)
-            else "Choose Refresh Views to load them",
+            else "Loading views…",
         )
         self.views_tile.note.setToolTip(
             "Views of the videos you uploaded with ShortsScheduler, added up across platforms."
-            + ("" if insights else "\nTikTok views need a Buffer personal API key (Settings).")
+            + (
+                ""
+                if insights
+                else "\nTikTok, Instagram and Facebook views need a Buffer personal API key "
+                "(Settings)."
+            )
         )
 
         self.attention.setVisible(bool(attention))
@@ -472,32 +493,35 @@ class DashboardPage(QScrollArea):
             if channel
             else "View counts appear after YouTube is connected."
             if not connection
-            else "Choose Refresh Views to load counts from YouTube."
+            else "Loading counts from YouTube…"
         )
-        tiktok = [e for e in entries if e.platform == "tiktok"]
-        tconnection = w.tiktok.data.get("connection")
-        live = bool(tconnection and tconnection.get("status") == "Connected")
-        self.tiktok.set_connected(
-            bool(tconnection),
-            "Connected" if live else "Sign in again",
-            "Good" if live else "Bad",
-            known=w.tiktok.loaded,
-        )
-        self.tiktok.account.setText(
-            f"@{tconnection.get('name')}"
-            if tconnection
-            else "Connect TikTok through Buffer in Accounts."
-            if w.tiktok.loaded
-            else "Checking your TikTok connection…"
-        )
-        views = self.platform_views([e for e in tiktok if e.kind == activity.DONE])
-        self.tiktok.set_numbers(
-            (str(sum(e.kind == activity.DONE for e in tiktok)), "POSTED"),
-            (str(sum(e.kind == activity.UPCOMING for e in tiktok)), "SCHEDULED"),
-            (compact(views["tiktok"]) if "tiktok" in views else "—", "VIEWS"),
-        )
-        self.tiktok.note.setText(
-            "Counts come from Buffer and refresh about once a day."
-            if w.tiktok.data.get("insights")
-            else "To see TikTok views, add a Buffer personal API key in Settings."
-        )
+        insights = bool(w.tiktok.data.get("insights"))
+        for social in w.socials:
+            card = self.buffer_cards[social.key]
+            mine = [e for e in entries if e.platform == social.key]
+            connection = social.data.get("connection")
+            live = bool(connection and connection.get("status") == "Connected")
+            card.set_connected(
+                bool(connection),
+                "Connected" if live else "Sign in again",
+                "Good" if live else "Bad",
+                known=social.loaded,
+            )
+            card.account.setText(
+                handle(social.key, connection)
+                if connection
+                else f"Connect {social.name} through Buffer in Accounts."
+                if social.loaded
+                else f"Checking your {social.name} connection…"
+            )
+            views = self.platform_views([e for e in mine if e.kind == activity.DONE])
+            card.set_numbers(
+                (str(sum(e.kind == activity.DONE for e in mine)), "POSTED"),
+                (str(sum(e.kind == activity.UPCOMING for e in mine)), "SCHEDULED"),
+                (compact(views[social.key]) if social.key in views else "—", "VIEWS"),
+            )
+            card.note.setText(
+                "Counts come from Buffer and refresh about once a day."
+                if insights
+                else f"To see {social.name} views, add a Buffer personal API key in Settings."
+            )

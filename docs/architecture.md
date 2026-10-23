@@ -724,3 +724,27 @@ one unsent Buffer post, so there are no competing queues and pausing affects at 
 TikTok automations (`tiktok_profiles`) have their own consent and run after YouTube's in the
 folder scanner, in the desktop and the background worker. See
 [Stage 19 verification](stage-19-buffer-tiktok-verification.md).
+
+## Instagram and Facebook through Buffer (Stage 20)
+
+Instagram Reels and Facebook Page Reels reuse the Stage 19 path instead of Meta's Graph API (a
+second OAuth stack with an app secret, 60-day tokens and app review). The posting logic moved from
+`tiktok.py` into `social.py`: a `Platform` spec (limits, caption rules, payload `metadata`, AI-label
+support, excluded Buffer channel types) parameterizes one `BufferPostService`; `tiktok.py` keeps
+its Stage 19 names. Each platform has its own tables (`<key>_posts`, `_profiles`, `_decisions`,
+`_drafts`; `social_schema.py`, v13), connection row, operation lock, duplicate index (SHA-256 +
+Buffer channel) and consent. Instagram posts are `type: reel` with `shouldShareToFeed: true` and
+an explicit AI label; Facebook posts are `type: reel` to a Page (Groups and profiles excluded) and
+send no AI label because Facebook's API has none.
+
+Shared, with one owner each: the Buffer app client (the `account_config` row Stage 19 created as
+`tiktok`), the `ShortsPublisher.TikTok` Keychain namespace, Cloudinary hosting, the Buffer
+rate-limit backoff and the `.buffer.lock` token lock. Platforms reuse one Buffer sign-in (one
+Keychain key): a key is deleted only when no connection refers to it, "Reconnect required" is set
+on every connection sharing the key (so no platform reuses a possibly spent refresh token), and a
+fresh sign-in re-points other connections whose channels it can see. The folder scanner reconciles
+TikTok, Instagram and Facebook after YouTube, each isolated from the others' failures. In the UI,
+`ui/social.py` has one `SocialController` per platform (the TikTok one owns the Buffer-wide
+Settings); the video editor's pages 6 and 7 are Instagram and Facebook. See
+[Stage 20 verification](stage-20-verification.md).
+

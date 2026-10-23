@@ -57,16 +57,21 @@ class WatchService:
         self.library: Library = imports.library
         self.clock = clock
         self.lock = FileLock(str(self.library.path) + ".watch.lock")
-        # TikTok (via Buffer) automation runs after YouTube's; tests inject a controlled service.
-        self.tiktok: Callable[[], Any] = self.production_tiktok
+        # Buffer platforms' automations run after YouTube's, each on its own; tests inject
+        # controlled services.
+        self.tiktok: Callable[[], Any] = lambda: self.production("tiktok")
+        self.instagram: Callable[[], Any] = lambda: self.production("instagram")
+        self.facebook: Callable[[], Any] = lambda: self.production("facebook")
 
-    def production_tiktok(self) -> Any:
+    def production(self, platform: str) -> Any:
         from datetime import UTC, datetime
 
         from .credentials import KeychainSecrets
-        from .tiktok import TikTokService
+        from .social import PLATFORMS, BufferPostService
 
-        return TikTokService(
+        # Every Buffer platform keeps its secrets in Stage 19's Keychain namespace.
+        return BufferPostService(
+            next(p for p in PLATFORMS if p.key == platform),
             self.library,
             KeychainSecrets("ShortsPublisher.TikTok"),
             lambda: datetime.fromtimestamp(self.clock(), UTC),
@@ -391,7 +396,9 @@ class WatchService:
                 AutomationService(
                     ScheduleService(self.library, lambda: datetime.fromtimestamp(self.clock(), UTC))
                 ).reconcile(self, cancel, background=background)
-                self.tiktok().reconcile(self, cancel, background=background)
+                for platform in (self.tiktok, self.instagram, self.facebook):
+                    # Each never raises: one platform's outage can't stop another or the scanner.
+                    platform().reconcile(self, cancel, background=background)
                 return {
                     "imported": imported,
                     "message": f"{imported} new videos imported. Publishing requires separate profile or video authorization.",

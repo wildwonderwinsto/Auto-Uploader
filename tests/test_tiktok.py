@@ -390,7 +390,8 @@ class PublishTests(Fixture):
         self.assertEqual(self.buffer.creates[0]["dueAt"], "2030-01-01T15:30:00Z")
         post = self.service.get(post_id)
         self.assertEqual(post["state"], "Scheduled in Buffer")
-        self.assertEqual(post["next_check_at"], "2030-01-01T15:31:30+00:00")
+        # One check 3 minutes after the due time: Buffer is normally done by then.
+        self.assertEqual(post["next_check_at"], "2030-01-01T15:33:00+00:00")
 
     def test_past_or_imminent_schedule_rejected(self):
         video = self.ready()

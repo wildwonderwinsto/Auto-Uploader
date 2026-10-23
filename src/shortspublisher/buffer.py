@@ -130,7 +130,7 @@ def parse_callback(query: str, expected_state: str) -> str:
     state = values.get("state", "")
     if not hmac.compare_digest(state.encode(), expected_state.encode()):
         raise BufferError(
-            "The sign-in response did not match this request. Start Connect TikTok again.",
+            "The sign-in response did not match this request. Start connecting again.",
             "denied",
         )
     if values.get("error"):
@@ -202,7 +202,7 @@ def token_response(response: requests.Response, now: float) -> BufferTokens:
         error = data.get("error", "") if isinstance(data, dict) else ""
         if error in ("invalid_grant", "invalid_client"):
             raise BufferError(
-                "Buffer no longer accepts this connection. Reconnect TikTok.", "reconnect"
+                "Buffer no longer accepts this connection. Reconnect it in Accounts.", "reconnect"
             )
         if response.status_code == 429 or response.status_code >= 500:
             raise BufferError("Buffer is temporarily unavailable. Try again later.", "network")
@@ -239,7 +239,7 @@ class BufferOAuth:
             )
         except requests.RequestException:
             raise BufferError(
-                "Could not reach Buffer to finish sign-in. Start Connect TikTok again.", "network"
+                "Could not reach Buffer to finish sign-in. Start connecting again.", "network"
             ) from None
         return token_response(response, self.clock())
 
@@ -258,7 +258,7 @@ class BufferOAuth:
             # The request may have rotated the token on Buffer's side; reusing the old one would
             # revoke the grant, so never retry automatically.
             raise BufferError(
-                "Buffer sign-in renewal had an uncertain result. Reconnect TikTok to continue safely.",
+                "Buffer sign-in renewal had an uncertain result. Reconnect in Accounts to continue safely.",
                 "reconnect",
             ) from None
         try:
@@ -268,7 +268,7 @@ class BufferOAuth:
                 raise BufferError("Buffer asked to wait before renewing sign-in.", "rate") from None
             if exc.kind == "network":
                 raise BufferError(
-                    "Buffer sign-in renewal failed with an uncertain result. Reconnect TikTok to continue safely.",
+                    "Buffer sign-in renewal failed with an uncertain result. Reconnect in Accounts to continue safely.",
                     "reconnect",
                 ) from None
             raise
@@ -296,7 +296,7 @@ class BufferAuthority:
             return BufferTokens.decode(value) if value else None
         except Exception:
             raise BufferError(
-                "Cannot read the TikTok (Buffer) sign-in from macOS Keychain. Unlock Keychain and retry.",
+                "Cannot read the Buffer sign-in from macOS Keychain. Unlock Keychain and retry.",
                 "auth",
             ) from None
 
@@ -305,20 +305,20 @@ class BufferAuthority:
             self.store.put(key, tokens.encode())
         except Exception:
             raise BufferError(
-                "Could not save the renewed Buffer sign-in in Keychain. Reconnect TikTok.",
+                "Could not save the renewed Buffer sign-in in Keychain. Reconnect in Accounts.",
                 "reconnect",
             ) from None
 
     def access_token(self) -> str:
         config, key = self.config(), self.key()
         if not config or not key:
-            raise BufferError("Connect TikTok via Buffer first.", "auth")
+            raise BufferError("Connect an account via Buffer first.", "auth")
         try:
             with FileLock(str(self.lock_path), timeout=45):
                 # Always re-read inside the lock: another process may already have rotated it.
                 tokens = self.load(key)
                 if tokens is None:
-                    raise BufferError("Connect TikTok via Buffer first.", "auth")
+                    raise BufferError("Connect an account via Buffer first.", "auth")
                 if tokens.expires_at - REFRESH_MARGIN > self.clock():
                     return tokens.access_token
                 renewed = self.oauth.refresh(config, tokens)
@@ -333,7 +333,7 @@ class BufferAuthority:
 
 ORGANIZATIONS = "query { account { organizations { id name } } }"
 CHANNELS = """query Channels($input: ChannelsInput!) {
-  channels(input: $input) { id name displayName service avatar isDisconnected isLocked }
+  channels(input: $input) { id name displayName service type avatar isDisconnected isLocked }
 }"""
 CREATE_POST = """mutation CreatePost($input: CreatePostInput!) {
   createPost(input: $input) {
@@ -384,7 +384,9 @@ class BufferAPI:
                 "uncertain" if write else "network",
             ) from None
         if response.status_code == 401:
-            raise BufferError("Buffer no longer accepts this sign-in. Reconnect TikTok.", "auth")
+            raise BufferError(
+                "Buffer no longer accepts this sign-in. Reconnect it in Accounts.", "auth"
+            )
         if response.status_code == 429:
             try:
                 wait = float(response.headers.get("Retry-After", "900"))
@@ -418,14 +420,20 @@ class BufferAPI:
         account = self.call(ORGANIZATIONS).get("account") or {}
         return list(account.get("organizations") or [])
 
-    def tiktok_channels(self) -> list[dict[str, Any]]:
+    def all_channels(self) -> list[dict[str, Any]]:
         found = []
         for org in self.organizations():
             data = self.call(CHANNELS, {"input": {"organizationId": org["id"]}})
             for channel in data.get("channels") or []:
-                if str(channel.get("service", "")).lower() == "tiktok":
-                    found.append({**channel, "organization_id": org["id"]})
+                found.append({**channel, "organization_id": org["id"]})
         return found
+
+    def channels(self, service: str) -> list[dict[str, Any]]:
+        """Every channel of one service (Buffer's `Service` name) across the organizations."""
+        return [c for c in self.all_channels() if str(c.get("service", "")).lower() == service]
+
+    def tiktok_channels(self) -> list[dict[str, Any]]:
+        return self.channels("tiktok")
 
     def create_post(self, payload: dict[str, Any]) -> dict[str, Any]:
         result = self.call(CREATE_POST, {"input": payload}, write=True).get("createPost") or {}

@@ -37,6 +37,10 @@ class AccountsUiTests(unittest.TestCase):
         self.window.navigate("accounts")
         self.page = self.window.accounts
         settle(self.app, self.page)
+        # Close tests assume only the YouTube worker is busy; wait for the Buffer platforms'
+        # startup checks.
+        for controller in self.window.socials:
+            settle(self.app, controller)
 
     def tearDown(self):
         shutdown(self.app, self.window)

@@ -8,7 +8,7 @@ consent model, database and LaunchAgent code are unchanged.
 
 **What this is not:** no person used the app for this review, and the native folder chooser was
 not operated (see the manual checklist below). Screenshots were driven by harnesses, so interaction
-was scripted clicks and state changes, not free exploration. The live StonkYa workspace was not
+was scripted clicks and state changes, not free exploration. The live the owner's channel workspace was not
 opened, no YouTube request was made, and no production service was installed.
 
 ## Pages and states inspected

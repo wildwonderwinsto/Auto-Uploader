@@ -17,7 +17,7 @@ The default application database remains a separate schema-4 database.
 
 The live library has three completed upload records, no in-progress transfer, and no future approved
 job. Its old Due job is historical and linked to the Stage 9 result, not a fresh posting opportunity.
-The earlier IDs `bfNDN1Gq540`, `OxgK8zkDmkI` and `vmbsEJ4E9Rc` remain untouched. This is stored evidence;
+The earlier IDs `<youtube-video-1>`, `<youtube-video-2>` and `<youtube-video-3>` remain untouched. This is stored evidence;
 Stage 17 did not contact YouTube to recheck those remote videos or refresh the real account.
 Evidence: `artifacts/stage17-evidence/initial-state.json`.
 
@@ -43,7 +43,7 @@ chooser the user used Command–Shift–G, selected the instructed folder and co
 conversation. No picker return was injected for this run.
 
 Selected canonical path:
-`/Users/winston/CodexProjects/Auto Uploader/artifacts/stage17-human-picker/incoming`.
+`<project folder>/artifacts/stage17-human-picker/incoming`.
 The returned path included a trailing slash; normal canonicalization stored the exact directory
 without it. The real folder-consent dialog showed that canonical path, checked by the harness before
 it accepted controlled local-import consent. The controlled profile binds the same folder ID,
@@ -175,7 +175,7 @@ The added controlled regression verifies one attempt across dispatch/restart/dup
 This does not give permission to add more content or renew/edit the test profile afterward.
 
 Before a live continuation, the user must authorize preparation of the real workspace/migration,
-personally review the source and exact StonkYa destination, explicitly select audience and synthetic
+personally review the source and exact the owner's channel destination, explicitly select audience and synthetic
 content declarations, approve the exact standing Public scope in the app, and personally enable/start
 the required real background/global controls. No such live approval or activation happened in Stage
 17. Real account permissions and Google restrictions have not been freshly checked. Production

@@ -202,6 +202,39 @@ def mark(size: int = 30) -> QPixmap:
     return _render(_svg(MARK), size)
 
 
+# The app icon: the same idea as the mark (a play button on a calendar page), drawn for the
+# Dock on Apple's 1024 grid (an 824 square, centred).
+APP_ICON = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024"><defs>'
+    '<linearGradient id="b" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#6ea2ff"/>'
+    '<stop offset="1" stop-color="#3159d6"/></linearGradient>'
+    '<linearGradient id="p" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffffff"/>'
+    '<stop offset="1" stop-color="#e9efff"/></linearGradient>'
+    '<filter id="s" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="14"'
+    ' stdDeviation="18" flood-color="#0b1f5c" flood-opacity=".35"/></filter></defs>'
+    '<rect x="100" y="100" width="824" height="824" rx="186" fill="url(#b)"/>'
+    '<g filter="url(#s)"><rect x="238" y="268" width="548" height="500" rx="70" fill="url(#p)"/>'
+    '<path d="M238 338a70 70 0 0 1 70-70h408a70 70 0 0 1 70 70v62H238z" fill="#1d2f5e"/></g>'
+    '<rect x="350" y="214" width="46" height="116" rx="23" fill="#ffffff"/>'
+    '<rect x="628" y="214" width="46" height="116" rx="23" fill="#ffffff"/>'
+    '<path d="M460 482v196l166-98z" fill="#3b6fe8" stroke="#3b6fe8" stroke-width="36"'
+    ' stroke-linejoin="round"/></svg>'
+)
+
+
+def app_svg() -> bytes:
+    return APP_ICON.encode()
+
+
+@cache
+def app_icon() -> QIcon:
+    """Window and Dock icon (the .app bundle carries the same artwork as an .icns file)."""
+    result = QIcon()
+    for size in (16, 32, 64, 128, 256, 512):
+        result.addPixmap(_render(app_svg(), size))
+    return result
+
+
 def image(source: QPixmap, size: int | None = None) -> QLabel:
     """A transparent, fixed-size label showing an icon or logo."""
     label = QLabel()

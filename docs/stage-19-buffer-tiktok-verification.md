@@ -70,7 +70,7 @@ the dialog. The pasted text is validated against `state` the same way.
 
 **Setup check (2026-10-20):**
 - The relay page is live at
-  `https://wildwonderwinsto.github.io/autouploaderhtml/buffer-oauth-relay.html`, byte-identical to
+  `https://<your-github-name>.github.io/autouploaderhtml/buffer-oauth-relay.html`, byte-identical to
   the project file.
 - You saved your Buffer client in your live workspace. The redirect URI matches exactly.
 - One unauthenticated GET of the authorization URL returned **303 to Buffer's sign-in
@@ -193,7 +193,7 @@ the folder's background permission. A Buffer or Cloudinary outage never stops th
 reuse the platform-keyed `account_config` / `account_connection` rows with `platform='tiktok'`. No
 YouTube table changed, and the migration creates no connection, hosting or consent.
 
-**The live StonkYa library (schema 11) will migrate to 12 the next time you open it.** Back it up
+**The live the owner's channel library (schema 11) will migrate to 12 the next time you open it.** Back it up
 first. The launcher does this automatically.
 
 ## 8. UI changes
@@ -226,7 +226,7 @@ first. The launcher does this automatically.
   YouTube · TikTok".
 
 **Hosting setup fixes (2026-10-20, after your first try):**
-- TikTok had connected live as @mrcenterr via Buffer, but no hosting was saved, so publishing stayed
+- TikTok had connected live as @owner_tiktok via Buffer, but no hosting was saved, so publishing stayed
   unavailable.
 - Cloudinary input is now normalized: a pasted `cloudinary://KEY:SECRET@CLOUD` string fills all
   three fields, whitespace is trimmed (the secret was not trimmed before), and wrong-field values
@@ -277,13 +277,13 @@ code against your live workspace, with your window open and coordinating through
 | Backup | `artifacts/stage19-live/library-before-live-tiktok.sqlite3` (integrity ok, schema 12) |
 | Hosting | Uploaded to your Cloudinary (`rjgyiytv`); anonymous HEAD returned 200 `video/mp4`, 1,347,628 bytes (exact size) |
 | Buffer | `createPost` accepted: post `6ad8126daff466fe09f630ac`, **`schedulingType: automatic`**, `shareNow`, status `sending` at 01:16:28 UTC |
-| Result | Buffer reported **`sent` at 01:18:11 UTC** (about 1 min 43 s), `externalLink` <https://tiktok.com/@mrcenterr/video/7698923752935017741> |
-| Independent check | TikTok's public oEmbed endpoint returned 200 with an embeddable player for video 7698923752935017741. Author, title and thumbnail fields were not yet populated (consistent with processing). Visual confirmation on the account is yours to do. |
+| Result | Buffer reported **`sent` at 01:18:11 UTC** (about 1 min 43 s), `externalLink` <https://tiktok.com/@owner_tiktok/video/<tiktok-video-id>> |
+| Independent check | TikTok's public oEmbed endpoint returned 200 with an embeddable player for video <tiktok-video-id>. Author, title and thumbnail fields were not yet populated (consistent with processing). Visual confirmation on the account is yours to do. |
 | Afterwards | No automation created or enabled; global publishing left paused. The hosted copy will be deleted automatically 24 h after `sent` the next time the app runs. The test clip remains in your library as video 4. |
 
 This confirms the live schema shapes (`createPost`, `post`) and that this TikTok account allows
 **automatic** publishing through Buffer. The Business-account question is answered in practice for
-@mrcenterr. Evidence: `artifacts/stage19-live/` (`publish-result.json`, `status-log.json`,
+@owner_tiktok. Evidence: `artifacts/stage19-live/` (`publish-result.json`, `status-log.json`,
 `tiktok-oembed*.json`, `live-result.json`).
 
 ## 11. Steps you need to complete

@@ -1,7 +1,8 @@
 """One auto upload for every platform: a folder, one set of details, one schedule.
 
 Each platform still gets its own explicit approval: YouTube through AutomationController's
-consent flow, then TikTok through TikTokController's. This dialog only gathers the choices.
+consent flow, then TikTok, Instagram and Facebook, in turn, through their SocialControllers. This
+dialog only gathers the choices.
 """
 
 from __future__ import annotations
@@ -20,8 +21,6 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QPlainTextEdit,
-    QPushButton,
-    QScrollArea,
     QSpinBox,
     QStackedWidget,
     QTimeEdit,
@@ -31,30 +30,29 @@ from PySide6.QtWidgets import (
 
 from ..automation import title_for
 from ..cadence import Rule
-from ..tiktok import caption_from
-from .components import card, day_row, icon_button, muted, pill
-from .formatting import friendly, system_zone, time_pattern
+from ..social import caption_from
+from .components import (
+    card,
+    day_row,
+    icon_button,
+    muted,
+    platform_choice,
+    set_choice,
+    step_page,
+    step_pills,
+)
+from .formatting import friendly, handle, system_zone, time_pattern
 from .icons import PLATFORM_NAMES, image, logo
 from .recurring import DAY_NAMES, rule_label
 
 if TYPE_CHECKING:
     from .automation import AutomationController
-    from .tiktok import TikTokController
+    from .social import SocialController
 
 STEPS = ("Folder", "Details", "When", "Where")
 
 
-def page(title: str, detail: str) -> tuple[QScrollArea, QVBoxLayout]:
-    scroll = QScrollArea()
-    scroll.setWidgetResizable(True)
-    content = QWidget()
-    body = QVBoxLayout(content)
-    body.setContentsMargins(24, 8, 24, 8)
-    body.setSpacing(14)
-    body.addWidget(muted(title, "Heading"))
-    body.addWidget(muted(detail, "Muted"))
-    scroll.setWidget(content)
-    return scroll, body
+page = step_page  # the shared step-by-step page
 
 
 def form() -> QFormLayout:
@@ -83,13 +81,18 @@ class AutoUploadEditor(QDialog):
     def __init__(
         self,
         controller: AutomationController,
-        tiktok: TikTokController,
+        tiktok: SocialController,
         profile: dict[str, Any] | None = None,
     ) -> None:
         super().__init__(controller.window)
         self.controller, self.tiktok, self.profile = controller, tiktok, profile
+        self.socials: tuple[SocialController, ...] = getattr(
+            controller.window, "socials", (tiktok,)
+        )
         self.dirty = False
         self.approved_youtube = False
+        self.approved_buffer: set[str] = set()  # Buffer platforms turned on from this dialog
+        self.waiting: list[SocialController] = []  # Buffer platforms still to approve
         self.setWindowTitle("Edit Auto Upload" if profile else "New Auto Upload")
         self.resize(720, 720)
         layout = QVBoxLayout(self)
@@ -106,18 +109,7 @@ class AutoUploadEditor(QDialog):
                 "Muted",
             )
         )
-        steps = QHBoxLayout()
-        steps.setSpacing(6)
-        self.step_buttons: list[QPushButton] = []
-        for number, name in enumerate(STEPS, start=1):
-            step = QPushButton(f"{number}  {name}")
-            step.setObjectName("Step")
-            step.setCheckable(True)
-            step.setCursor(Qt.CursorShape.PointingHandCursor)
-            step.clicked.connect(lambda checked=False, i=number - 1: self.go(i))
-            steps.addWidget(step)
-            self.step_buttons.append(step)
-        steps.addStretch()
+        steps, self.step_buttons = step_pills(STEPS, lambda i: self.go(i))
         top.addLayout(steps)
         layout.addLayout(top)
         self.pages = QStackedWidget()
@@ -196,23 +188,29 @@ class AutoUploadEditor(QDialog):
             )
         )
         body.addWidget(youtube)
-        self.ai = QComboBox()
-        self.ai.addItem("Choose one", None)
-        self.ai.addItem("Yes, videos contain AI-generated content", True)
-        self.ai.addItem("No AI-generated content", False)
-        tiktok_box, tiktok_body = platform_box("tiktok", "Only used on TikTok")
-        ai_form = form()
-        ai_form.addRow("AI-generated content label", self.ai)
-        tiktok_body.addLayout(ai_form)
-        tiktok_body.addWidget(
-            muted(
-                "The caption is your title, description and first 5 tags as hashtags. TikTok "
-                "posts are public; made-for-kids, 18+, comments, Duet and Stitch can't be set "
-                "through Buffer.",
-                "Subtle",
-            )
-        )
-        body.addWidget(tiktok_box)
+        self.ai, self.instagram_ai = QComboBox(), QComboBox()
+        for choice in (self.ai, self.instagram_ai):
+            choice.addItem("Choose one", None)
+            choice.addItem("Yes, videos contain AI-generated content", True)
+            choice.addItem("No AI-generated content", False)
+        self.ai_choices = {"tiktok": self.ai, "instagram": self.instagram_ai}
+        notes = {
+            "tiktok": "The caption is your title, description and first 5 tags as hashtags. "
+            "TikTok posts are public; made-for-kids, 18+, comments, Duet and Stitch can't be set "
+            "through Buffer.",
+            "instagram": "Posted as public Reels that also appear on your profile grid, with the "
+            "same caption as TikTok. Needs an Instagram Business or Creator account.",
+            "facebook": "Posted as public Reels on your Facebook Page; every tag becomes a "
+            "hashtag. Facebook Reels must be 9:16 and 3 to 90 seconds long.",
+        }
+        for key, note in notes.items():
+            group, group_body = platform_box(key, f"Only used on {PLATFORM_NAMES[key]}")
+            if key in self.ai_choices:
+                ai_form = form()
+                ai_form.addRow("AI-generated content label", self.ai_choices[key])
+                group_body.addLayout(ai_form)
+            group_body.addWidget(muted(note, "Subtle"))
+            body.addWidget(group)
         body.addStretch()
         self.pages.addWidget(details_page)
 
@@ -249,13 +247,8 @@ class AutoUploadEditor(QDialog):
         timing.addWidget(self.end, 1)
         body.addLayout(timing)
         self.zone = QLineEdit(system_zone())
-        self.limit = QSpinBox()
-        self.limit.setRange(1, controller.limit)
-        self.limit.setValue(controller.limit)
-        self.limit.setSuffix(" per day at most")
         options = form()
         options.addRow("Time zone", self.zone)
-        options.addRow("Daily limit per platform", self.limit)
         body.addLayout(options)
         self.background = QCheckBox("Keep uploading while ShortsScheduler is closed")
         self.background.setToolTip("Needs Background Uploading turned on in Settings")
@@ -271,52 +264,39 @@ class AutoUploadEditor(QDialog):
             "Pick one or more. You'll confirm each platform on its own approval screen.",
         )
         account = controller.account
-        connection = tiktok.data.get("connection") or {}
-        tiktok_ready = connection.get("status") == "Connected" and bool(tiktok.data.get("hosting"))
         self.channel = QComboBox(self)  # the approval flow reads the destination channel from here
         self.channel.addItem(account.get("title", "No connected channel"), account.get("id", ""))
         self.channel.hide()
         self.targets: dict[str, QCheckBox] = {}
-        for platform, ready, who, missing in (
+        choices: list[tuple[str, bool, str, str]] = [
             (
                 "youtube",
                 bool(account.get("id")),
                 account.get("title", ""),
                 "Connect YouTube and allow uploads in Accounts first.",
-            ),
-            (
-                "tiktok",
-                tiktok_ready,
-                f"@{connection.get('name')}" if connection else "",
-                "Connect TikTok in Accounts and set up video hosting in Settings first."
-                if not connection or connection.get("status") != "Connected"
-                else "Set up TikTok video hosting in Settings first.",
-            ),
-            ("instagram", False, "", "Coming soon"),
-            ("facebook", False, "", "Coming soon"),
-            ("snapchat", False, "", "Coming soon"),
-        ):
-            frame, box = card(14, 6, "Row")
-            line = QHBoxLayout()
-            line.setSpacing(12)
-            check = QCheckBox()
-            check.setEnabled(ready)
-            check.setChecked(ready and (platform == "youtube" or not profile))
-            check.setAccessibleName(f"Upload to {PLATFORM_NAMES[platform]}")
-            check.toggled.connect(self.edited)
-            line.addWidget(check)
-            line.addWidget(image(logo(platform, 26)))
-            names = QVBoxLayout()
-            names.setSpacing(2)
-            names.addWidget(muted(PLATFORM_NAMES[platform], "Subheading"))
-            names.addWidget(muted(who if ready else missing, "Subtle"))
-            line.addLayout(names, 1)
-            line.addWidget(
-                pill("Ready" if ready else "Not available", "Good" if ready else "Neutral")
             )
-            box.addLayout(line)
+        ]
+        for social in self.socials:
+            connection = social.data.get("connection") or {}
+            connected = connection.get("status") == "Connected"
+            choices.append(
+                (
+                    social.key,
+                    connected and bool(social.data.get("hosting")),
+                    handle(social.key, connection) if connection else "",
+                    f"Connect {social.name} in Accounts and set up video hosting in Settings first."
+                    if not connected
+                    else "Set up video hosting in Settings first.",
+                )
+            )
+        choices.append(("snapchat", False, "", "Coming soon"))
+        for platform, ready, who, missing in choices:
+            frame, check, detail, badge, _line = platform_choice(platform)
+            set_choice(check, detail, badge, ready, who if ready else missing)
+            check.setChecked(ready and (platform == "youtube" or not profile))
+            check.toggled.connect(self.edited)
             body.addWidget(frame)
-            if platform in ("youtube", "tiktok"):
+            if platform != "snapchat":
                 self.targets[platform] = check
         body.addStretch()
         self.pages.addWidget(where_page)
@@ -348,9 +328,17 @@ class AutoUploadEditor(QDialog):
         for line_edit in (self.name, self.template, self.tags, self.zone, self.pattern):
             line_edit.textChanged.connect(self.edited)
         self.description.textChanged.connect(self.edited)
-        for combo in (self.folder, self.mode, self.kids, self.synthetic, self.ai, self.frequency):
+        for combo in (
+            self.folder,
+            self.mode,
+            self.kids,
+            self.synthetic,
+            self.ai,
+            self.instagram_ai,
+            self.frequency,
+        ):
             combo.currentIndexChanged.connect(self.edited)
-        for spin in (self.limit, self.seconds, self.mib):
+        for spin in (self.seconds, self.mib):
             spin.valueChanged.connect(self.edited)
         for clock in (self.start, self.end):
             clock.timeChanged.connect(self.edited)
@@ -447,7 +435,7 @@ class AutoUploadEditor(QDialog):
                 made_for_kids=self.kids.currentData(),
                 synthetic=self.synthetic.currentData(),
                 rule=self.rule().encode(),
-                limit=self.limit.value(),
+                limit=self.controller.limit,  # no limit of our own; YouTube's is 100
                 background=self.background.isChecked(),
                 pattern=self.pattern.text(),
                 max_seconds=self.seconds.value(),
@@ -458,17 +446,25 @@ class AutoUploadEditor(QDialog):
         )
 
     def tiktok_values(self) -> dict[str, Any]:
-        """The same choices as a TikTok profile; its caption comes from the shared details."""
+        return self.platform_values(self.tiktok)
+
+    def platform_values(self, social: SocialController) -> dict[str, Any]:
+        """The same choices as a Buffer platform's profile; its caption comes from the shared
+        details."""
+        choice = self.ai_choices.get(social.key)
         return {
             "name": self.name.text(),
             "folder_id": self.folder.currentData(),
             "settings": {
                 "caption_template": caption_from(
-                    self.template.text(), self.description.toPlainText(), tuple(self.tag_list())
+                    self.template.text(),
+                    self.description.toPlainText(),
+                    tuple(self.tag_list()),
+                    hashtags=social.spec.hashtags_max,
                 ),
-                "ai_generated": self.ai.currentData(),
+                "ai_generated": choice.currentData() if choice else False,
+                "daily_cap": social.spec.daily_max,  # the platform's own ceiling
                 "rule": self.rule().encode(),
-                "daily_cap": self.limit.value(),
                 "pattern": self.pattern.text(),
                 "background": self.background.isChecked(),
             },
@@ -492,7 +488,6 @@ class AutoUploadEditor(QDialog):
             day.setChecked(i in rule["days"])
         self.seconds.setValue(s["max_seconds"])
         self.mib.setValue(s["max_bytes"] // 1024**2)
-        self.limit.setValue(min(s["limit"], self.limit.maximum()))
         self.background.setChecked(s["background"])
 
     # Approval ------------------------------------------------------------------------------------
@@ -502,8 +497,8 @@ class AutoUploadEditor(QDialog):
         self.feedback.setVisible(bool(message))
 
     def start_review(self) -> None:
-        youtube, tiktok = self.targets["youtube"].isChecked(), self.targets["tiktok"].isChecked()
-        if not youtube and not tiktok:
+        youtube = self.targets["youtube"].isChecked()
+        if not any(check.isChecked() for check in self.targets.values()):
             self.show_error("Pick at least one platform to upload to.")
             return
         if not self.folder.currentData():
@@ -517,26 +512,52 @@ class AutoUploadEditor(QDialog):
             self.approved()
 
     def approved(self) -> None:
-        """YouTube is approved (or was not chosen); TikTok gets its own approval next."""
+        """YouTube is approved (or was not chosen); each Buffer platform gets its own approval
+        next, in turn."""
         self.approved_youtube = self.targets["youtube"].isChecked()
-        if not self.targets["tiktok"].isChecked():
+        self.waiting = [
+            s
+            for s in self.socials
+            if self.targets[s.key].isChecked() and s.key not in self.approved_buffer
+        ]
+        for social in self.waiting:
+            choice = self.ai_choices.get(social.key)
+            if choice is not None and choice.currentData() is None:
+                self.go(1)
+                self.show_error(
+                    f"For {social.name}, choose whether these videos contain AI-generated content."
+                )
+                return
+        self.next_platform()
+
+    def next_platform(self) -> None:
+        if not self.waiting:
             self.finish()
-            return
-        if self.ai.currentData() is None:
-            self.go(1)
-            self.show_error("For TikTok, choose whether these videos contain AI-generated content.")
             return
         self.review.setEnabled(False)
-        self.tiktok.review_automation(self.tiktok_values(), self.tiktok_done, parent=self)
+        social = self.waiting[0]
+        social.review_automation(self.platform_values(social), self.platform_done, parent=self)
 
-    def tiktok_done(self, enabled: bool) -> None:
+    def platform_done(self, enabled: bool) -> None:
         self.review.setEnabled(True)
+        social = self.waiting.pop(0)
         if enabled:
-            self.finish()
-        elif self.approved_youtube:
+            self.approved_buffer.add(social.key)
+            self.next_platform()
+            return
+        on = (["YouTube"] if self.approved_youtube else []) + [
+            s.name for s in self.socials if s.key in self.approved_buffer
+        ]
+        off = [social.name] + [s.name for s in self.waiting]
+        self.waiting = []
+        if on:
             self.show_error(
-                "YouTube is on. TikTok was not turned on; you can add it with a new auto upload."
+                f"{' and '.join(on)} {'is' if len(on) == 1 else 'are'} on. "
+                f"{' and '.join(off)} {'was' if len(off) == 1 else 'were'} not turned on; "
+                "you can add " + ("it" if len(off) == 1 else "them") + " with a new auto upload."
             )
+
+    tiktok_done = platform_done
 
     def finish(self) -> None:
         self.dirty = False
@@ -546,6 +567,7 @@ class AutoUploadEditor(QDialog):
         if (
             self.dirty
             and not self.approved_youtube
+            and not self.approved_buffer
             and QMessageBox.question(
                 self,
                 "Discard this auto upload?",

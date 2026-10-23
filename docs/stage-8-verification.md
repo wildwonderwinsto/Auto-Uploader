@@ -178,9 +178,9 @@ picker interaction is not claimed. No real Google UI or live upload was involved
 
 ## Preservation and limits
 
-All live table hashes match the Stage 8 pre-work hashes. The actual StonkYa database remains schema 5;
+All live table hashes match the Stage 8 pre-work hashes. The actual the owner's channel database remains schema 5;
 it was not migrated or opened by the new application during tests. The account connection, drafts,
-reviews, Private record `bfNDN1Gq540` and Public record `OxgK8zkDmkI` are unchanged. Both original
+reviews, Private record `<youtube-video-1>` and Public record `<youtube-video-2>` are unchanged. Both original
 source hashes still match. All 250 retained ShortsStudio hashes match and its git status is clean.
 Evidence: `artifacts/stage8-final/preservation.json`. No real token/session or remote video was changed. Redundant disposable scheduling test roots were
 removed after final captures were retained; live/user media and prior-stage evidence were preserved.

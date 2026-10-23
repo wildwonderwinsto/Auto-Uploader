@@ -61,6 +61,11 @@ class BackgroundTests(unittest.TestCase):
             before = {n: db.execute("select * from " + n).fetchall() for n in names}
         library = Library(path)
         library.initialize()
+        # Schema 14 deliberately sets the global daily limit to YouTube's own 100; nothing else
+        # changes.
+        before["publishing_control"] = [
+            (r[0], r[1], 100, *r[3:]) for r in before["publishing_control"]
+        ]
         with closing(library.connect()) as db:
             for name, values in before.items():
                 self.assertEqual([tuple(r) for r in db.execute("select * from " + name)], values)

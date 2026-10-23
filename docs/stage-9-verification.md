@@ -105,7 +105,7 @@ tokens and resumable session capabilities remain exclusively in Keychain, never 
 
 The v6 fixture is a SQLite backup of the genuine completed Stage 8 controlled native workflow at
 `artifacts/stage8-schedules-final/data/library.sqlite3`. It contains generated-media plans/events and
-a synthetic unused account reference, not real StonkYa authorization. Migration tests compare all
+a synthetic unused account reference, not real the owner's channel authorization. Migration tests compare all
 original table values, verify foreign keys, disabled old jobs and paused defaults, and force a
 mid-migration failure to verify complete rollback. Existing older/future-schema tests remain active.
 
@@ -208,9 +208,9 @@ scrollable controls and no horizontal page overflow.
 
 ## Preservation and remaining limits
 
-Read-only before/after hashes of every table in the live StonkYa library match exactly. It remains
-schema 5 and still contains only the genuine Stage 6 Private `bfNDN1Gq540` and Stage 7 Public
-`OxgK8zkDmkI` attempts. It was not opened by upgraded production code or migrated during development.
+Read-only before/after hashes of every table in the live the owner's channel library match exactly. It remains
+schema 5 and still contains only the genuine Stage 6 Private `<youtube-video-1>` and Stage 7 Public
+`<youtube-video-2>` attempts. It was not opened by upgraded production code or migrated during development.
 Both original media hashes remain unchanged. No real credential/session was read or modified. All
 250 retained ShortsStudio reference hashes match and its git status remains clean. Evidence:
 `artifacts/stage9-final/preservation.json`. The default user library was not used for testing.
@@ -249,7 +249,7 @@ No new scope or remote visibility-update endpoint was added. The existing upload
 
 A live continuation needs separate explicit user authorization for one new disposable original video.
 Close the existing app and safely back up its database before opening upgraded code. Preserve the
-StonkYa connection and both previous videos. Verify actual channel/scopes, import/review the new
+the owner's channel connection and both previous videos. Verify actual channel/scopes, import/review the new
 source, choose a future time with adequate preflight margin, inspect the automatic Public consent and
 personally activate that exact job. Explicitly enable the global switch and leave the app open/awake.
 After one initiation, independently verify the returned ID/channel/Public privacy and processing;
@@ -276,7 +276,7 @@ Real Inspector/FFprobe inspected it; free disk space at preparation was 734,460,
 Evidence: `artifacts/stage9-live/source-evidence.json`. It is distinct from both previous test videos.
 
 The actual app was opened with `--data-dir artifacts/stage6-live` at 11:01:34 local time. A supported
-production credential/channel check at 16:02:14 UTC confirmed StonkYa (`UCoj4BJDrrcuE3gTvpi-7QFA`),
+production credential/channel check at 16:02:14 UTC confirmed the owner's channel (`UC_owner_channel`),
 both required scopes and working Keychain access. Only the two previous completed attempts exist;
 there is no unresolved upload conflict. No account was disconnected or replaced. No upload endpoint
 was invoked. Nonsecret evidence: `artifacts/stage9-live/account-preflight.json`.
@@ -311,13 +311,13 @@ intent is the durable pre-POST boundary. Transfer completion was saved at **16:1
 - Job: `e869595aaa9e4010997fd082649df1fa`.
 - Execution: `9e12ae1ca71f475c8b9fa4214f3c6d91`.
 - Sole new upload attempt: `063e12f27663418a90602b8326c8b433`.
-- Actual returned video: [`vmbsEJ4E9Rc`](https://www.youtube.com/watch?v=vmbsEJ4E9Rc).
+- Actual returned video: [`<youtube-video-3>`](https://www.youtube.com/watch?v=<youtube-video-3>).
 - All **76,838 bytes** acknowledged; source SHA-256 remains unchanged.
 - Approved payload: explicit Public, category 22, saved title/description, `test tag`, Made for Kids
   false and synthetic disclosure false, as selected by the user. No publishAt is present.
 - Initial independent result confirmed Public with processing pending.
 - A further production Verify Remote Result/videos.list check at **16:18:52 UTC** confirmed
-  **StonkYa (`UCoj4BJDrrcuE3gTvpi-7QFA`), Public privacy, processing succeeded**.
+  **the owner's channel (`UC_owner_channel`), Public privacy, processing succeeded**.
 - Three total upload attempts exist: the two original manual records plus this one scheduled attempt.
   All original upload-record column values match the pre-migration backup exactly.
 
@@ -333,13 +333,13 @@ is not yet declared fully live-verified.
 
 The user closed the application normally. Process inspection confirmed no ShortsPublisher process
 remained before reopening the same `artifacts/stage6-live` workspace at **16:20:34 UTC** in a new
-process. Startup restored and live-verified StonkYa at 16:20:34 UTC. Before any further result check,
+process. Startup restored and live-verified the owner's channel at 16:20:34 UTC. Before any further result check,
 every scheduled job, execution, consent and upload-attempt row exactly matched the pre-restart
 snapshot. The disabled draft remained disabled; only the already-consumed test job was activated.
 
 A fresh production Verify Remote Result/videos.list check at **16:20:59 UTC** confirmed the same
-actual video [`vmbsEJ4E9Rc`](https://www.youtube.com/watch?v=vmbsEJ4E9Rc), channel
-`UCoj4BJDrrcuE3gTvpi-7QFA`, **Public** privacy and **processing succeeded**. The single scheduled
+actual video [`<youtube-video-3>`](https://www.youtube.com/watch?v=<youtube-video-3>), channel
+`UC_owner_channel`, **Public** privacy and **processing succeeded**. The single scheduled
 execution remained linked to attempt `063e12f27663418a90602b8326c8b433`. Its claim/start timestamps,
 completion timestamp and 76,838 acknowledged bytes were unchanged. Three total upload attempts
 remain: two prior manual uploads and exactly one automatic upload. No new initiation or transfer

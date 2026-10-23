@@ -33,8 +33,7 @@ from ..library_view import LibraryEntry, browse, read_entries
 from ..media import Cancelled
 from ..preparation import review_checks
 from ..readiness import LIMITATIONS, evaluate
-from ..tiktok import MAX_BYTES as TIKTOK_MAX_BYTES
-from ..tiktok import media_errors, readable
+from ..social import PLATFORMS, media_errors, readable
 from . import theme
 from .components import (
     Elided,
@@ -53,6 +52,11 @@ from .metadata import MetadataEditor, PreparationTabs
 from .preview import VideoPreview
 
 logger = logging.getLogger(__name__)
+
+# Editor pages for each Buffer platform; 3 and 4 are YouTube's (now / scheduled).
+BUFFER_PAGES = {"tiktok": 5, "instagram": 6, "facebook": 7}
+ALL_PAGE = 8  # the Upload step itself: every platform at once (added by the window)
+UPLOAD_PAGES = (3, 4, *BUFFER_PAGES.values(), ALL_PAGE)
 
 
 def declaration(value: bool | None) -> str:
@@ -161,13 +165,17 @@ class VideosPage(QScrollArea):
         self.context_revision = 0
         self.operation_context = 0
         self.after_save: Callable[[], object] | None = None
+        # Open this video on its Upload step once selected; False until the select is asked for.
+        self.upload_next: tuple[int, bool] | None = None
         self.save_succeeded = False
         self.availability = ""
         self.selected: Video | None = None
         self.records: dict[int, Video] = {}
         self.entries: dict[int, LibraryEntry] = {}
-        self.tiktok_posted: set[int] = set()  # video IDs with a TikTok post; set by the window
-        self.tiktok_limit = TIKTOK_MAX_BYTES  # the video host's size limit; set by the window
+        # Video IDs posted on each Buffer platform, and the video host's size limit; both are
+        # set by the window.
+        self.buffer_posted: dict[str, set[int]] = {p.key: set() for p in PLATFORMS}
+        self.hosting_limit = max(p.max_bytes for p in PLATFORMS)  # until hosting is known
         self.setObjectName("videos")
         self.setWidgetResizable(True)
         content = QWidget()
@@ -330,7 +338,7 @@ class VideosPage(QScrollArea):
         outer.addWidget(self.stepper)
         # Upload step: the same two choices for every platform.
         self.upload_platform, self.upload_when = "youtube", "now"
-        self.when_changed: Callable[[str], None] | None = None  # set by the window (TikTok)
+        self.when_changed: Callable[[str], None] | None = None  # set by the window (Buffer)
         self.destinations = QWidget()
         self.destinations.setObjectName("ActionRow")
         targets = FlowLayout(self.destinations, 6)
@@ -339,6 +347,8 @@ class VideosPage(QScrollArea):
         for group, key, label, glyph in (
             ("platform", "youtube", "YouTube", ""),
             ("platform", "tiktok", "TikTok", ""),
+            ("platform", "instagram", "Instagram", ""),
+            ("platform", "facebook", "Facebook", ""),
             ("when", "now", "Now", "send"),
             ("when", "later", "Schedule", "calendar"),
         ):
@@ -385,9 +395,11 @@ class VideosPage(QScrollArea):
         side_layout.addWidget(text("FITS ON", "Eyebrow"))
         self.readiness = pill("", "Good")
         self.readiness.setAccessibleName("YouTube readiness result")
-        self.tiktok_fit = pill("", "Good")
-        self.tiktok_fit.setAccessibleName("TikTok readiness result")
-        for platform, badge in (("youtube", self.readiness), ("tiktok", self.tiktok_fit)):
+        self.fits = {"youtube": self.readiness}
+        for spec in PLATFORMS:
+            self.fits[spec.key] = pill("", "Good")
+            self.fits[spec.key].setAccessibleName(f"{spec.name} readiness result")
+        for platform, badge in self.fits.items():
             line = QHBoxLayout()
             line.setSpacing(8)
             line.addWidget(image(logo(platform, 18)))
@@ -449,7 +461,7 @@ class VideosPage(QScrollArea):
         edit_button = icon_button("Edit Details", "edit")
         edit_button.clicked.connect(lambda: self.tabs.setCurrentIndex(1))
         self.publish_next = icon_button("Continue to Upload", "upload", role="Primary")
-        self.publish_next.clicked.connect(lambda: self.tabs.setCurrentIndex(3))
+        self.publish_next.clicked.connect(lambda: self.go_step(3))
         self.schedule_next = icon_button("Schedule", "calendar")
         self.schedule_next.clicked.connect(lambda: self.tabs.setCurrentIndex(4))
         self.schedule_next.hide()  # the Upload step offers scheduling for every platform
@@ -467,9 +479,10 @@ class VideosPage(QScrollArea):
         self.set_busy(False)
 
     def upload_page(self) -> int:
-        """Pages 3 and 4 are YouTube now / scheduled; page 5 is TikTok (both, in one page)."""
-        if self.upload_platform == "tiktok":
-            return 5
+        """Pages 3 and 4 are YouTube now / scheduled; pages 5–7 are TikTok, Instagram and
+        Facebook (now and scheduled in one page each)."""
+        if self.upload_platform in BUFFER_PAGES:
+            return BUFFER_PAGES[self.upload_platform]
         return 4 if self.upload_when == "later" else 3
 
     def choose_upload(self, group: str, key: str) -> None:
@@ -482,9 +495,16 @@ class VideosPage(QScrollArea):
         self.tabs.setCurrentIndex(self.upload_page())
         self.sync_steps()
 
+    def open_upload(self, video_id: int) -> None:
+        """Select one video and show its Upload step (its Details while it isn't ready)."""
+        self.upload_next = (video_id, self.worker is None)
+        if self.worker is None:
+            self.start("select", video_id)  # otherwise asked for when the current work ends
+
     def go_step(self, index: int) -> None:
-        if index == 3 and self.tabs.currentIndex() not in (3, 4, 5):
-            index = self.upload_page()
+        if index == 3:
+            # The Upload step shows every platform; one platform's page opens from its row.
+            index = ALL_PAGE if self.tabs.count() > ALL_PAGE else self.upload_page()
         self.tabs.setCurrentIndex(index)
         self.sync_steps()
 
@@ -493,20 +513,21 @@ class VideosPage(QScrollArea):
         # Direct jumps to an upload page (tests, links) update the two choices to match.
         if current in (3, 4):
             self.upload_platform, self.upload_when = "youtube", "later" if current == 4 else "now"
-        elif current == 5:
-            self.upload_platform = "tiktok"
+        elif current in BUFFER_PAGES.values():
+            self.upload_platform = next(k for k, v in BUFFER_PAGES.items() if v == current)
         for index, step in self.step_buttons.items():
-            step.setChecked(current == index or (index == 3 and current in (3, 4, 5)))
+            step.setChecked(current == index or (index == 3 and current in UPLOAD_PAGES))
             step.setEnabled(self.tabs.isTabEnabled(index))
         for key, target in self.platform_buttons.items():
             target.setChecked(key == self.upload_platform)
-            page = 5 if key == "tiktok" else 3
+            page = BUFFER_PAGES.get(key, 3)
             target.setEnabled(page < self.tabs.count() and self.tabs.isTabEnabled(page))
         for key, target in self.when_buttons.items():
             target.setChecked(key == self.upload_when)
         if self.when_changed:
             self.when_changed(self.upload_when)
-        self.destinations.setVisible(current in (3, 4, 5) and self.mode == "editor")
+        # One platform at a time was confusing: platforms are ticked together on the Upload step.
+        self.destinations.setVisible(False)
         self.stepper.setVisible(self.mode == "editor")
 
     def use_filename(self) -> None:
@@ -802,13 +823,14 @@ class VideosPage(QScrollArea):
         layout.addLayout(names, 1)
         if entry.results:
             layout.addWidget(image(logo("youtube", 18)))
-        if video.id in self.tiktok_posted:
-            layout.addWidget(image(logo("tiktok", 18)))
+        for platform, posted in self.buffer_posted.items():
+            if video.id in posted:
+                layout.addWidget(image(logo(platform, 18)))
         if attention or video.error:
             status, tone = "Check file", "Bad"
         elif entry.plans:
             status, tone = "Scheduled", "Info"
-        elif entry.results or video.id in self.tiktok_posted:
+        elif entry.results or self.posted_through_buffer(video.id):
             status, tone = "Uploaded", "Good"
         elif entry.reviewed:
             status, tone = "Ready", "Good"
@@ -817,6 +839,9 @@ class VideosPage(QScrollArea):
         layout.addWidget(pill(status, tone))
         layout.addWidget(image(pixmap("chevron-right", 16, theme.SUBTLE)))
         return holder
+
+    def posted_through_buffer(self, video_id: int) -> bool:
+        return any(video_id in posted for posted in self.buffer_posted.values())
 
     def render_library(self) -> None:
         if not hasattr(self, "sort"):
@@ -832,7 +857,7 @@ class VideosPage(QScrollArea):
             self.sort.currentData(),
         )
         if category == "uploaded":  # on any platform
-            visible = [e for e in visible if e.results or e.video.id in self.tiktok_posted]
+            visible = [e for e in visible if e.results or self.posted_through_buffer(e.video.id)]
         for entry in visible:
             video = entry.video
             status = entry.label
@@ -883,7 +908,7 @@ class VideosPage(QScrollArea):
         )
         self.facts.setToolTip(self.details.toPlainText())
         if availability or video.error:
-            for badge in (self.readiness, self.tiktok_fit):
+            for badge in self.fits.values():
                 badge.setText("Not currently verified")
                 restyle(badge, "Bad")
             self.warnings.setText(
@@ -904,18 +929,17 @@ class VideosPage(QScrollArea):
         self.readiness.setText("Fits" if fits else "Check")
         restyle(self.readiness, "Good" if fits else "Warn")
         self.readiness.setToolTip("\n".join(result.messages) + "\n\n" + LIMITATIONS)
-        problems = media_errors(video, self.tiktok_limit)
-        self.tiktok_fit.setText("Fits" if not problems else "Won't post")
-        restyle(self.tiktok_fit, "Good" if not problems else "Bad")
-        self.tiktok_fit.setToolTip(
-            "\n".join(problems) or "Length, size, frame rate and file type suit TikTok."
-        )
-        self.warnings.setText(
-            "\n".join(
-                [f"YouTube: {m}" for m in result.messages if not fits]
-                + [f"TikTok: {m}" for m in problems]
+        lines = [f"YouTube: {m}" for m in result.messages if not fits]
+        for spec in PLATFORMS:
+            problems = media_errors(spec, video, self.hosting_limit)
+            badge = self.fits[spec.key]
+            badge.setText("Fits" if not problems else "Won't post")
+            restyle(badge, "Good" if not problems else "Bad")
+            badge.setToolTip(
+                "\n".join(problems) or f"Length, size, shape and file type suit {spec.name}."
             )
-        )
+            lines += [f"{spec.name}: {m}" for m in problems]
+        self.warnings.setText("\n".join(lines))
 
     @Slot(str)
     def failure(self, message: str) -> None:
@@ -933,6 +957,12 @@ class VideosPage(QScrollArea):
         self.set_busy(False)
         continuation = self.after_save if self.save_succeeded else None
         self.after_save = None
+        target, self.upload_next = self.upload_next, None
+        if target and self.selected and self.selected.id == target[0]:
+            self.go_step(3 if self.tabs.isTabEnabled(3) else 1)
+        elif target and not target[1] and not self.closing and not continuation:
+            self.open_upload(target[0])  # the page was busy when it was asked; select it now
+            return  # idle once that select has finished
         self.idle.emit()
         if continuation:
             continuation()

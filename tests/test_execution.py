@@ -13,7 +13,7 @@ import test_scheduling as fixtures
 from upload_support import REMOTE_ID
 
 from shortspublisher.execution import AutomaticPublisher, binding
-from shortspublisher.library import Library
+from shortspublisher.library import SCHEMA_VERSION, Library
 from shortspublisher.scheduling import ScheduleError
 from shortspublisher.upload_http import UploadReply
 
@@ -320,11 +320,13 @@ class ExecutionTests(unittest.TestCase):
         self.assertEqual(self.u.store.all()[0].state, "Processing")
 
     def test_limit_bounds_and_persistence(self):
-        for limit in (0, 11):
+        for limit in (0, 101):
             with self.assertRaises(ScheduleError):
                 self.a.control(True, limit)
-        self.a.control(True, 2)
-        self.assertEqual(self.a.status()["daily_limit"], 2)
+        # Up to YouTube's own 100 uploads a day; the database accepts it since schema 14.
+        for limit in (15, 100, 2):
+            self.a.control(True, limit)
+            self.assertEqual(self.a.status()["daily_limit"], limit)
 
     def test_legacy_migration_preserves_every_column(self):
         target = self.u.root / "legacy.sqlite3"
@@ -339,7 +341,7 @@ class ExecutionTests(unittest.TestCase):
                 self.assertEqual(
                     [tuple(r) for r in db.execute("select * from " + name)], values, name
                 )
-            self.assertEqual(db.execute("pragma user_version").fetchone()[0], 12)
+            self.assertEqual(db.execute("pragma user_version").fetchone()[0], SCHEMA_VERSION)
             self.assertEqual(
                 db.execute("select sum(execution_enabled) from scheduled_jobs").fetchone()[0], 0
             )
@@ -554,7 +556,7 @@ class ExecutionTests(unittest.TestCase):
 import sys
 from datetime import datetime
 from types import SimpleNamespace
-from shortspublisher.library import Library
+from shortspublisher.library import Library, SCHEMA_VERSION
 from shortspublisher.scheduling import ScheduleService
 from shortspublisher.execution import AutomaticPublisher
 from shortspublisher.upload_store import UploadStore

@@ -130,7 +130,7 @@ class WatchPanel(Section):
     library_changed = Signal()
 
     def __init__(self, service: WatchService):
-        super().__init__("Watched folders")
+        super().__init__("Folder activity")
         self.setObjectName("Card")
         self.outer.setContentsMargins(20, 20, 20, 20)
         self.heading.setObjectName("Heading")
@@ -144,15 +144,19 @@ class WatchPanel(Section):
         self.evidence: dict[str, Any] = {}
         self.pending: dict[str, Any] | None = None
         self.counts: tuple[Any, ...] = ()
+        self.queued: tuple[str, Any] | None = None  # a click that arrived during a scan
         self.body.addWidget(
             text(
-                "New finished videos in these folders are added to your library by themselves. "
-                "Watching only adds videos; an auto upload decides what uploads.",
+                "What was found in your watched folders. New finished videos are added to your "
+                "library, then the folder's auto upload above uploads them.",
                 "Muted",
             )
         )
         self.choose = natural(icon_button("Watch a Folder…", "folder"))
         self.choose.clicked.connect(self.choose_folder)
+        # Folders are added with "Watch a Folder…" on the Auto Upload page, together with what
+        # they upload; this panel only reports on them.
+        self.choose.hide()
         self.folder = QComboBox()
         self.folder.setAccessibleName("Watched folders")
         self.folder.setMinimumWidth(0)
@@ -272,15 +276,21 @@ class WatchPanel(Section):
         self.choose_folder()
 
     def start(self, action: str, argument: Any = None) -> None:
-        if self.worker or self.closing or (action == "scan" and self.configuring):
+        if self.closing or (action == "scan" and self.configuring):
+            return
+        if self.worker:
+            if action != "scan":
+                self.queued = (action, argument)  # runs as soon as the current scan ends
             return
         self.pending = None
         self.worker = WatchWorker(self.service, action, argument, self)
         self.worker.result.connect(self.receive)
         self.worker.progress.connect(self.feedback.setText)
         self.worker.finished.connect(self.finished)
-        for button in (self.choose, self.scan_button, self.pause, self.change, self.remove):
-            button.setEnabled(False)
+        if action != "scan":
+            # Scans run every few seconds; they leave the buttons alone so nothing flickers.
+            for button in (self.choose, self.scan_button, self.pause, self.change, self.remove):
+                button.setEnabled(False)
         self.worker.start()
 
     @Slot(object)
@@ -291,6 +301,14 @@ class WatchPanel(Section):
             self.feedback.setText("Local importing needs attention: " + result["error"])
             return
         self.pending = result
+        if (result["folders"], result["files"], result["evidence"]) == (
+            self.folders,
+            self.records,
+            self.evidence,
+        ) and "folder_id" not in result:
+            if result.get("action") == "scan":
+                self.feedback.setText("Scan complete. " + result.get("message", ""))
+            return  # nothing changed since the last scan: no redraw
         selected = self.folder.currentData()
         self.folders, self.records, self.evidence = (
             result["folders"],
@@ -389,6 +407,7 @@ class WatchPanel(Section):
         ):
             control.setVisible(folder is not None)
         self.status.setToolTip(self.diagnostics.toPlainText()[:4000] if folder else "")
+        self.setVisible(bool(self.folders))
 
     @Slot()
     def finished(self) -> None:
@@ -402,6 +421,11 @@ class WatchPanel(Section):
             return
         proposal = self.pending.get("proposal") if self.pending else None
         self.pending = None
+        if self.queued and not proposal:
+            action, argument = self.queued
+            self.queued = None
+            self.start(action, argument)
+            return
         if proposal:
             dialog = FolderConsent(proposal, self)
             self.configuring = True

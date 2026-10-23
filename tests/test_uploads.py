@@ -18,7 +18,7 @@ from upload_support import REMOTE_ID, SESSION, ControlledUploadHTTP, MemorySessi
 
 from shortspublisher.accounts import AccountRepository, AccountService, Connection
 from shortspublisher.auth import SCOPE, UPLOAD_SCOPES, AccountError, Tokens
-from shortspublisher.library import Library, LibraryError
+from shortspublisher.library import SCHEMA_VERSION, Library, LibraryError
 from shortspublisher.media import Inspector
 from shortspublisher.preparation import PreparationStore
 from shortspublisher.upload_http import (
@@ -459,7 +459,7 @@ class UploadServiceTests(unittest.TestCase):
             }
         self.library.initialize()
         with closing(self.library.connect()) as db:
-            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 12)
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], SCHEMA_VERSION)
             for table in tables:
                 self.assertEqual(
                     before[table], [tuple(row) for row in db.execute("SELECT * FROM " + table)]

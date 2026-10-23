@@ -34,7 +34,7 @@ from PySide6.QtWidgets import (
 from ..automation import CONSENT, AutomationService, title_for
 from ..cadence import Rule
 from . import theme
-from .components import CardGrid, Section, card, day_row, flow, icon_button, natural
+from .components import Section, card, day_row, flow, icon_button, natural
 from .formatting import system_zone, time_pattern, timestamp
 from .icons import image, logo, pixmap
 from .recurring import outcome, rule_label
@@ -72,7 +72,7 @@ class ProfileConsent(QDialog):
                     f"Title template: {s['title_template']}\nDescription: {s['description']}\nTags: {', '.join(s['tags'])}\nMade for Kids: {s['made_for_kids']}\nSynthetic content: {s['synthetic']}\nCategory: People & Blogs (22; existing uploader)",
                     f"Eligibility: {s['pattern']}; square/portrait inspected video, at most {s['max_seconds']} seconds and {s['max_bytes'] / 1024**2:g} MiB. No symlinks or subfolders. Invalid/ambiguous metadata needs review. No title truncation.",
                     rule_label(Rule.decode(s["rule"])),
-                    f"Up to {s['limit']} automatic claims per UTC day, subject to the smaller current global limit. Repeated DST time uses first occurrence; gaps and missed/empty opportunities skip without catch-up. At most 100 waiting entries; overflow waits locally.",
+                    f"At most {s['limit']} automatic uploads per UTC day (YouTube's own limit). Repeated DST time uses first occurrence; gaps and missed/empty opportunities skip without catch-up. At most 100 waiting entries; overflow waits locally.",
                     "Background: "
                     + (
                         "Approved if both folder permission and the separately authorized service are enabled."
@@ -529,6 +529,23 @@ def runs_when(p: dict[str, Any], service: str | None) -> str:
     return f"Background posting allowed, but it only happens once the service runs (Settings) · {state}"
 
 
+def section_head(glyph: str, title: str, detail: str, action: QWidget | QHBoxLayout) -> QVBoxLayout:
+    """A page section's title, explanation and its one start button, above its cards."""
+    head = QVBoxLayout()
+    head.setSpacing(4)
+    line = QHBoxLayout()
+    line.setSpacing(10)
+    line.addWidget(image(pixmap(glyph, 22, theme.ACCENT_TEXT)))
+    line.addWidget(text(title, "Heading"), 1)
+    if isinstance(action, QWidget):
+        line.addWidget(action)
+    else:
+        line.addLayout(action)
+    head.addLayout(line)
+    head.addWidget(text(detail, "Muted"))
+    return head
+
+
 class AutomationController(QObject):
     idle = Signal()
 
@@ -543,6 +560,8 @@ class AutomationController(QObject):
         )
         self.closing = False
         self.pending: dict[str, Any] = {}
+        self.queued: tuple[str, Any] | None = None  # a click that arrived during a refresh
+        self.loaded: dict[str, Any] = {}  # the last load, so an identical one isn't redrawn
         self.data: dict[str, Any] = {"profiles": [], "decisions": []}
         self.recurring: dict[str, Any] = {"items": [], "plans": [], "control": {}}
         self.folders: list[dict[str, Any]] = []
@@ -561,32 +580,28 @@ class AutomationController(QObject):
         names = QVBoxLayout()
         names.setSpacing(4)
         names.addWidget(text("Auto Upload", "Title"))
-        names.addWidget(
-            text(
-                "Add videos to a folder and they upload by themselves, on your schedule, to every "
-                "platform you pick.",
-                "Muted",
+        names.addWidget(text("Videos upload by themselves at the times you choose.", "Muted"))
+        top.addLayout(names, 1)
+        body.addLayout(top)
+        # Two plain sections: folders that upload new videos, and videos picked one by one.
+        self.new = icon_button("Watch a Folder…", "folder", role="Primary")
+        self.new.setAccessibleName("New Auto Upload…")
+        self.new.clicked.connect(lambda: self.start("open"))
+        body.addLayout(
+            section_head(
+                "folder",
+                "Watched folders",
+                "Put new videos in a watched folder and each one uploads by itself to the "
+                "platforms you pick. Videos already in the folder are left alone.",
+                self.new,
             )
         )
-        top.addLayout(names, 1)
-        self.new = icon_button("New Auto Upload…", "plus", role="Primary")
-        self.new.clicked.connect(lambda: self.start("open"))
-        top.addWidget(self.new, 0, Qt.AlignmentFlag.AlignBottom)
-        body.addLayout(top)
-        # Shown until the first auto upload exists.
-        self.intro = CardGrid(minimum=200, spacing=14, maximum=3)
-        for number, glyph, title, detail in (
-            (1, "folder", "Pick a folder", "Only new videos you add later are uploaded."),
-            (2, "edit", "Write the details once", "One title, description and tags for all."),
-            (3, "calendar", "Choose times and platforms", "YouTube, TikTok, or both."),
-        ):
-            tile, tile_body = card(16, 6, "Tile")
-            tile_body.addWidget(image(pixmap(glyph, 22, theme.ACCENT_TEXT)))
-            tile_body.addWidget(text(f"{number}. {title}", "Subheading"))
-            tile_body.addWidget(text(detail, "Subtle"))
-            self.intro.add(tile)
-        body.addWidget(self.intro)
-
+        self.folders_empty = text(
+            "No watched folders yet. Choose Watch a Folder to pick a folder, write the details "
+            "once, and choose the times and platforms.",
+            "Notice",
+        )
+        body.addWidget(self.folders_empty)
         self.youtube_card, youtube = card(20, 12)
         heading = QHBoxLayout()
         heading.setSpacing(10)
@@ -603,7 +618,7 @@ class AutomationController(QObject):
         self.headline = text("No YouTube auto uploads yet", "Notice")
         youtube.addWidget(self.headline)
         self.status = text(
-            "Choose New Auto Upload to pick a folder, details, times and platforms.", "Muted"
+            "Choose New Folder Upload to pick a folder, details, times and platforms.", "Muted"
         )
         youtube.addWidget(self.status)
         self.activity = QListWidget()
@@ -634,11 +649,26 @@ class AutomationController(QObject):
         self.details.setReadOnly(True)
         self.details.hide()
         body.addWidget(self.youtube_card)
-        # TikTok auto uploads and watched folders are placed here by the window.
+        # TikTok, Instagram and Facebook auto uploads and watched folders are placed here by the
+        # window.
         self.tiktok_slot = QVBoxLayout()
         body.addLayout(self.tiktok_slot)
         self.folders_slot = QVBoxLayout()
         body.addLayout(self.folders_slot)
+        # Individual videos: the window places the queue card and its start button here.
+        self.queue_new_slot = QHBoxLayout()
+        body.addSpacing(10)
+        body.addLayout(
+            section_head(
+                "videos",
+                "Individual videos",
+                "Upload one video now or at a time you pick, or choose several from your library "
+                "to upload one at a time, in order, at the times you choose.",
+                self.queue_new_slot,
+            )
+        )
+        self.queue_slot = QVBoxLayout()
+        body.addLayout(self.queue_slot)
         body.addStretch()
         self.page.setWidget(content)
         self.summary = text("Automatic Posting · no profile loaded.", "Muted")
@@ -665,18 +695,24 @@ class AutomationController(QObject):
                 self.window.background.start("status")
 
     def start(self, action: str, argument: Any = None) -> None:
-        if self.worker or self.closing:
+        if self.closing:
+            return
+        if self.worker:
+            if action != "load":
+                self.queued = (action, argument)  # runs as soon as the current work ends
             return
         self.pending = {}
         self.worker = AutomationWorker(self, action, argument)
         self.worker.result.connect(self.receive)
         self.worker.finished.connect(self.finished)
-        self.new.setEnabled(False)
-        for button in self.buttons.values():
-            button.setEnabled(False)
-        if self.editor:
-            self.editor.review.setEnabled(False)
-            self.editor.add_folder.setEnabled(False)
+        if action != "load":
+            # Regular refreshes leave the buttons alone, so nothing flickers every few seconds.
+            self.new.setEnabled(False)
+            for button in self.buttons.values():
+                button.setEnabled(False)
+            if self.editor:
+                self.editor.review.setEnabled(False)
+                self.editor.add_folder.setEnabled(False)
         self.worker.start()
 
     def receive(self, result: dict[str, Any]) -> None:
@@ -703,7 +739,10 @@ class AutomationController(QObject):
             if self.editor:
                 self.editor.feedback.setText(result["error"])
                 self.editor.feedback.setVisible(True)
+        unchanged = action == "load" and "state" in result and result == self.loaded
         if "state" in result:
+            self.loaded = result
+        if "state" in result and not unchanged:
             self.data, self.recurring, self.folders, self.account = (
                 result["state"],
                 result["recurring"],
@@ -770,6 +809,10 @@ class AutomationController(QObject):
             self.editor.deleteLater()
             self.editor = None
         self.idle.emit()
+        if self.queued and not self.worker:
+            action, argument = self.queued
+            self.queued = None
+            self.start(action, argument)
 
     def render(self) -> None:
         p = self.current()
@@ -790,16 +833,17 @@ class AutomationController(QObject):
             self.buttons[key].setVisible(p is not None)
         self.activity.setVisible(p is not None)  # no empty list box before the first automation
         self.profiles.setVisible(len(self.data["profiles"]) > 1)
-        tiktok = getattr(self.window, "tiktok", None)
-        self.intro.setVisible(
-            not self.data["profiles"] and not (tiktok and tiktok.data["profiles"])
-        )
-        # A platform's card appears once it has an auto upload; until then the steps explain.
+        # A platform's card appears once it has an auto upload; until then one line explains.
         self.youtube_card.setVisible(any(not x["removed"] for x in self.data["profiles"]))
+        socials = getattr(self.window, "socials", ())
+        self.folders_empty.setVisible(
+            not self.youtube_card.isVisibleTo(self.page)
+            and not any(s.data["profiles"] for s in socials)
+        )
         if not p:
             self.headline.setText("No YouTube auto uploads yet")
             self.status.setText(
-                "Choose New Auto Upload to pick a folder, details, times and platforms. You can "
+                "Choose New Folder Upload to pick a folder, details, times and platforms. You can "
                 "still upload single videos from Videos."
             )
             return

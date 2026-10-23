@@ -9,7 +9,7 @@ from PySide6.QtWidgets import QMessageBox, QPlainTextEdit
 from support import settle
 
 from shortspublisher.app import build
-from shortspublisher.ui.recurring import BatchConfirmation, RecurringEditor, outcome
+from shortspublisher.ui.recurring import BatchConfirmation, PickVideo, RecurringEditor, outcome
 
 
 class RecurringUiTests(unittest.TestCase):
@@ -42,7 +42,7 @@ class RecurringUiTests(unittest.TestCase):
             self.w.watching,
             self.w.automatic,
             self.w.background,
-            self.w.tiktok,
+            *self.w.socials,
             self.w.dashboard,
         ):
             controller.stop_for_quit()
@@ -92,13 +92,55 @@ class RecurringUiTests(unittest.TestCase):
     def test_options_and_default_background(self):
         e = self.editor()
         self.assertFalse(e.background.isChecked())
-        self.assertEqual(e.limit.maximum(), 3)
+        # No daily limit field: only YouTube's own 100 a day applies.
+        self.assertEqual(e.limit, 100)
+        self.assertEqual(e.values()["limit"], 100)
         self.assertEqual(
             {e.frequency.itemData(i) for i in range(e.frequency.count())}, {0, 1, 2, 3, 4, -1}
         )
         self.assertEqual(e.hours.minimum(), 1)
         self.assertEqual(e.hours.maximum(), 24)
         self.assertEqual(e.videos.count(), 1)
+
+    def test_videos_are_ticked_counted_and_cleared(self):
+        e = self.editor()
+        self.assertFalse(e.dirty)  # opening the window is not an edit
+        self.assertEqual(e.chosen.text(), "None chosen")
+        item = e.videos.item(0)
+        self.assertTrue(item.flags() & Qt.ItemFlag.ItemIsUserCheckable, item.text())
+        item.setCheckState(Qt.CheckState.Checked)
+        self.assertEqual(e.chosen.text(), "1 chosen")
+        self.assertEqual(e.values()["videos"], [item.data(Qt.ItemDataRole.UserRole)])
+        self.assertTrue(e.dirty)
+        e.tick(False)
+        self.assertEqual(e.values()["videos"], [])
+        e.tick(True)
+        self.assertEqual(e.chosen.text(), "1 chosen")
+        # Steps like a new auto upload; the name sits with the times, and the only channel is
+        # named under "Where", not in a dropdown.
+        self.assertEqual([b.text() for b in e.step_buttons], ["1  Videos", "2  Where", "3  When"])
+        self.assertFalse(e.review.isVisibleTo(e))
+        e.go(2)
+        self.assertTrue(e.review.isVisibleTo(e))
+        self.assertTrue(e.name.isVisibleTo(e))
+        self.assertFalse(e.channel.isVisibleTo(e))
+
+    def test_upload_one_video_opens_its_upload_step(self):
+        picked = []
+
+        def choose(dialog):
+            self.assertEqual(dialog.videos.count(), 1)
+            dialog.open()
+            picked.append(dialog.choice)
+            return dialog.result()
+
+        with (
+            patch.object(PickVideo, "exec", choose),
+            patch.object(self.w.videos, "open_upload") as opened,
+        ):
+            self.c.single.click()
+        opened.assert_called_once_with(picked[0])
+        self.assertIs(self.w.stack.currentWidget(), self.w.videos)
 
     def test_day_presets(self):
         e = self.editor()
@@ -139,7 +181,7 @@ class RecurringUiTests(unittest.TestCase):
         self.assertFalse(e.frequency.isEnabled())
         self.assertFalse(e.zone.isEnabled())
         self.assertFalse(e.background.isEnabled())
-        self.assertFalse(e.videos.item(0).flags() & Qt.ItemFlag.ItemIsSelectable)
+        self.assertFalse(e.videos.item(0).flags() & Qt.ItemFlag.ItemIsUserCheckable)
 
     def test_verified_outcome_is_conservative(self):
         self.assertEqual(outcome({"attempt_state": "Needs Reconciliation"}), "Needs reconciliation")

@@ -26,7 +26,8 @@ FREE_PLAN_MAX_BYTES = 100 * 1024**2  # Cloudinary Free plan per-video upload lim
 
 
 class HostingError(Exception):
-    """kind: config, consent, source, size, network, uncertain, api, access."""
+    """kind: config, consent, source, size, network, uncertain, api, access, quota (the account
+    is over its plan's limits; another account may still accept the video)."""
 
     def __init__(self, message: str, kind: str = "api") -> None:
         super().__init__(message)
@@ -92,6 +93,15 @@ def cloudinary_fields(cloud_name: str, api_key: str, api_secret: str) -> tuple[s
             "The API secret looks incomplete. Copy it again with the copy button.", "config"
         )
     return cloud, key, secret
+
+
+def over_limit(status: int, message: str) -> bool:
+    """A refusal because the account used up its plan (credits, storage, rate), not because of
+    this video: nothing was stored, so another account may take the same upload."""
+    text = message.lower()
+    if status in (420, 429):
+        return True
+    return "size" not in text and any(word in text for word in ("quota", "exceed", "usage limit"))
 
 
 class CloudinaryHost:
@@ -196,6 +206,11 @@ class CloudinaryHost:
                 message = response.json().get("error", {}).get("message", "")
             except ValueError:
                 message = ""
+            if over_limit(response.status_code, message):
+                raise HostingError(
+                    f"This Cloudinary account ({self.cloud}) is over its plan's limits. {message}".strip(),
+                    "quota",
+                )
             raise HostingError(f"Cloudinary did not accept the video. {message}".strip(), "api")
         data = response.json()
         hosted = Hosted(

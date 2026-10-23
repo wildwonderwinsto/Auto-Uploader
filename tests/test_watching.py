@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 from support import make_video
 
-from shortspublisher.library import Library, LibraryService
+from shortspublisher.library import SCHEMA_VERSION, Library, LibraryService
 from shortspublisher.media import Inspector
 from shortspublisher.watching import WatchError, WatchService
 
@@ -411,7 +411,7 @@ class WatchTests(unittest.TestCase):
         self.library.initialize()
         self.assertEqual(self.library.all(), before)
         with closing(self.library.connect()) as db:
-            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 12)
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], SCHEMA_VERSION)
 
     def test_new_only_readd_excludes_previously_waiting(self):
         identity = self.add()
@@ -486,7 +486,7 @@ class WatchTests(unittest.TestCase):
         script = """import sys
 from threading import Event
 from pathlib import Path
-from shortspublisher.library import Library, LibraryService
+from shortspublisher.library import Library, LibraryService, SCHEMA_VERSION
 from shortspublisher.media import Inspector
 from shortspublisher.watching import WatchService
 s=WatchService(LibraryService(Library(Path(sys.argv[1])),Inspector()),lambda:120)

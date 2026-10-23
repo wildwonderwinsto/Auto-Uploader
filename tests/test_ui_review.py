@@ -98,7 +98,7 @@ class LayoutTests(unittest.TestCase):
         self.assertNotIn("Analytics", texts)
 
     def test_sidebar_shows_global_publishing_state(self):
-        self.assertIn("Auto uploading", self.window.automatic.state.text())
+        self.assertEqual("Auto uploading", self.window.automatic.title.text())
         self.assertTrue(self.window.automatic.state.isVisible())
 
     def test_stop_hidden_without_active_upload(self):
@@ -190,7 +190,7 @@ class SetupStepTests(unittest.TestCase):
             window.watching,
             window.automatic,
             window.background,
-            window.tiktok,
+            *window.socials,
             window.dashboard,
         ):
             c.stop_for_quit()

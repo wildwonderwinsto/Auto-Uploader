@@ -1,25 +1,71 @@
-# ShortsPublisher
+# ShortsScheduler — detailed guide
+
+The full reference that grew with each development stage. New here? Start with the
+[README](../README.md).
 
 A local-first macOS desktop application for preparing and publishing short vertical videos to
 YouTube — manually, on an approved schedule, from recurring queues, or automatically from watched
-folders under explicit standing approval. YouTube is implemented and live-verified; TikTok is
-implemented through Buffer (see [Stage 19](docs/stage-19-buffer-tiktok-verification.md) for the
-one-time Buffer, relay-page and Cloudinary setup) and has not yet been used live.
+folders under explicit standing approval. YouTube is implemented and live-verified. TikTok is
+implemented through Buffer and live-verified once (see [Stage 19](stage-19-buffer-tiktok-verification.md)
+for the one-time Buffer, relay-page and Cloudinary setup). Instagram Reels and Facebook Page Reels
+use the same Buffer setup (see [Stage 20](stage-20-verification.md)) and have not yet been
+used live.
 
-- Current capabilities and limitations: [docs/current-status.md](docs/current-status.md)
-- Developer commands and native checks: [docs/development.md](docs/development.md)
-- Architecture and safety decisions: [docs/architecture.md](docs/architecture.md)
-- AI-assistant handoff map: [CLAUDE.md](CLAUDE.md)
-- Latest stage: [Stage 19 — TikTok through Buffer](docs/stage-19-buffer-tiktok-verification.md);
-  previous: [Stage 18](docs/stage-18-verification.md).
+- Current capabilities and limitations: [docs/current-status.md](current-status.md)
+- Developer commands and native checks: [docs/development.md](development.md)
+- Architecture and safety decisions: [docs/architecture.md](architecture.md)
+- AI-assistant handoff map: [CLAUDE.md](../CLAUDE.md)
+- Latest stage: [Stage 20 — Instagram and Facebook through Buffer](stage-20-verification.md);
+  previous: [Stage 19 — TikTok through Buffer](stage-19-buffer-tiktok-verification.md).
 
 **Live folder-to-YouTube publishing remains pending personal in-app approval and activation.**
 Packaging is not included.
 
+## Instagram and Facebook (through Buffer)
+
+They use the Buffer app client and video hosting you set up for TikTok.
+1. In Buffer (<https://account.buffer.com/channels>) connect an **Instagram Business or Creator**
+   account (personal accounts only get phone reminders) and a **Facebook Page** (not a profile or
+   Group). Buffer's Free plan allows three channels: TikTok, Instagram and Facebook.
+2. In **Accounts**, choose **Connect** on any of the three cards. Your existing Buffer sign-in is
+   reused (otherwise Buffer's sign-in opens in the browser), and one window lists the TikTok,
+   Instagram and Facebook accounts in your Buffer: tick the ones to connect and choose **Connect**.
+3. Open a video, write its details once, mark it ready in **Review**, then choose **Upload**: every
+   ready platform (YouTube, TikTok, Instagram, Facebook) is ticked; untick any, pick **Now** or
+   **Schedule**, and choose **Upload to N Platforms…**. You confirm once (YouTube also shows its own
+   exact-details confirmation). **Options** on a platform's row opens its own page and history.
+   Instagram asks for the AI-generated content label in Details; Facebook has none. Posts are
+   public Reels; Facebook Reels must be 9:16, at least 540×960 and 3–90 seconds ("Fits on" shows
+   this per video).
+4. **Auto Upload** (**Watched folders**, or **Individual videos** you choose) offers every
+   connected platform; each platform gets its own
+   approval.
+
+### When a Buffer or Cloudinary account reaches its limits
+
+Each backup must be a **separate sign-up** (its own email) — another API key of the same account
+shares that account's limits. Backups are used automatically, in list order.
+
+- **Cloudinary:** Settings → Video hosting → **Add Cloudinary Account…**, then follow the steps:
+  sign up, copy the new account's API environment variable (`cloudinary://…`), paste, **Add**. When
+  an account is over its plan's limits, the next one takes the video; the full one is skipped for a
+  day (**Check Usage** shows every account's credits). Removing the main account makes the first
+  backup the main one.
+- **Buffer:** first sign up for another Buffer account and connect the **same** TikTok, Instagram
+  and Facebook accounts in it. Sign out of Buffer in your browser, then Settings → Buffer connection
+  → **Add Buffer Account…** → name it → **Add and Sign In**. The app tells you which of your
+  accounts it found there. When a Buffer account reaches a limit, posts go through the next signed-in
+  account automatically — only to the same TikTok/Instagram/Facebook account, never a different one,
+  and never the same video twice.
+
 ## Automatic folder posting
 
-1. Open **Automatic Posting → New Automation**. Select an authorized watched folder or choose and
-   authorize a local folder. Local-import consent alone does not permit publishing.
+1. Open **Auto Upload → Watched folders → Watch a Folder…**. Select an authorized watched folder
+   or choose and authorize a local folder. Local-import consent alone does not permit publishing.
+   (For videos you pick yourself, use **Auto Upload → Individual videos**: **Upload One Video…**
+   opens one video on its Upload step, and **Choose Videos…** ticks several to upload one at a
+   time at your times.) Nothing uploads automatically while the sidebar's **Auto uploading** switch is Off;
+   the sidebar and a warning bar on each page say what is being held back.
 2. Choose the connected channel and mode. **Review Before Publishing** is the default and requires
    individual human review. **Approved Automatic Publishing** uses separate standing authorization
    for qualifying future files; it never fabricates human review completion.
@@ -52,8 +98,7 @@ schedules and finite approved Stage 15 batches remain available.
    then explicitly approve automatic Public uploads of that batch. New plans start paused.
 5. Activate the plan and separately enable global scheduled publishing. At each opportunity the
    next valid approved video can start through the existing uploader, without another dialog.
-   The default global budget is three automatic claims per UTC day (configurable 1–10).
-   A plan cannot exceed its approved cap or the current global limit.
+   ShortsScheduler sets no daily limit of its own; only YouTube's own 100 uploads a day applies.
 6. Queue shows ordered videos, actual acknowledged transfer progress and verified/uncertain outcomes.
    Calendar shows future opportunities separately from concrete individual jobs. Pause/resume,
    reorder or remove unstarted items; history remains. Approving additional videos requires a new
@@ -131,41 +176,8 @@ system locale's 12/24-hour convention. Display formatting never changes approved
 
 ## Quick start on this Mac
 
-Close any existing ShortsPublisher window, then double-click **Start ShortsPublisher.command**
-in this project folder. It opens your established StonkYa workspace (`artifacts/stage6-live`),
-including the existing connection, videos and history. A Terminal window stays open while the
-application runs. Quit the application normally before closing that Terminal window.
-
-The launcher saves and integrity-checks a timestamped SQLite backup in
-`artifacts/stage6-live/backups/` before starting. Backups contain library records, not video files
-or Keychain credentials. Existing scheduling preferences still apply when the application opens.
-
-To launch the same workspace manually from Terminal:
-
-```sh
-cd "/Users/winston/CodexProjects/Auto Uploader"
-./"Start ShortsPublisher.command"
-```
-
-A local PySide6 desktop application with a persistent video library, editable YouTube
-publishing drafts, and a revision-bound local review workflow. Import and inspect a video,
-prepare its metadata, save a draft, and explicitly complete review. Original videos stay
-in their existing locations. On macOS, connect YouTube and explicitly confirm one reviewed
-video for a resumable **Private or Public** upload, with saved history and interruption recovery.
-Stage 9 adds explicitly activated automatic Public uploads to the persistent Queue and Calendar.
-Stage 10 adds an optional macOS LaunchAgent that uses the same scheduler while the interface is closed.
-It requires separate service consent and background permission for each job. Analytics remains unimplemented.
-
-**One live Private upload has succeeded**, with independent YouTube verification of the expected
-channel, Private privacy and successful processing. **Stage 6 is complete:** the connection and
-upload history survived restarting, with one recorded attempt and no new upload attempt.
-Controlled automated/native regressions are documented separately from live results.
-See [Stage 6 status and next steps](docs/stage-6-verification.md).
-
-ShortsPublisher owns upload timing; it never uses YouTube's `publishAt`. Stage 9 has controlled
-automated/native verification and one real user-authorized scheduled Public upload, independently
-verified with successful processing and restart without duplication.
-See [Stage 9 verification](docs/stage-9-verification.md) and the [roadmap](docs/roadmap.md).
+Install with `./install.sh` and open **ShortsScheduler.app**; see the [README](../README.md). The
+app backs up its library (`backups/` in the data folder) before every launch.
 
 ## Optional macOS background publishing
 
@@ -227,7 +239,7 @@ QT_QPA_PLATFORM=cocoa .venv/bin/python tests/native_background_continue.py --roo
 These use isolated test service labels and real synthetic Keychain entries with controlled Google
 responses. They install real per-user LaunchAgents, prove GUI exit and worker survival, reopen during
 transfer, restart without duplicates, then remove test services/credentials. They never access the
-StonkYa credential or publish to YouTube. A real background Public test needs separate explicit consent.
+the owner's channel credential or publish to YouTube. A real background Public test needs separate explicit consent.
 
 ## Preparing and previewing a video
 
@@ -404,7 +416,7 @@ verification fields without rewriting existing snapshots; old verification times
 
 **Stage 7 live verification passed:** one user-confirmed Public upload was independently verified
 with successful processing and persistent history after restart. Each new upload still needs its own direct final confirmation. Do not reuse or publish Stage 6's Private
-video `bfNDN1Gq540`. See [Stage 7 verification](docs/stage-7-verification.md).
+video `<youtube-video-1>`. See [Stage 7 verification](stage-7-verification.md).
 
 ## Upload one reviewed video privately
 
@@ -591,8 +603,8 @@ selection and removal-confirmation response; manual OS picker interaction is not
 - `media.py`: safe cancellable FFprobe inspection and metadata parsing.
 - `readiness.py`: versioned YouTube technical rules, independent of UI and storage.
 - `watching.py`, `watch_schema.py`, `ui/watching.py`: shared local scanner, persistent content registry, consent and import activity.
-- `library.py`: SQLite records, transactional schema migrations through version 12 and local library operations.
-- `buffer.py`, `hosting.py`, `tiktok.py`, `tiktok_schema.py`, `ui/tiktok.py`: TikTok through Buffer with Cloudinary media hosting.
+- `library.py`: SQLite records, transactional schema migrations through version 14 and local library operations.
+- `buffer.py`, `hosting.py`, `social.py`, `social_schema.py`, `ui/social.py`: TikTok, Instagram and Facebook through Buffer with Cloudinary media hosting (`tiktok.py`, `tiktok_schema.py`, `ui/tiktok.py` keep the Stage 19 names).
 - `recurring.py`, `cadence.py`, `automation.py` and their `*_schema.py` / `ui/*.py`: recurring queues, posting opportunities and automatic folder profiles.
 - `background.py`, `background_state.py`, `worker.py`, `worker_entry.py`, `ui/background.py`: optional LaunchAgent service.
 - `ui/formatting.py`: English, time-zone-aware display of dates, times, sizes and statuses.
@@ -625,13 +637,13 @@ The harness imports a real generated Short, edits every field, saves, reviews, e
 another process, checks exact metadata, changes a reviewed field, and reviews again. Only the
 OS file-picker result is supplied automatically. Screenshots and source hash checks are real.
 
-See [architecture](docs/architecture.md), [Stage 2 verification](docs/stage-2-verification.md),
-[Stage 3 verification](docs/stage-3-verification.md), and
-[Stage 4 verification](docs/stage-4-verification.md), and
-[Stage 5 verification](docs/stage-5-verification.md), [Stage 6 verification](docs/stage-6-verification.md),
-and [Stage 7 verification](docs/stage-7-verification.md). Stage 7 is live-verified. See [Stage 8 verification](docs/stage-8-verification.md) for local scheduling.
-See [Stage 10 verification](docs/stage-10-verification.md) for the optional macOS service.
-Real background YouTube publishing remains unverified. See [Stage 11 UI verification](docs/stage-11-verification.md).
+See [architecture](architecture.md), [Stage 2 verification](stage-2-verification.md),
+[Stage 3 verification](stage-3-verification.md), and
+[Stage 4 verification](stage-4-verification.md), and
+[Stage 5 verification](stage-5-verification.md), [Stage 6 verification](stage-6-verification.md),
+and [Stage 7 verification](stage-7-verification.md). Stage 7 is live-verified. See [Stage 8 verification](stage-8-verification.md) for local scheduling.
+See [Stage 10 verification](stage-10-verification.md) for the optional macOS service.
+Real background YouTube publishing remains unverified. See [Stage 11 UI verification](stage-11-verification.md).
 
 Native Stage 4 controlled-provider workflow (fresh disposable root; uses an isolated real Keychain namespace):
 
@@ -689,4 +701,4 @@ activation, Qt timer dispatch, exact-byte transfer, independent result parsing, 
 wrong-channel cases, and restart without another upload. They do not establish live YouTube success.
 
 Stage 12 adds focused library discovery, selection retention and preview feedback. See
-[Stage 12 verification](docs/stage-12-verification.md).
+[Stage 12 verification](stage-12-verification.md).

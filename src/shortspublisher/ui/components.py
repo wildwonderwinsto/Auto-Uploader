@@ -1,11 +1,12 @@
 """Small presentation helpers shared across workflow pages."""
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 
-from PySide6.QtCore import QEvent, QObject, QPoint, QRect, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QPainter, QPaintEvent, QPixmap, QResizeEvent
+from PySide6.QtCore import QEvent, QObject, QPoint, QRect, QSize, Qt, QTimer, QUrl, Signal
+from PySide6.QtGui import QDesktopServices, QPainter, QPaintEvent, QPixmap, QResizeEvent
 from PySide6.QtWidgets import (
     QBoxLayout,
+    QCheckBox,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -13,6 +14,7 @@ from PySide6.QtWidgets import (
     QLayout,
     QLayoutItem,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QVBoxLayout,
     QWidget,
@@ -138,7 +140,8 @@ class Section(QFrame):
 
     changed = Signal()
 
-    def __init__(self, title: str, detail: str = "") -> None:
+    def __init__(self, title: str, detail: str = "", platforms: tuple[str, ...] = ()) -> None:
+        """`platforms`: the platforms this setting is for, shown as logos before the title."""
         super().__init__()
         self.title = title
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
@@ -150,7 +153,18 @@ class Section(QFrame):
         self.heading.setObjectName("Subheading")
         self.heading.setTextFormat(Qt.TextFormat.PlainText)
         self.heading.setVisible(bool(title))
-        layout.addWidget(self.heading)
+        if platforms:
+            top = QHBoxLayout()
+            top.setSpacing(8)
+            for platform in platforms:
+                badge = image(logo(platform, 18))
+                badge.setToolTip(f"Used by {PLATFORM_NAMES[platform]}")
+                badge.setAccessibleName(f"Used by {PLATFORM_NAMES[platform]}")
+                top.addWidget(badge)
+            top.addWidget(self.heading, 1)
+            layout.addLayout(top)
+        else:
+            layout.addWidget(self.heading)
         self.detail = muted(detail)
         self.detail.setVisible(bool(detail))
         layout.addWidget(self.detail)
@@ -326,6 +340,32 @@ class StatTile(QFrame):
         self.note.setText(note)
 
 
+def open_page(url: str) -> None:
+    """Open a web page in the user's browser."""
+    QDesktopServices.openUrl(QUrl(url))
+
+
+def guide(steps: Iterable[tuple[str, str, str]]) -> QWidget:
+    """Numbered setup steps, (text, button label, page). A step with a page gets a button that
+    opens the page where that step happens."""
+    holder = QWidget()
+    holder.setObjectName("ActionRow")
+    layout = QVBoxLayout(holder)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(8)
+    for number, (step, label, url) in enumerate(steps, start=1):
+        line = QHBoxLayout()
+        line.setSpacing(12)
+        line.addWidget(muted(f"{number}. {step}"), 1)
+        if url:
+            button = icon_button(label, "external", role="Ghost")
+            button.setToolTip(url)
+            button.clicked.connect(lambda checked=False, page=url: open_page(page))
+            line.addWidget(button, 0, Qt.AlignmentFlag.AlignTop)
+        layout.addLayout(line)
+    return holder
+
+
 def natural(button: QPushButton) -> QPushButton:
     """A button inside a form row keeps its natural width instead of filling the field column."""
     button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
@@ -492,3 +532,68 @@ class Checklist(QWidget):
             self.labels[index].style().polish(self.labels[index])
             self.buttons[index].setVisible(index == upcoming)
             restyle(self.buttons[index], "Primary" if index == upcoming else "Ghost")
+
+
+def platform_choice(platform: str) -> tuple[QFrame, QCheckBox, QLabel, QLabel, QHBoxLayout]:
+    """A platform to tick, with the same row wherever platforms are chosen (the Upload step,
+    queues, auto uploads). Returns the frame, tick box, detail line, status pill and the row
+    (for an extra button). `set_choice` fills it."""
+    frame, box = card(14, 6, "Row")
+    line = QHBoxLayout()
+    line.setSpacing(12)
+    check = QCheckBox()
+    check.setAccessibleName(f"Upload to {PLATFORM_NAMES[platform]}")
+    line.addWidget(check)
+    line.addWidget(image(logo(platform, 26)))
+    names = QVBoxLayout()
+    names.setSpacing(2)
+    names.addWidget(muted(PLATFORM_NAMES[platform], "Subheading"))
+    detail = muted("", "Subtle")
+    names.addWidget(detail)
+    line.addLayout(names, 1)
+    badge = pill("", "Neutral")
+    line.addWidget(badge)
+    box.addLayout(line)
+    return frame, check, detail, badge, line
+
+
+def set_choice(check: QCheckBox, detail: QLabel, badge: QLabel, ready: bool, words: str) -> None:
+    detail.setText(words)
+    badge.setText("Ready" if ready else "Not available")
+    restyle(badge, "Good" if ready else "Neutral")
+    check.setEnabled(ready)
+    if not ready:
+        check.setChecked(False)
+
+
+def step_page(title: str, detail: str) -> tuple[QScrollArea, QVBoxLayout]:
+    """One page of a step-by-step window: a heading, a line of explanation, then its fields."""
+    scroll = QScrollArea()
+    scroll.setWidgetResizable(True)
+    content = QWidget()
+    body = QVBoxLayout(content)
+    body.setContentsMargins(24, 8, 24, 8)
+    body.setSpacing(14)
+    body.addWidget(muted(title, "Heading"))
+    body.addWidget(muted(detail, "Muted"))
+    scroll.setWidget(content)
+    return scroll, body
+
+
+def step_pills(
+    names: Iterable[str], go: Callable[[int], None]
+) -> tuple[QHBoxLayout, list[QPushButton]]:
+    """The numbered steps across the top of a step-by-step window."""
+    steps = QHBoxLayout()
+    steps.setSpacing(6)
+    buttons: list[QPushButton] = []
+    for number, name in enumerate(names, start=1):
+        step = QPushButton(f"{number}  {name}")
+        step.setObjectName("Step")
+        step.setCheckable(True)
+        step.setCursor(Qt.CursorShape.PointingHandCursor)
+        step.clicked.connect(lambda checked=False, i=number - 1: go(i))
+        steps.addWidget(step)
+        buttons.append(step)
+    steps.addStretch()
+    return steps, buttons

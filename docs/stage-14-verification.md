@@ -221,7 +221,7 @@ network filesystem, exhaustive memory or very-large-library claim is made.
 
 Read-only Stage 14 before/after snapshots match all **15 tables in both genuine databases**, all
 three genuine source videos and **250 ShortsStudio reference files**. Both schemas remain 8. The
-existing StonkYa account row and remote IDs `bfNDN1Gq540`, `OxgK8zkDmkI`, `vmbsEJ4E9Rc` are retained.
+existing the owner's channel account row and remote IDs `<youtube-video-1>`, `<youtube-video-2>`, `<youtube-video-3>` are retained.
 Evidence: `preservation-before.json`, `preservation-after.json`, `preservation-result.json`.
 No original source media or real remote record was modified. Real Keychain/session secrets were
 not read; credential preservation rests on unchanged credential code and isolation, not comparison

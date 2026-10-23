@@ -10,7 +10,7 @@ No Stage 7, scheduling, Public uploading or automatic posting was implemented.
 
 | Check | Observed result |
 | --- | --- |
-| Channel | **StonkYa**, `UCoj4BJDrrcuE3gTvpi-7QFA` |
+| Channel | **the owner's channel**, `UC_owner_channel` |
 | Interactive connection | User completed browser authorization and channel confirmation |
 | Permissions | `youtube.readonly` and `youtube.upload`, recorded in the scoped Keychain credential |
 | Renewable authorization | Refresh credential present; its value was never displayed/exported |
@@ -18,7 +18,7 @@ No Stage 7, scheduling, Public uploading or automatic posting was implemented.
 | Attempt created | `2026-10-17T14:28:10+00:00` |
 | Transfer completion | `2026-10-17T14:28:23+00:00` |
 | Acknowledged bytes | **72,353 / 72,353** |
-| Actual returned video ID | [`bfNDN1Gq540`](https://www.youtube.com/watch?v=bfNDN1Gq540) |
+| Actual returned video ID | [`<youtube-video-1>`](https://www.youtube.com/watch?v=<youtube-video-1>) |
 | Independent videos.list verification | `2026-10-17T14:29:12+00:00` |
 | Actual privacy | **private** |
 | Actual processing status | **succeeded** |

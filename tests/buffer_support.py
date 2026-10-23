@@ -48,6 +48,27 @@ CHANNELS = [
         "name": "insta",
         "displayName": "Insta",
         "service": "instagram",
+        "type": "business",
+        "avatar": "",
+        "isDisconnected": False,
+        "isLocked": False,
+    },
+    {
+        "id": "ch-fb",
+        "name": "mypage",
+        "displayName": "My Page",
+        "service": "facebook",
+        "type": "page",
+        "avatar": "",
+        "isDisconnected": False,
+        "isLocked": False,
+    },
+    {
+        "id": "ch-fb-group",
+        "name": "mygroup",
+        "displayName": "My Group",
+        "service": "facebook",
+        "type": "group",  # Buffer posts to Groups only by phone notification
         "avatar": "",
         "isDisconnected": False,
         "isLocked": False,
@@ -71,6 +92,7 @@ class FakeBuffer:
         self.create_fail: str | None = None
         self.deleted: list[str] = []
         self.requests: list[dict] = []
+        self.channels = CHANNELS
 
     def issue(self) -> dict:
         self.serial += 1
@@ -99,7 +121,7 @@ class FakeBuffer:
                 200, {"data": {"account": {"organizations": [{"id": "org-1", "name": "Mine"}]}}}
             )
         if "channels(" in query:
-            return Response(200, {"data": {"channels": CHANNELS}})
+            return Response(200, {"data": {"channels": self.channels}})
         if "createPost" in query:
             return self.create(variables["input"])
         if "deletePost" in query:

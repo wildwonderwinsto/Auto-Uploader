@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 from account_support import CHANNEL, CONFIG
 from background_fixture import TestAgent, block_network, compose
-from PySide6.QtCore import QTime, QTimer
+from PySide6.QtCore import Qt, QTime, QTimer
 from support import make_video, settle
 from test_preparation import VALID
 
@@ -111,7 +111,9 @@ def editor(dialog):
     dialog.end_time.setTime(QTime(21, 0))
     dialog.background.setChecked(background)
     for index in range(dialog.videos.count()):
-        dialog.videos.item(index).setSelected(True)
+        item = dialog.videos.item(index)
+        if item.flags() & Qt.ItemFlag.ItemIsUserCheckable:
+            item.setCheckState(Qt.CheckState.Checked)
     dialog.show()
     app.processEvents()
     dialog.grab().save(str(root / "recurring-editor.png"))

@@ -148,7 +148,7 @@ are also covered by the existing UI regression. Evidence remains in the three St
 Read-only SHA-256 comparisons of every row in the live Stage 6 videos, preparations, account_config,
 account_connection and upload_attempts tables exactly match their pre-work values. That live database
 remains schema 4: it was not opened by the new application or migrated during development. Its channel
-reference and Private history for `bfNDN1Gq540` are unchanged. The original six-second source hash
+reference and Private history for `<youtube-video-1>` are unchanged. The original six-second source hash
 still matches `08627815bda4005b3ec34030bb9f3015bd1a69a9aed2601ed3cecb8f8db0b5fe`.
 
 No real token/session was read or modified for Stage 7 testing. No remote request was made to modify,
@@ -192,7 +192,7 @@ prove playback availability. No background verification polling or automatic ret
    connection; do not disconnect or reuse its uploaded video. Back up the database with the app closed.
 2. Launch `.venv/bin/python -m shortspublisher --data-dir artifacts/stage6-live` to use the established
    connection; schema migration will occur on this explicit launch. Verify the actual channel is
-   StonkYa (`UCoj4BJDrrcuE3gTvpi-7QFA`) and upload permission is present.
+   the owner's channel (`UC_owner_channel`) and upload permission is present.
 3. Import a **new disposable original video**, inspect it, enter the exact intended title/description,
    tags and declarations, select Public, save and complete review. Check source integrity and unresolved
    attempts; never release an uncertain attempt merely to bypass a duplicate block.
@@ -214,7 +214,7 @@ time-zone/date handling and deterministic scheduler tests. Scheduling and automa
 At the user's request, the running application was closed and its absence confirmed before backup.
 SQLite backup `artifacts/stage7-live-preflight/library-before-live-20261017T145449Z.sqlite3`
 passed integrity_check. The original database was schema 4 with one completed Private attempt,
-`90743697aeec433f91580769a2b89a7d`, video `bfNDN1Gq540`.
+`90743697aeec433f91580769a2b89a7d`, video `<youtube-video-1>`.
 
 The existing application was then launched with `--data-dir artifacts/stage6-live`. Migration to
 schema 5 succeeded. Read-only comparisons confirmed every original column value in videos,
@@ -241,9 +241,9 @@ initiate the upload. The exact saved metadata used the proposed title and descri
 user's tag `test tag`, Made for Kids false and synthetic disclosure false. Visibility was Public.
 
 - Attempt: `6f3e2a679e084f97b4434590151c672b`, created 14:57:33 UTC.
-- Actual returned video: [`OxgK8zkDmkI`](https://www.youtube.com/watch?v=OxgK8zkDmkI).
+- Actual returned video: [`<youtube-video-2>`](https://www.youtube.com/watch?v=<youtube-video-2>).
 - Transfer completion: 14:57:37 UTC; all 53,683 bytes acknowledged.
-- Intended and verified channel: StonkYa, `UCoj4BJDrrcuE3gTvpi-7QFA`.
+- Intended and verified channel: the owner's channel, `UC_owner_channel`.
 - Initial saved result: Public with processing pending.
 - Fresh independent verification at 14:58:22 UTC: **Public**, **processing succeeded**,
   state **Public Verified**. The existing UploadService verify action used production channel
@@ -265,9 +265,9 @@ was found and no code was changed; the 249-test controlled baseline remains appl
 
 The user closed ShortsPublisher normally; process inspection confirmed it had exited. The application
 was reopened in a separate process at 14:59:04 UTC using the same `artifacts/stage6-live` library.
-Its normal startup restored and live-verified StonkYa at 14:59:05 UTC. A further production
+Its normal startup restored and live-verified the owner's channel at 14:59:05 UTC. A further production
 UploadService/videos.list check at **14:59:32 UTC** independently confirmed the same video
-`OxgK8zkDmkI`, same channel, **Public** privacy and **processing succeeded**.
+`<youtube-video-2>`, same channel, **Public** privacy and **processing succeeded**.
 
 Exactly two attempts remain: the original Stage 6 Private attempt and one Stage 7 Public attempt.
 IDs, acknowledged offsets and completion timestamps were unchanged across restart and re-verification.

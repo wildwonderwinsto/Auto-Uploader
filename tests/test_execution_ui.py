@@ -64,7 +64,8 @@ class ExecutionUiTests(unittest.TestCase):
 
     def test_default_global_pause_visible(self):
         self.assertIn("Automatic publishing is paused", self.c.summary.text())
-        self.assertIn("Paused", self.c.state.text())
+        self.assertEqual(self.c.light.text(), "Off")
+        self.assertIn("Nothing uploads automatically", self.c.state.text())
         self.assertIn("Turn On", self.c.button.text())
 
     def test_plan_alone_disabled(self):
@@ -160,11 +161,10 @@ class ExecutionUiTests(unittest.TestCase):
         self.assertEqual(self.f.ui.fixture.http.initiations, 0)
         self.assertIn("Missed", self.window.schedules.queue.list.item(0).text())
 
-    def test_limit_saved_through_worker(self):
-        self.c.limit.setValue(2)
-        self.c.save_limit.click()
-        self.wait()
-        self.assertEqual(self.c.data["daily_limit"], 2)
+    def test_no_daily_limit_of_our_own(self):
+        # Only YouTube's own 100 uploads a day remains; Settings offers no limit to lower.
+        self.assertEqual(self.c.data["daily_limit"], 100)
+        self.assertFalse(hasattr(self.c, "limit"))
 
     def test_precise_wakeup_is_bounded_by_safety_interval(self):
         job = self.active()

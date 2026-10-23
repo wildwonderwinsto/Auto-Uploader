@@ -5,7 +5,7 @@ Nothing here decides whether anything may upload: it only describes saved record
 
 from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from .scheduling import Job
@@ -13,14 +13,16 @@ from .upload_store import Attempt
 
 UPCOMING, UPLOADING, DONE, ATTENTION = "upcoming", "uploading", "done", "attention"
 
-TIKTOK_UPCOMING = (
+# Platforms posted through Buffer; their records share one set of states.
+BUFFER_NAMES = {"tiktok": "TikTok", "instagram": "Instagram", "facebook": "Facebook"}
+BUFFER_UPCOMING = (
     "Uploading to media host",
     "Hosted and ready",
     "Waiting for Buffer limit",
     "Sending to Buffer",
     "Scheduled in Buffer",
 )
-TIKTOK_ATTENTION = (
+BUFFER_ATTENTION = (
     "Failed",
     "Needs reconciliation",
     "Needs attention",
@@ -28,8 +30,9 @@ TIKTOK_ATTENTION = (
     "Removed in Buffer",
     "Manual completion required",
     "Missed — not sent",
-    "Waiting for TikTok reconnection",
+    *(f"Waiting for {name} reconnection" for name in BUFFER_NAMES.values()),
 )
+TIKTOK_UPCOMING, TIKTOK_ATTENTION = BUFFER_UPCOMING, BUFFER_ATTENTION
 
 
 @dataclass(frozen=True)
@@ -157,6 +160,11 @@ def youtube_queue(recurring: dict[str, Any]) -> list[Entry]:
 
 
 def tiktok_posts(posts: Iterable[dict[str, Any]]) -> list[Entry]:
+    return buffer_posts("tiktok", posts)
+
+
+def buffer_posts(platform: str, posts: Iterable[dict[str, Any]]) -> list[Entry]:
+    name = BUFFER_NAMES[platform]
     entries = []
     for post in posts:
         state = post["state"]
@@ -165,27 +173,27 @@ def tiktok_posts(posts: Iterable[dict[str, Any]]) -> list[Entry]:
         title = (
             (post.get("caption") or "").strip().splitlines()[0][:90]
             if post.get("caption")
-            else "TikTok video"
+            else f"{name} video"
         )
         link = post.get("external_link") or ""
         if state == "Sent by Buffer":
             kind, status, when = DONE, "Posted", post.get("sent_at") or post.get("due_at") or ""
         elif state == "Publishing":
             kind, status, when = UPLOADING, "Posting now", post.get("due_at") or ""
-        elif state in TIKTOK_UPCOMING:
+        elif state in BUFFER_UPCOMING:
             kind, status = UPCOMING, "Scheduled" if post.get("due_at") else "Posting soon"
             when = post.get("due_at") or ""
         else:
             kind, when = ATTENTION, post.get("due_at") or post.get("updated_at") or ""
             status = {
                 "Needs reconciliation": "Check the post result",
-                "Waiting for TikTok reconnection": "Reconnect TikTok",
-                "Manual completion required": "Finish in the TikTok app",
+                f"Waiting for {name} reconnection": f"Reconnect {name}",
+                "Manual completion required": f"Finish in the {name} app",
                 "Missed — not sent": "Missed its time",
             }.get(state, state)
         entries.append(
             Entry(
-                "tiktok",
+                platform,
                 title,
                 when,
                 kind,
@@ -205,12 +213,15 @@ def timeline(
     started: set[str],
     recurring: dict[str, Any],
     posts: Iterable[dict[str, Any]],
+    others: dict[str, Iterable[dict[str, Any]]] | None = None,
 ) -> list[Entry]:
+    """`posts` are TikTok's; `others` holds the other Buffer platforms' records by key."""
     return [
         *youtube_uploads(attempts),
         *youtube_plans(jobs, started),
         *youtube_queue(recurring),
         *tiktok_posts(posts),
+        *(e for key, items in (others or {}).items() for e in buffer_posts(key, items)),
     ]
 
 
@@ -235,7 +246,8 @@ def upcoming(entries: Iterable[Entry]) -> list[Entry]:
 
 def recent(entries: Iterable[Entry]) -> list[Entry]:
     done = [e for e in entries if e.kind == DONE]
-    return sorted(done, key=lambda e: instant(e) or datetime.min.astimezone(), reverse=True)
+    # Aware sentinels without astimezone(): that overflows in zones on the far side of UTC.
+    return sorted(done, key=lambda e: instant(e) or datetime.min.replace(tzinfo=UTC), reverse=True)
 
 
 def since(entries: Iterable[Entry], start: datetime) -> int:
@@ -266,8 +278,8 @@ class Group:
 
     @property
     def title(self) -> str:
-        # The shared title; a TikTok caption carries hashtags, so prefer another platform's.
-        named = [e for e in self.entries if e.platform != "tiktok"] or list(self.entries)
+        # The shared title; Buffer captions carry hashtags, so prefer YouTube's.
+        named = [e for e in self.entries if e.platform not in BUFFER_NAMES] or list(self.entries)
         return named[0].title
 
     @property

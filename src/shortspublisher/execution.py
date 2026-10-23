@@ -28,6 +28,9 @@ if TYPE_CHECKING:
     from .upload_store import Attempt
     from .uploads import UploadService
 
+# The global cap on scheduled and automatic YouTube uploads a day can go as high as YouTube's own
+# API allows: 100 videos.insert calls a day (developers.google.com, read 2026-10-22).
+DAILY_MAX = 100
 CONSENT = (
     "This video will be uploaded publicly to the selected YouTube channel automatically at the "
     "scheduled time while ShortsPublisher is running. No second confirmation will appear. "
@@ -238,8 +241,10 @@ class AutomaticPublisher:
                     0
                 ]
             )
-            if not 1 <= limit <= 10:
-                raise ScheduleError("Choose a daily automatic publishing limit from 1 to 10.")
+            if not 1 <= limit <= DAILY_MAX:
+                raise ScheduleError(
+                    f"Choose a daily automatic publishing limit from 1 to {DAILY_MAX}."
+                )
             if not paused:
                 RecurringService(self.schedules).restart(
                     db, "Global publishing resumed; no catch-up."

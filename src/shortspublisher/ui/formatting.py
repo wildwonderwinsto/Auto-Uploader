@@ -2,6 +2,7 @@
 
 from datetime import datetime
 from math import isfinite
+from typing import Any
 from zoneinfo import ZoneInfo
 
 from PySide6.QtCore import QDate, QLocale, QTime, QTimeZone
@@ -152,3 +153,11 @@ def upload_status(state: str, processing: str = "") -> str:
         "Interrupted": "Upload interrupted · Check session",
         "Paused": "Upload paused",
     }.get(state, state)
+
+
+def handle(platform: str, account: dict[str, Any] | None) -> str:
+    """How an account reads: @handle on TikTok and Instagram, the Page's name on Facebook."""
+    account = account or {}
+    if platform == "facebook":
+        return str(account.get("displayName") or account.get("name") or "")
+    return f"@{account.get('name') or account.get('displayName') or ''}"

@@ -144,7 +144,11 @@ class MetadataEditor(QWidget):
         self.tag_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         tag_layout.addWidget(self.tag_list)
         tag_layout.addWidget(
-            caption("On TikTok, your first 5 tags become hashtags in the caption.", "Subtle")
+            caption(
+                "On TikTok, Instagram and Facebook, your tags become hashtags in the caption "
+                "(the first 5 on TikTok and Instagram).",
+                "Subtle",
+            )
         )
 
         layout.addSpacing(6)
@@ -201,6 +205,24 @@ class MetadataEditor(QWidget):
             )
         )
         layout.addWidget(tiktok)
+        instagram, self.instagram_slot = platform_box("instagram", "Only used on Instagram")
+        self.instagram_slot.addWidget(
+            caption(
+                "Posted as a public Reel that also appears on your profile grid. Needs an "
+                "Instagram Business or Creator account.",
+                "Subtle",
+            )
+        )
+        layout.addWidget(instagram)
+        facebook, self.facebook_slot = platform_box("facebook", "Only used on Facebook")
+        self.facebook_slot.addWidget(
+            caption(
+                "Posted as a public Reel on your Facebook Page. Facebook Reels must be 9:16 and "
+                "3 to 90 seconds long.",
+                "Subtle",
+            )
+        )
+        layout.addWidget(facebook)
         self.errors = caption("", "Error")
         layout.addWidget(self.errors)
         self.save_button = icon_button("Save Draft", "check")

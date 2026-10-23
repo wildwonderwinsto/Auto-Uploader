@@ -14,7 +14,7 @@ from account_support import CHANNEL
 from upload_support import REMOTE_ID
 
 from shortspublisher.auth import AccountError, Tokens
-from shortspublisher.library import Library
+from shortspublisher.library import SCHEMA_VERSION, Library
 from shortspublisher.upload_http import UploadHTTP, UploadReply, classify
 from shortspublisher.upload_store import UploadStore
 
@@ -285,7 +285,7 @@ class PublicUploadTests(unittest.TestCase):
             for table, rows in before.items():
                 after = db.execute("SELECT * FROM " + table).fetchall()
                 self.assertEqual([r[: len(rows[0])] for r in after] if rows else after, rows)
-            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 12)
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], SCHEMA_VERSION)
         for old in UploadStore(Library(target)).all():
             self.assertEqual(old.requested_privacy, "private")
             self.assertEqual(old.verification_status, "historical")

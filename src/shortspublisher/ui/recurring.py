@@ -10,13 +10,14 @@ from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
 from PySide6.QtCore import QObject, Qt, QThread, QTime, QTimer, Signal
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
-    QFormLayout,
+    QFileDialog,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -24,27 +25,52 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMessageBox,
     QPlainTextEdit,
-    QScrollArea,
     QSpinBox,
+    QStackedWidget,
     QTimeEdit,
     QVBoxLayout,
     QWidget,
 )
 
 from ..cadence import Rule
+from ..execution import DAILY_MAX
 from ..library_view import LibraryEntry, read_entries
 from ..recurring import CONSENT, RecurringService
 from ..scheduling import ScheduleError
-from ..tiktok import HOSTING_CONSENT, caption_from
+from ..social import HOSTING_CONSENT, caption_from
 from . import theme
-from .components import Section, card, day_row, flow, icon_button
-from .formatting import file_size, friendly, system_zone, time_pattern, timestamp, upload_status
-from .icons import PLATFORM_NAMES, image, logo, pixmap
+from .components import (
+    Section,
+    card,
+    day_row,
+    flow,
+    icon_button,
+    pill,
+    platform_choice,
+    restyle,
+    row,
+    set_choice,
+    step_page,
+    step_pills,
+)
+from .formatting import (
+    file_size,
+    friendly,
+    handle,
+    system_zone,
+    time_pattern,
+    timestamp,
+    upload_status,
+)
+from .icons import PLATFORM_NAMES, image, pixmap
 from .preview import VideoPreview
 from .scheduling import text
 
 if TYPE_CHECKING:
     from .window import MainWindow
+
+
+VIDEO_FILES = "Videos (*.mp4 *.mov *.webm *.mkv *.m4v *.avi);;All files (*)"
 
 
 def posting_times(rule: Rule, now: datetime, count: int, daily_limit: int) -> list[datetime]:
@@ -145,7 +171,7 @@ class BatchConfirmation(QDialog):
             f"Channel: {proposal['channel_title']} ({proposal['channel_id']})",
             "Visibility: PUBLIC",
             rule_label(rule),
-            f"{len(rule.on_day(day))} opportunities on {day.strftime('%b %d, %Y')} · up to {proposal['approved_limit']} automatic claims per UTC day across all plans, subject to the current global limit.",
+            f"{len(rule.on_day(day))} opportunities on {day.strftime('%b %d, %Y')} · at most {proposal['approved_limit']} uploads per UTC day (YouTube's own limit).",
             "DST: nonexistent local times are skipped; repeated local times use only the first occurrence.",
             "Invalid items need attention; the next valid approved item may use that opportunity. No more than one item per opportunity.",
             "Background execution: "
@@ -208,6 +234,93 @@ class BatchConfirmation(QDialog):
         self.approve.setEnabled(self.consent.isChecked() and self.restrictions.isChecked())
 
 
+class PickVideo(QDialog):
+    """Choose one library video to upload by itself; it opens on its Upload step."""
+
+    def __init__(self, controller: RecurringController) -> None:
+        super().__init__(controller.window)
+        self.controller = controller
+        self.choice: int | None = None
+        self.setWindowTitle("Upload one video")
+        self.resize(720, 520)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 24, 24, 18)
+        layout.setSpacing(14)
+        layout.addWidget(text("Upload one video", "Title"))
+        layout.addWidget(
+            text(
+                "Pick a video. It opens on its Upload step, where you choose the platforms and "
+                "whether it goes out now or at a time you pick.",
+                "Muted",
+            )
+        )
+        self.videos = QListWidget()
+        self.videos.setWordWrap(True)
+        self.videos.setAccessibleName("Library videos")
+        self.videos.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.videos.currentItemChanged.connect(self.preview_video)
+        self.videos.itemDoubleClicked.connect(lambda _: self.open())
+        picker = QHBoxLayout()
+        picker.setSpacing(16)
+        picker.addWidget(self.videos, 1)
+        self.preview = VideoPreview()
+        self.preview.setFixedWidth(210)
+        picker.addWidget(self.preview, 0, Qt.AlignmentFlag.AlignTop)
+        layout.addLayout(picker, 1)
+        footer = QHBoxLayout()
+        add = icon_button("Add Videos From Your Mac…", "plus")
+        add.clicked.connect(self.add)
+        cancel = icon_button("Cancel", "x")
+        cancel.clicked.connect(self.reject)
+        self.go = icon_button("Open Upload Step", "upload", role="Primary")
+        self.go.clicked.connect(self.open)
+        footer.addWidget(add)
+        footer.addStretch()
+        footer.addWidget(cancel)
+        footer.addWidget(self.go)
+        layout.addLayout(footer)
+        self.fill()
+
+    def fill(self) -> None:
+        self.videos.clear()
+        for identity, entry in self.controller.entries.items():
+            title = entry.preparation.metadata.title or entry.video.path.rsplit("/", 1)[-1]
+            note = "Ready to upload" if entry.reviewed else "Details not finished yet"
+            item = QListWidgetItem(f"{title}\n{note}")
+            item.setData(Qt.ItemDataRole.UserRole, identity)
+            item.setToolTip(entry.video.path)
+            self.videos.addItem(item)
+        if self.videos.count():
+            self.videos.setCurrentRow(0)
+        else:
+            self.videos.addItem(
+                QListWidgetItem("Your library is empty. Choose Add Videos From Your Mac.")
+            )
+        self.go.setEnabled(bool(self.controller.entries))
+
+    def preview_video(
+        self, item: QListWidgetItem | None, previous: QListWidgetItem | None = None
+    ) -> None:
+        identity = item.data(Qt.ItemDataRole.UserRole) if item else None
+        entry = self.controller.entries.get(identity) if identity is not None else None
+        self.preview.set_source(entry.video.path if entry else "")
+
+    def add(self) -> None:
+        """Import files and open the first one: a new video starts with its details."""
+        paths, _ = QFileDialog.getOpenFileNames(self, "Add videos from your Mac", "", VIDEO_FILES)
+        if paths:
+            self.reject()
+            self.controller.window.navigate("videos")
+            self.controller.window.videos.start("import_many", paths)
+
+    def open(self) -> None:
+        item = self.videos.currentItem()
+        identity = item.data(Qt.ItemDataRole.UserRole) if item else None
+        if identity is not None:
+            self.choice = identity
+            self.accept()
+
+
 class RecurringEditor(QDialog):
     def __init__(self, controller: RecurringController, plan: dict[str, Any] | None = None):
         super().__init__(controller.window)
@@ -215,34 +328,48 @@ class RecurringEditor(QDialog):
         self.plan = plan
         self.dirty = False
         self.approved_youtube = False
-        self.setWindowTitle("Add Videos to Schedule" if plan else "New Posting Schedule")
-        self.resize(720, 760)
+        self.setWindowTitle("Add Videos to Queue" if plan else "Choose Videos to Upload")
+        self.resize(720, 720)
+        # Same step-by-step window as a new auto upload: Videos · Where · When.
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        content = QWidget()
-        body = QVBoxLayout(content)
-        body.setContentsMargins(24, 24, 24, 12)
-        body.setSpacing(16)
-        body.addWidget(
-            text("Add ready videos to this schedule" if plan else "New posting schedule", "Title")
+        layout.setSpacing(0)
+        top = QVBoxLayout()
+        top.setContentsMargins(24, 22, 24, 10)
+        top.setSpacing(10)
+        top.addWidget(
+            text("Add videos to this queue" if plan else "Choose videos to upload", "Title")
         )
-        body.addWidget(
+        top.addWidget(
             text(
-                "Choose when videos go out, which ones, and where. They go out publicly one at a "
-                "time, in order. Nothing is scheduled until you approve it.",
+                "Pick videos once; they go to every platform you tick, one at a time, in order, "
+                "at the times you choose. Nothing is scheduled until you approve it.",
                 "Muted",
             )
         )
+        names = ("Videos", "When") if plan else ("Videos", "Where", "When")
+        steps, self.step_buttons = step_pills(names, lambda i: self.go(i))
+        top.addLayout(steps)
+        layout.addLayout(top)
+        self.pages = QStackedWidget()
+        layout.addWidget(self.pages, 1)
         account = controller.account
-        self.channel = QComboBox()
+        # The connected YouTube channel is the only choice; it is named under "Where".
+        self.channel = QComboBox(self)
+        self.channel.hide()
         self.channel.addItem(account.get("title", "No connected channel"), account.get("id", ""))
         self.channel.setToolTip(
             account.get("id", "Connect the intended YouTube channel in Accounts.")
         )
-        self.name = QLineEdit(plan["name"] if plan else "My posting schedule")
+        self.name = QLineEdit(plan["name"] if plan else "My video queue")
         self.name.setMaxLength(100)
+        self.name.setPlaceholderText("A name for this queue, only shown to you")
+        name_row = QHBoxLayout()
+        name_row.setSpacing(10)
+        name_label = QLabel("Queue name")
+        name_label.setObjectName("Subheading")
+        name_row.addWidget(name_label)
+        name_row.addWidget(self.name, 1)
         self.frequency = QComboBox()
         self.frequency.addItem("Once a day", 0)
         for hours in (1, 2, 3, 4):
@@ -264,10 +391,12 @@ class RecurringEditor(QDialog):
         for field in (self.start_time, self.end_time):
             field.setDisplayFormat(time_pattern())
         self.zone = QLineEdit(plan["rule"]["zone"] if plan else system_zone())
-        self.limit = QSpinBox()
-        self.limit.setRange(1, controller.data.get("control", {}).get("daily_limit", 3))
-        self.limit.setValue(self.limit.maximum())
-        self.limit.setSuffix(" per day at most")
+        # No daily limit of our own: the schedule decides; YouTube's own ceiling still applies.
+        self.limit = (
+            plan["approved_limit"]
+            if plan
+            else controller.data.get("control", {}).get("daily_limit", DAILY_MAX)
+        )
         accessible = (
             ("Plan name", self.name),
             ("YouTube channel", self.channel),
@@ -277,13 +406,15 @@ class RecurringEditor(QDialog):
             ("Start time / daily time", self.start_time),
             ("Window end (included)", self.end_time),
             ("IANA time zone", self.zone),
-            ("Approved maximum automatic claims per UTC day", self.limit),
         )
         for label, widget in accessible:
             widget.setAccessibleName(label)
 
-        when, when_body = card(18, 10)
-        when_body.addWidget(text("When should videos go out?", "Heading"))
+        when, when_body = step_page(
+            "When should they go out?",
+            "One video goes out at each of these times, on every platform you ticked.",
+        )
+        when_body.addLayout(name_row)
         when_body.addWidget(self.days_preset)
         when_body.addWidget(day_row(list(self.days)))
         timing = QHBoxLayout()
@@ -305,60 +436,57 @@ class RecurringEditor(QDialog):
         when_body.addLayout(zone_row)
         self.summary = text("", "Notice")
         when_body.addWidget(self.summary)
-        body.addWidget(when)
+        self.background = QCheckBox("Keep uploading while ShortsScheduler is closed")
+        self.background.setToolTip("Needs Background Uploading turned on in Settings")
+        when_body.addWidget(self.background)
 
         # Where: every ready platform, each with its own way of holding the posts.
-        tiktok = controller.window.tiktok.data
-        tiktok_ready = (tiktok.get("connection") or {}).get("status") == "Connected" and bool(
-            tiktok.get("hosting")
-        )
-        where, where_body = card(18, 10)
-        where_body.addWidget(text("Where should they go?", "Heading"))
-        self.targets: dict[str, QCheckBox] = {}
-        for platform, ready, note in (
+        choices: list[tuple[str, bool, str]] = [
             (
                 "youtube",
                 bool(account.get("id")),
                 account.get("title") or "Connect YouTube in Accounts first",
-            ),
-            (
-                "tiktok",
-                tiktok_ready,
-                f"@{(tiktok.get('connection') or {}).get('name')} · each post is scheduled in Buffer"
-                if tiktok_ready
-                else "Connect TikTok and set up video hosting first",
-            ),
-        ):
-            line = QHBoxLayout()
-            line.setSpacing(10)
-            check = QCheckBox()
+            )
+        ]
+        for social in controller.window.socials:
+            connection = social.data.get("connection") or {}
+            ready = connection.get("status") == "Connected" and bool(social.data.get("hosting"))
+            choices.append(
+                (
+                    social.key,
+                    ready,
+                    f"{handle(social.key, connection)} · each post is scheduled in Buffer"
+                    if ready
+                    else f"Connect {social.name} and set up video hosting first",
+                )
+            )
+        where, where_body = step_page(
+            "Where should they go?",
+            "Every ready platform is ticked. Each one is approved on its own screen next.",
+        )
+        self.targets: dict[str, QCheckBox] = {}
+        for platform, ready, note in choices:
+            frame, check, detail, badge, _line = platform_choice(platform)
+            set_choice(check, detail, badge, ready, note)
             check.setEnabled(ready and not plan)
-            check.setChecked(ready and (platform == "youtube" or not account.get("id")))
+            check.setChecked(ready)  # enter it once, upload it everywhere
             check.setAccessibleName(f"Post to {PLATFORM_NAMES[platform]}")
             check.toggled.connect(self.fill_videos)
-            line.addWidget(check)
-            line.addWidget(image(logo(platform, 22)))
-            platform_name = QLabel(PLATFORM_NAMES[platform])
-            platform_name.setObjectName("Subheading")
-            line.addWidget(platform_name)
-            line.addWidget(text(note, "Subtle"), 1)
-            where_body.addLayout(line)
+            where_body.addWidget(frame)
             self.targets[platform] = check
-        where.setVisible(not plan)  # adding to an approved schedule keeps its platform
-        body.addWidget(where)
+        where_body.addStretch()
 
-        which, which_body = card(18, 10)
-        which_body.addWidget(text("Which videos?", "Heading"))
-        which_body.addWidget(
-            text(
-                "Pick videos marked ready in Videos. For YouTube, Visibility must also be Public. "
-                "New files in watched folders never join on their own.",
-                "Subtle",
-            )
+        which, which_body = step_page(
+            "Which videos?",
+            "Tick every video to add; they go out in the order shown. Videos can be ticked once "
+            "they are marked ready in Videos (for YouTube, Visibility must also be Public). Click "
+            "a video to preview it.",
         )
+        self.chosen = pill("None chosen", "Neutral")
         self.videos = QListWidget()
-        self.videos.setSelectionMode(QAbstractItemView.SelectionMode.MultiSelection)
-        self.videos.setFixedHeight(180)
+        self.videos.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.videos.setMinimumHeight(330)
+        self.videos.setWordWrap(True)
         self.videos.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.videos.setTextElideMode(Qt.TextElideMode.ElideMiddle)
         self.videos.setAccessibleName("Select reviewed videos for recurring queue")
@@ -367,30 +495,24 @@ class RecurringEditor(QDialog):
             for i in controller.data.get("items", [])
             if i["state"] != "Removed" and i["channel_id"] == account.get("id")
         }
-        self.videos.itemSelectionChanged.connect(self.edited)
+        self.videos.itemChanged.connect(self.ticked)
+        self.videos.itemChanged.connect(self.edited)
         picker = QHBoxLayout()
-        picker.setSpacing(14)
+        picker.setSpacing(16)
         picker.addWidget(self.videos, 1)
         self.preview = VideoPreview()
-        self.preview.setFixedWidth(150)
-        picker.addWidget(self.preview)
+        self.preview.setFixedWidth(210)
+        picker.addWidget(self.preview, 0, Qt.AlignmentFlag.AlignTop)
         which_body.addLayout(picker)
+        self.add_files = icon_button("Add Videos From Your Mac…", "plus")
+        self.add_files.clicked.connect(self.import_videos)
+        self.tick_all = icon_button("Tick All Ready", "check", role="Ghost")
+        self.tick_all.clicked.connect(lambda: self.tick(True))
+        self.clear_ticks = icon_button("Clear", "x", role="Ghost")
+        self.clear_ticks.clicked.connect(lambda: self.tick(False))
+        which_body.addWidget(row(self.add_files, self.tick_all, self.clear_ticks, self.chosen))
         self.videos.currentItemChanged.connect(self.preview_video)
-        body.addWidget(which)
         self.fill_videos()
-
-        options, options_body = card(18, 10)
-        options_body.addWidget(text("Options", "Heading"))
-        form = QFormLayout()
-        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
-        form.addRow("Name", self.name)
-        form.addRow("YouTube channel", self.channel)
-        form.addRow("Daily limit", self.limit)
-        options_body.addLayout(form)
-        self.background = QCheckBox("Keep uploading while ShortsScheduler is closed")
-        self.background.setToolTip("Needs Background Uploading turned on in Settings")
-        options_body.addWidget(self.background)
-        body.addWidget(options)
         if plan:
             rule = Rule.decode(plan["rule"])
             index = self.frequency.findData(rule.hours)
@@ -398,8 +520,6 @@ class RecurringEditor(QDialog):
             self.hours.setValue(rule.hours or 1)
             self.start_time.setTime(QTime.fromString(rule.start, "HH:mm"))
             self.end_time.setTime(QTime.fromString(rule.end, "HH:mm"))
-            self.limit.setMaximum(max(self.limit.maximum(), plan["approved_limit"]))
-            self.limit.setValue(plan["approved_limit"])
             self.background.setChecked(bool(plan["background"]))
             for i, day in enumerate(self.days):
                 day.setChecked(i in rule.days)
@@ -412,32 +532,39 @@ class RecurringEditor(QDialog):
                 self.start_time,
                 self.end_time,
                 self.zone,
-                self.limit,
                 self.background,
                 *self.days,
             ):
                 disabled_widget.setEnabled(False)
             when_body.addWidget(
                 text(
-                    "An approved schedule's times can't change. To use different times, create a new posting schedule.",
+                    "An approved schedule's times can't change. To use different times, create a new upload queue.",
                     "Subtle",
                 )
             )
+        when_body.addStretch()  # fields sit at the top, like every other step
+        for page_widget in (which, *(() if plan else (where,)), when):
+            self.pages.addWidget(page_widget)
         self.feedback = text("", "Muted")
-        body.addWidget(self.feedback)
-        scroll.setWidget(content)
-        layout.addWidget(scroll, 1)
+        self.feedback.setContentsMargins(24, 6, 24, 0)
+        layout.addWidget(self.feedback)
         footer = QHBoxLayout()
         footer.setContentsMargins(24, 10, 24, 18)
         cancel = icon_button("Cancel", "x")
         cancel.clicked.connect(self.reject)
+        self.back = icon_button("Back", "chevron-left")
+        self.back.clicked.connect(lambda: self.go(self.pages.currentIndex() - 1))
+        self.next = icon_button("Next", "chevron-right", role="Primary")
+        self.next.clicked.connect(lambda: self.go(self.pages.currentIndex() + 1))
         self.review = icon_button("Review and Approve…", "check", role="Primary")
         self.review.setAccessibleName("Review and Approve Queue…")
         self.review.clicked.connect(self.review_batch)
         footer.addWidget(cancel)
         footer.addStretch()
-        footer.addWidget(self.review)
+        for button in (self.back, self.next, self.review):
+            footer.addWidget(button)
         layout.addLayout(footer)
+        self.go(0)
         self.frequency.currentIndexChanged.connect(self.describe)
         self.hours.valueChanged.connect(self.describe)
         self.start_time.timeChanged.connect(self.describe)
@@ -452,22 +579,70 @@ class RecurringEditor(QDialog):
             combo_field.currentIndexChanged.connect(self.edited)
         for field in (self.start_time, self.end_time):
             field.timeChanged.connect(self.edited)
-        for number_field in (self.limit, self.hours):
-            number_field.valueChanged.connect(self.edited)
+        self.hours.valueChanged.connect(self.edited)
         for check_field in (*self.days, self.background):
             check_field.toggled.connect(self.edited)
 
-    def edited(self) -> None:
+    def edited(self, *_: Any) -> None:
         self.dirty = True
+
+    def go(self, index: int) -> None:
+        index = max(0, min(index, self.pages.count() - 1))
+        self.pages.setCurrentIndex(index)
+        for position, step in enumerate(self.step_buttons):
+            step.setChecked(position == index)
+        last = index == self.pages.count() - 1
+        self.back.setEnabled(index > 0)
+        self.next.setVisible(not last)
+        self.review.setVisible(last)
+
+    def checked(self) -> list[int]:
+        return [
+            self.videos.item(i).data(Qt.ItemDataRole.UserRole)
+            for i in range(self.videos.count())
+            if self.videos.item(i).checkState() == Qt.CheckState.Checked
+        ]
+
+    def ticked(self, *_: Any) -> None:
+        count = len(self.checked())
+        self.chosen.setText(f"{count} chosen" if count else "None chosen")
+        restyle(self.chosen, "Good" if count else "Neutral")
+
+    def tick(self, on: bool) -> None:
+        self.videos.blockSignals(True)
+        for i in range(self.videos.count()):
+            item = self.videos.item(i)
+            if item.flags() & Qt.ItemFlag.ItemIsUserCheckable:
+                item.setCheckState(Qt.CheckState.Checked if on else Qt.CheckState.Unchecked)
+        self.videos.blockSignals(False)
+        self.ticked()
+        self.edited()
+
+    def import_videos(self) -> None:
+        """Add files to the library from here; they can be ticked once they're ready."""
+        paths, _ = QFileDialog.getOpenFileNames(self, "Add videos from your Mac", "", VIDEO_FILES)
+        if not paths:
+            return
+        videos = self.controller.window.videos
+
+        def imported() -> None:
+            videos.idle.disconnect(imported)
+            self.controller.start("load")  # refills this list
+
+        videos.idle.connect(imported)
+        videos.start("import_many", paths)
+        self.feedback.setText(
+            f"Adding {len(paths)} video{'s' if len(paths) != 1 else ''} to your library. Write "
+            "their details and mark them ready in Videos, then tick them here."
+        )
 
     def fill_videos(self) -> None:
         """Ready means reviewed; YouTube also needs a Public preference."""
         youtube = self.targets["youtube"].isChecked() or bool(self.plan)
-        chosen = {
-            self.videos.item(i).data(Qt.ItemDataRole.UserRole)
-            for i in range(self.videos.count())
-            if self.videos.item(i).isSelected()
-        }
+        chosen = set(self.checked())
+        current = self.videos.currentItem()
+        shown = current.data(Qt.ItemDataRole.UserRole) if current else None
+        self.videos.blockSignals(True)
         self.videos.clear()
         for identity, entry in self.controller.entries.items():
             public = entry.preparation.metadata.privacy == "public"
@@ -483,14 +658,35 @@ class RecurringEditor(QDialog):
                 else "Not ready · finish it in Videos"
             )
             item = QListWidgetItem(
-                f"{entry.preparation.metadata.title or entry.video.path.rsplit('/', 1)[-1]} · {note}"
+                f"{entry.preparation.metadata.title or entry.video.path.rsplit('/', 1)[-1]}\n{note}"
             )
             item.setData(Qt.ItemDataRole.UserRole, identity)
             item.setToolTip(entry.video.path)
-            if not ready or taken:
-                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsSelectable)
+            if ready and not taken:
+                item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                item.setCheckState(
+                    Qt.CheckState.Checked if identity in chosen else Qt.CheckState.Unchecked
+                )
+            else:
+                # Still clickable to preview; it just can't be ticked.
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsUserCheckable)
+                item.setForeground(QColor(theme.SUBTLE))
             self.videos.addItem(item)
-            item.setSelected(identity in chosen and ready and not taken)
+            if identity == shown:
+                self.videos.setCurrentItem(item)
+        if self.videos.count() and not self.videos.currentItem():
+            self.videos.setCurrentRow(0)  # something to preview straight away
+        self.videos.blockSignals(False)
+        if not self.videos.count():
+            self.videos.addItem(
+                QListWidgetItem("Your library is empty. Choose Add Videos From Your Mac below.")
+            )
+        if (
+            self.videos.currentItem()
+            and self.videos.currentItem().data(Qt.ItemDataRole.UserRole) != shown
+        ):
+            self.preview_video(self.videos.currentItem(), None)
+        self.ticked()
 
     def describe(self) -> None:
         """Show only the fields this frequency uses, and say the schedule in words."""
@@ -521,18 +717,14 @@ class RecurringEditor(QDialog):
                 day.setChecked(index == 0 or (index == 1 and i < 5) or (index == 2 and i >= 5))
 
     def preview_video(self, item: QListWidgetItem | None, previous: QListWidgetItem | None) -> None:
-        self.preview.set_source(
-            self.controller.entries[item.data(Qt.ItemDataRole.UserRole)].video.path if item else ""
-        )
+        identity = item.data(Qt.ItemDataRole.UserRole) if item else None
+        entry = self.controller.entries.get(identity) if identity is not None else None
+        self.preview.set_source(entry.video.path if entry else "")
 
     def values(self) -> dict[str, Any]:
         hours = self.frequency.currentData()
         return {
-            "videos": [
-                self.videos.item(i).data(Qt.ItemDataRole.UserRole)
-                for i in range(self.videos.count())
-                if self.videos.item(i).isSelected()
-            ],
+            "videos": self.checked(),
             "channel": self.channel.currentData(),
             "rule": Rule(
                 self.zone.text().strip(),
@@ -543,13 +735,13 @@ class RecurringEditor(QDialog):
             ),
             "name": self.name.text(),
             "background": self.background.isChecked(),
-            "limit": self.limit.value(),
+            "limit": self.limit,
             "plan_id": self.plan["id"] if self.plan else "",
         }
 
     def review_batch(self) -> None:
-        youtube, tiktok = self.targets["youtube"].isChecked(), self.targets["tiktok"].isChecked()
-        if not (youtube or tiktok or self.plan):
+        youtube = self.targets["youtube"].isChecked()
+        if not (any(check.isChecked() for check in self.targets.values()) or self.plan):
             self.feedback.setText("Pick at least one platform under Where should they go?")
             return
         if not self.values()["videos"]:
@@ -561,16 +753,40 @@ class RecurringEditor(QDialog):
             self.youtube_approved()
 
     def youtube_approved(self) -> None:
-        """YouTube is approved (or not chosen); TikTok posts get their own confirmation."""
+        """YouTube is approved (or not chosen); each Buffer platform's posts get their own
+        confirmation, in turn."""
         self.approved_youtube = self.targets["youtube"].isChecked() or bool(self.plan)
-        if not self.targets["tiktok"].isChecked() or self.plan:
+        self.buffer_queue = (
+            []
+            if self.plan
+            else [s for s in self.controller.window.socials if self.targets[s.key].isChecked()]
+        )
+        self.buffer_skipped: list[str] = []
+        self.schedule_buffer()
+
+    def schedule_buffer(self) -> None:
+        if not self.buffer_queue:
+            if self.buffer_skipped:
+                scheduled = ["YouTube"] if self.approved_youtube else []
+                self.feedback.setText(
+                    (f"{' and '.join(scheduled)} is scheduled. " if scheduled else "")
+                    + f"{' and '.join(self.buffer_skipped)} posts were not scheduled."
+                )
+                self.review.setEnabled(True)
+                return
             self.finish()
             return
+        social = self.buffer_queue.pop(0)
         values = self.values()
         rule, videos, limit = values["rule"], values["videos"], values["limit"]
         try:
             rule.validate()
-            times = posting_times(rule, self.controller.service.clock(), len(videos), limit)
+            times = posting_times(
+                rule,
+                self.controller.service.clock(),
+                len(videos),
+                min(limit, social.spec.daily_max),
+            )
         except Exception as exc:  # noqa: BLE001 - the reason is the useful part
             self.feedback.setText(str(exc))
             return
@@ -580,22 +796,24 @@ class RecurringEditor(QDialog):
             f"{friendly(when.isoformat(), rule.zone)} · {entries[v].preparation.metadata.title}"
             for v, when in plan
         )
+        account = handle(social.key, social.data.get("connection"))
         box = QMessageBox(
             QMessageBox.Icon.Question,
-            "Schedule these TikTok posts?",
-            f"Each video is posted PUBLICLY to TikTok through Buffer at its time:\n\n{lines}\n\n"
-            + HOSTING_CONSENT,
+            f"Schedule these {social.name} posts?",
+            f"Each video is posted PUBLICLY to {social.name} {account} through Buffer at its "
+            f"time:\n\n{lines}\n\n" + HOSTING_CONSENT,
             QMessageBox.StandardButton.Cancel,
             self,
         )
-        go = box.addButton(f"Schedule {len(plan)} TikTok Posts", QMessageBox.ButtonRole.AcceptRole)
+        go = box.addButton(
+            f"Schedule {len(plan)} {social.name} Posts", QMessageBox.ButtonRole.AcceptRole
+        )
         box.setDefaultButton(QMessageBox.StandardButton.Cancel)
         box.exec()
         if box.clickedButton() is not go:
-            if self.approved_youtube:
-                self.feedback.setText("YouTube is scheduled. TikTok posts were not scheduled.")
+            self.buffer_skipped.append(social.name)
+            self.schedule_buffer()
             return
-        controller = self.controller.window.tiktok
         details = {
             v: (
                 entries[v].preparation.metadata.title,
@@ -608,16 +826,20 @@ class RecurringEditor(QDialog):
         def job(cancel: Event) -> list[str]:
             problems = []
             for video_id, when in plan:
-                draft = controller.service.draft(video_id)
                 title = details[video_id][0]
-                if draft["ai_generated"] is None:
+                ai = (
+                    social.service.draft(video_id)["ai_generated"]
+                    if social.spec.ai_label
+                    else False
+                )
+                if ai is None:
                     problems.append(f"{title}: choose the AI-generated content label in Details.")
                     continue
                 try:
-                    controller.service.publish(
+                    social.service.publish(
                         video_id,
-                        caption_from(*details[video_id]),
-                        draft["ai_generated"],
+                        caption_from(*details[video_id], hashtags=social.spec.hashtags_max),
+                        ai,
                         when,
                         cancel,
                     )
@@ -626,17 +848,17 @@ class RecurringEditor(QDialog):
             return problems
 
         def done(problems: list[str]) -> None:
-            controller.reload("TikTok posts scheduled in Buffer.")(None)
+            social.reload(f"{social.name} posts scheduled in Buffer.")(None)
             if problems:
                 self.feedback.setText(
-                    "Some TikTok posts were not scheduled:\n" + "\n".join(problems)
+                    f"Some {social.name} posts were not scheduled:\n" + "\n".join(problems)
                 )
                 self.review.setEnabled(True)
             else:
-                self.finish()
+                self.schedule_buffer()
 
         self.review.setEnabled(False)
-        controller.run(job, done)
+        social.run(job, done)
 
     def finish(self) -> None:
         self.dirty = False
@@ -712,21 +934,25 @@ class RecurringController(QObject):
         self.entries: dict[int, LibraryEntry] = {}
         self.account: dict[str, Any] = {}
         self.pending: dict[str, Any] = {}
+        self.queued: tuple[str, Any] | None = None  # a click that arrived during a refresh
         self.summary = text("Recurring posting: no plan loaded.", "Muted")
         self.queue, body = card(20, 12)
         heading = QHBoxLayout()
         heading.setSpacing(10)
         heading.addWidget(image(pixmap("clock", 20, theme.ACCENT_TEXT)))
-        heading.addWidget(text("Posting times", "Heading"), 1)
-        self.new = icon_button("New Posting Schedule…", "plus", role="Primary")
+        heading.addWidget(text("Video queues", "Heading"), 1)
+        # Placed by the window on the Auto Upload page, in the "Individual videos" heading.
+        self.new = icon_button("Choose Videos…", "plus", role="Primary")
         self.new.setAccessibleName("New Recurring Posting Queue…")
         self.new.clicked.connect(lambda: self.start("open"))
-        heading.addWidget(self.new)
+        # One video, uploaded now or at one time: opens it on its Upload step.
+        self.single = icon_button("Upload One Video…", "upload")
+        self.single.clicked.connect(self.pick_one)
         body.addLayout(heading)
         body.addWidget(
             text(
-                "Pick days and times once; ready videos then upload one at a time, in order, at "
-                "each posting time.",
+                "Pick days and times once; the videos you add then upload one at a time, in "
+                "order, at each posting time.",
                 "Muted",
             )
         )
@@ -809,7 +1035,11 @@ class RecurringController(QObject):
         )
 
     def start(self, action: str, argument: Any = None) -> None:
-        if self.worker or self.closing:
+        if self.closing:
+            return
+        if self.worker:
+            if action != "load":
+                self.queued = (action, argument)  # runs as soon as the current work ends
             return
         if action == "append" and not self.current():
             return
@@ -817,8 +1047,10 @@ class RecurringController(QObject):
         self.worker = RecurringWorker(self, action, argument)
         self.worker.result.connect(self.receive)
         self.worker.finished.connect(self.finished)
-        for button in (self.new, self.pause, self.append, self.up, self.down, self.remove):
-            button.setEnabled(False)
+        if action != "load":
+            # Regular refreshes leave the buttons alone, so nothing flickers.
+            for button in (self.new, self.pause, self.append, self.up, self.down, self.remove):
+                button.setEnabled(False)
         if self.editor:
             self.editor.review.setEnabled(False)
             self.editor.feedback.setText(
@@ -847,10 +1079,16 @@ class RecurringController(QObject):
             self.feedback.setText(result["error"])
             if self.editor:
                 self.editor.feedback.setText(result["error"])
-        if "data" in result:
+        if "data" in result and (
+            result["data"] != self.data
+            or result["entries"] != self.entries
+            or result["account"] != self.account
+        ):
             self.entries = result["entries"]
             self.account = result["account"]
             self.render(result["data"])
+            if self.editor:
+                self.editor.fill_videos()  # e.g. after adding videos from the editor
         if "approved" in result:
             self.feedback.setText(
                 "Batch approved. New plans start paused; activate the plan and enable global publishing separately."
@@ -873,6 +1111,15 @@ class RecurringController(QObject):
             self.editor.deleteLater()
             self.editor = None
         self.idle.emit()
+        if self.queued and not self.worker:
+            action, argument = self.queued
+            self.queued = None
+            self.start(action, argument)
+
+    def changed(self, data: dict[str, Any]) -> None:
+        """The dispatcher's copy of the queues, every few seconds: redrawn only when it differs."""
+        if data != self.data:
+            self.render(data)
 
     def render(self, data: dict[str, Any]) -> None:
         self.data = data
@@ -940,7 +1187,8 @@ class RecurringController(QObject):
             widget.setVisible(plan is not None)
         if not plan:
             self.status.setText(
-                "No posting schedules yet. Choose New Posting Schedule to pick your days and times."
+                "Nothing queued yet. Use Choose Videos above to pick the days and times, then the "
+                "videos."
             )
             return
         items = [i for i in self.data["items"] if i["plan_id"] == plan["id"]]
@@ -1028,6 +1276,14 @@ class RecurringController(QObject):
             )
             self.window.navigate("videos")
             self.window.videos.start("select", item["video_id"])
+
+    def pick_one(self) -> None:
+        dialog = PickVideo(self)
+        if dialog.exec() == QDialog.DialogCode.Accepted and dialog.choice is not None:
+            self.window.navigate("videos")
+            self.window.videos.open_upload(dialog.choice)
+        dialog.preview.release()
+        dialog.deleteLater()
 
     def open_slot(self, item: QListWidgetItem) -> None:
         self.window.navigate("queue")

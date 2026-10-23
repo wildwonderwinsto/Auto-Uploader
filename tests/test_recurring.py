@@ -402,8 +402,9 @@ class RecurringTests(unittest.TestCase):
 
     def test_queue_does_not_raise_global_budget(self):
         self.approve()
-        self.assertEqual(self.r.state()["control"]["daily_limit"], 3)
-        self.assertEqual(self.r.state()["plans"][0]["approved_limit"], 3)
+        # The global value is YouTube's own 100 since schema 14; approving doesn't change it.
+        self.assertEqual(self.r.state()["control"]["daily_limit"], 100)
+        self.assertEqual(self.r.state()["plans"][0]["approved_limit"], 100)
 
     def test_removed_item_may_be_explicitly_reapproved(self):
         identity = self.approve()

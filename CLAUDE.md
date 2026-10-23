@@ -9,10 +9,17 @@ A local-first macOS desktop app (PySide6) that imports short vertical videos, pr
 metadata, and publishes them — manually, on an approved schedule, from recurring queues, or from
 watched folders under standing approval. **YouTube** is implemented and live-verified. **TikTok**
 is implemented through Buffer's API (Stage 19) and live-verified once: an automatic Public post to
-@mrcenterr (TikTok video 7698923752935017741). Further real posts still need the user's authorization. Instagram, Facebook
-and Snapchat are future work. No packaging/distribution exists yet.
+@owner_tiktok (TikTok video <tiktok-video-id>). **Instagram Reels and Facebook Page Reels** use the
+same Buffer path (Stage 20), verified with controlled services only; their first live posts need
+the user's Buffer setup and authorization. Further real posts still need the user's authorization.
+Snapchat is future work. It ships as source on GitHub: `./install.sh` sets up `.venv`, checks
+FFmpeg and builds `ShortsScheduler.app` (`scripts/make_app.py`, bound to the checkout; ad-hoc
+signed, not notarized). Its executable must stay the universal native stub `assets/launcher`
+(source `scripts/launcher.c`), which execs `Resources/launch.sh` — a script executable makes
+Apple silicon Macs prompt to install Rosetta. On 2026-10-22 the owner had every earlier workspace, backup and
+Keychain sign-in deleted, so the app now starts as for a brand-new user.
 
-Stages 1–19 are done (Stage 17's optional live folder-to-YouTube test is still pending the user's
+Stages 1–20 are done (Stage 17's optional live folder-to-YouTube test is still pending the user's
 personal authorization). After Stage 19 the UI was redesigned as an all-platform uploader named
 **ShortsScheduler** (display name only: the internal app/organization name, data folder, Keychain
 services, LaunchAgent and package stay `ShortsPublisher`/`shortspublisher` — never rename them).
@@ -22,8 +29,9 @@ Never start a new stage without explicit instruction.
 
 ```sh
 .venv/bin/python -m shortspublisher --data-dir /tmp/sp-test        # isolated run
-./"Start ShortsPublisher.command"                                   # USER's live workspace — don't run
-QT_QPA_PLATFORM=offscreen .venv/bin/python -m unittest discover -s tests   # 812 tests, ~6 min
+./install.sh                                                        # env + FFmpeg + ShortsScheduler.app
+open ShortsScheduler.app        # the USER's real data (~/Library/Application Support/ShortsPublisher/ShortsPublisher) — don't run
+QT_QPA_PLATFORM=offscreen .venv/bin/python -m unittest discover -s tests   # 891 tests, ~11 min
 cd tests && QT_QPA_PLATFORM=offscreen PYTHONPATH=../src ../.venv/bin/python -m unittest test_shell  # focused
 .venv/bin/ruff check . && .venv/bin/ruff format --check . && .venv/bin/mypy
 ```
@@ -46,9 +54,9 @@ isolated Keychain/LaunchAgent identifiers. Python 3.12 in `.venv` (uv), PySide6 
 | Scheduling | `scheduling.py`, `execution.py` (+`_schema`), `ui/scheduling.py`, `ui/execution.py` |
 | Background | `background.py` (LaunchAgent), `background_state.py`, `ui/background.py` |
 | Folders/recurring/auto | `watching.py`, `recurring.py`, `cadence.py`, `automation.py` (+ `*_schema.py`), matching `ui/*.py` |
-| TikTok (Buffer) | `buffer.py` (PKCE OAuth, rotating refresh under a file lock, GraphQL), `hosting.py` (Cloudinary public copy), `tiktok.py` (posts, duplicates, status, automation), `tiktok_schema.py`, `ui/tiktok.py`; relay page `docs/buffer-oauth-relay.html` |
+| Buffer (TikTok, Instagram, Facebook) | `buffer.py` (PKCE OAuth, rotating refresh under a file lock, GraphQL), `hosting.py` (Cloudinary public copy), `social.py` (`Platform` specs + `BufferPostService`: posts, duplicates, status, automation, shared sign-in), `social_schema.py` (v13), `backups_schema.py` (v15) + `fallback_schema.py` (v16): backup Buffer/Cloudinary accounts, `ui/social.py` (`SocialController` per platform); `tiktok.py`, `tiktok_schema.py`, `ui/tiktok.py` keep Stage 19 names; relay page `docs/buffer-oauth-relay.html` |
 | Dashboard | `activity.py` (pure cross-platform timeline), `ui/dashboard.py`; read-only view counts via `AccountService.statistics` |
-| Auto upload | `ui/autoupload.py` (one editor → YouTube profile + TikTok profile, each with its own consent) |
+| Auto upload | `ui/autoupload.py` (one editor → a YouTube profile and a profile per Buffer platform, each with its own consent, approved in turn) |
 | Shared UI | `ui/window.py`, `ui/theme.py`, `ui/components.py` (cards, pills, `Section`, `CardGrid`, `flow`), `ui/icons.py` (SVG icons + platform logos), `ui/formatting.py` (dates/times) |
 
 Tests: `tests/test_*.py` (unittest, discovered), `tests/native_*.py` (manual native harnesses),
@@ -57,27 +65,26 @@ Tests: `tests/test_*.py` (unittest, discovered), `tests/native_*.py` (manual nat
 
 ## Database
 
-SQLite, `PRAGMA user_version`; current schema **12** (`library.SCHEMA_VERSION`; v12 = TikTok tables). Opening a
+SQLite, `PRAGMA user_version`; current schema **16** (`library.SCHEMA_VERSION`; v12 = TikTok tables,
+v13 = Instagram/Facebook tables, v14 = daily limits up to 100, v15 = backup Buffer and Cloudinary
+accounts, v16 = each backup Buffer account's own sign-in). Opening a
 library migrates it forward inside one `BEGIN IMMEDIATE` transaction; newer unknown versions are
 refused; failures never reset data. Add migrations as a new `*_schema.py`-style additive step and a
-fixture/test. The user's live library is at schema 12 (the user opened it 2026-10-20 13:17; pre-launch backups in
-`artifacts/stage6-live/backups/`). Its Buffer app client is saved; TikTok is not yet connected. **Any migration of the live library
-needs the user's explicit approval and a fresh backup.**
+fixture/test. The real library lives in the default data folder; `ShortsScheduler.app` runs
+`--backup` (a checked SQLite copy into `backups/`, newest 10 kept) before every launch. **Any
+migration of the user's real library needs the user's explicit approval and a fresh backup.**
 
 ## Protected real data — never delete, move, overwrite or migrate without approval
 
-- `artifacts/stage6-live/` — the live StonkYa workspace (launcher `--data-dir`), backups, logs.
-- `artifacts/stage6-preflight/`, `stage7-live-preflight/`, `stage9-live/` — genuine source videos
-  of real uploads `bfNDN1Gq540`, `OxgK8zkDmkI`, `vmbsEJ4E9Rc`. The live DB stores their **absolute
-  paths**, so these folders cannot be renamed or moved.
-- `artifacts/stage7-preflight/`, `stage9-final/`, `stage10-final/`, `stage17-evidence/`,
-  `stage17-human-picker/`, `stage17-prepared/` — live preservation evidence / pending live test.
-- macOS Keychain entries (`ShortsPublisher.YouTube`, `.UploadSessions`, `.TikTok`), the real channel
-  `UCoj4BJDrrcuE3gTvpi-7QFA`, and its YouTube videos.
-- `/Users/winston/CodexProjects/ShortsStudio` — read-only design reference.
-
-`artifacts/` is gitignored and mixed-trust. Everything else there is controlled test evidence;
-see `docs/stage-18-verification.md` for the classified inventory and the approved cleanup record.
+- The default data folder `~/Library/Application Support/ShortsPublisher/ShortsPublisher`
+  (library, backups, logs) — the user's real workspace once they use the app.
+- macOS Keychain entries (`ShortsPublisher.YouTube`, `.UploadSessions`, `.TikTok` — the last holds
+  the Buffer sign-in and Cloudinary secret for every Buffer platform), the user's real channels
+  and their posted videos.
+- `artifacts/` (gitignored, local only): earlier test evidence and the original source videos of
+  past real uploads (`stage6-preflight/`, `stage7-live-preflight/`, `stage9-live/`) — never
+  modify or delete those videos.
+- `~/CodexProjects/ShortsStudio` — read-only design reference.
 
 ## Safety rules (non-negotiable)
 
@@ -93,11 +100,23 @@ see `docs/stage-18-verification.md` for the classified inventory and the approve
 - Never modify, move, transcode or delete original source videos.
 - Don't read real credentials. Tests use synthetic Keychain identifiers and controlled providers.
 - Don't kill running ShortsPublisher processes or interfere with an active upload.
-- TikTok: never make real Buffer/Cloudinary requests or TikTok posts without explicit authorization.
+- Buffer platforms (TikTok, Instagram, Facebook): never make real Buffer/Cloudinary requests or
+  posts without explicit authorization.
   Never reuse a Buffer refresh token after an uncertain refresh (it revokes the grant). Never
   resend an uncertain `createPost`; reconcile by the unique hosted URL. Duplicate key = source
   SHA-256 + Buffer channel. Hosted copies are public by link; never delete before Buffer reports
-  `sent` (+24 h). Only offer TikTok controls Buffer's API supports (AI disclosure; not privacy).
+  `sent` (+24 h). Only offer controls Buffer's API supports (AI label on TikTok/Instagram; never
+  privacy). Platforms share one Buffer sign-in: delete a Keychain key only when no connection uses
+  it, and mark "Reconnect required" on every connection sharing it.
+- Backup accounts (Settings): the saved app client / `media_hosting` row stay the **main** Buffer and
+  Cloudinary accounts; backups live in `buffer_accounts` / `media_hosts`. Each post records its
+  `host_key` (Cloudinary account of its copy) and `buffer_key`/`buffer_org` (sign-in it was sent
+  with). Both fail over automatically, only on a definite limit refusal (nothing created):
+  Cloudinary on `HostingError` kind `quota`; Buffer on a 429 or a createPost refusal matching
+  `social.over_plan`, to the next backup account with its own standing sign-in
+  (`buffer_accounts.credential_key`) that has the *same* account (same name) — never a different
+  one. Duplicates are also matched by account name across Buffer accounts. A backup sign-in that
+  sees an organization another listed account has is refused (same Buffer account twice).
 
 ## Conventions
 
@@ -105,17 +124,37 @@ see `docs/stage-18-verification.md` for the classified inventory and the approve
   Region-derived default locale with an English one; `time_pattern()` keeps the Region's
   12/24-hour clock. Use `ui/formatting.timestamp()` for every displayed time. User data (titles,
   filenames, the `雪` test fixtures) is never translated.
+- Daily limits: the user wants none of the app's own: no setting or field. Only the platforms'
+  ceilings apply, invisibly: YouTube 100 (`execution.DAILY_MAX`; schema 14 sets the global value
+  to it), Buffer platforms `Platform.daily_max` (TikTok 25, Instagram 50, Facebook 35). Settings
+  sections show the logos of the platforms that need them (`Section(..., platforms)`).
 - Action buttons: `ui/components.tidy_buttons` turns stacked buttons into wrapping rows (window and
   every dialog); don't hand-stretch buttons full width. Use `icon_button`, `flow`/`row`, `card` and
   `pill`; icons come from `ui/icons.py` (never emoji). Nothing collapses: `Section` is always open
   (the user dislikes reveal/dropdown sections); developer diagnostics go in tooltips or Settings.
+- Auto Upload page: two sections only — **Watched folders** (`automation.new` "Watch a Folder…" →
+  the Auto Upload editor; `WatchPanel` is just "Folder activity") and **Individual videos**
+  (`recurring.single` "Upload One Video…" → `PickVideo` → `VideosPage.open_upload`, and
+  `recurring.new` "Choose Videos…" → `RecurringEditor`, whose videos are tick boxes:
+  `checked()`, not selection). The sidebar switch
+  (`ExecutionController.rail`) and page banners (`ExecutionController.banner()`) warn whenever
+  something is held back by the global pause. Timer-driven refreshes ("load", "scan", quiet
+  Buffer polls) must never disable buttons or rebuild unchanged lists (flicker); clicks made
+  during one are queued.
 - Wording is platform-neutral ("upload", not "publish to YouTube"); settings only one platform
   supports are labelled "Only used on YouTube/TikTok". Video details are shared: the TikTok caption
   is `tiktok.caption_from(title, description, tags)`.
 - Lists show one row per video across platforms (`activity.grouped`), with a logo per platform.
   Setup steps use `components.Checklist`; `CardGrid` evens card heights per row.
-- Video editor: six internal pages (File, Details, Review, Publish, Schedule, TikTok — tests use
-  these indices) shown as three steps (Details · Review · Upload) with a hidden tab bar.
+- Video editor: nine internal pages (File, Details, Review, Publish, Schedule, TikTok, Instagram,
+  Facebook, Upload — tests use these indices) shown as three steps (Details · Review · Upload) with
+  a hidden tab bar. The Upload step is page 8 (`ui/upload_all.py`): every ready platform ticked,
+  one Now/Schedule, one button; it only starts each platform's own action (Buffer posts confirmed
+  together, YouTube still through its own confirmation / schedule approval) and requires the
+  video to be marked ready for every platform. Pages 3–7 are each platform's "Options" page.
+- Uniform UI: platforms are chosen with `components.platform_choice`/`set_choice` everywhere
+  (Upload step, queues, auto uploads); multi-step windows use `step_page`/`step_pills` with Cancel
+  left and Back/Next/primary right; empty platform cards are hidden rather than repeated.
 - Preview shows the first frame on selection (muted play → pause). Never call
   `QMediaPlayer.stop()` right after `setSource()`: it can deadlock Qt's FFmpeg backend; clear the
   source instead. Automation status wording comes from

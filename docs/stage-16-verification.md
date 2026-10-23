@@ -235,7 +235,7 @@ changed live table is background_owner. Process inventory confirms the separate 
 application PID 88473 is still running against that database, matching the prior-stage observation.
 No ownership row was restored or overwritten. All three source hashes and 250 ShortsStudio reference
 files match; ShortsStudio git status is clean. The existing account, metadata/reviews, schedules and
-upload records remain intact, including remote IDs bfNDN1Gq540, OxgK8zkDmkI and vmbsEJ4E9Rc.
+upload records remain intact, including remote IDs <youtube-video-1>, <youtube-video-2> and <youtube-video-3>.
 Production login plists are absent. All test LaunchAgents were removed; none remain loaded.
 Test synthetic Keychain entries/sessions
 were removed by final harness phases. Real secrets were not read. Credential preservation relies on

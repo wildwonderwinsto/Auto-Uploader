@@ -52,14 +52,15 @@ class VideosUiTests(unittest.TestCase):
             w.automation,
             w.background,
             w.watching,
-            w.tiktok,
+            *w.socials,
             self.page,
         ):
             settle(self.app, controller)
 
     def tearDown(self):
         self.window.close()
-        settle(self.app, self.page)
+        for controller in (self.page, *self.window.socials):
+            settle(self.app, controller)
         self.window.deleteLater()
         self.app.processEvents()
 
@@ -100,6 +101,23 @@ class VideosUiTests(unittest.TestCase):
         settle(self.app, self.page)
         self.assertEqual(self.page.selected.id, original_id)
         self.assertIn(str(self.source), self.page.details.toPlainText())
+
+    def test_open_upload_selects_the_video_and_its_step(self):
+        self.import_through_picker()
+        first = self.page.selected.id
+        second = Path(self.temp.name) / "second.mp4"
+        second.write_bytes(self.source.read_bytes())
+        self.page.start("import", str(second))
+        settle(self.app, self.page)
+        self.page.go_step(2)
+        self.page.open_upload(first)
+        settle(self.app, self.page)
+        self.assertEqual(self.page.selected.id, first)
+        # Not marked ready yet, so it opens on its Details; a ready one opens on Upload (every
+        # platform, page 8).
+        expected = 8 if self.page.tabs.isTabEnabled(3) else 1
+        self.assertEqual(self.page.tabs.currentIndex(), expected)
+        self.assertIsNone(self.page.upload_next)
 
     def test_cancel_picker_and_removal(self):
         with patch.object(QFileDialog, "getOpenFileNames", return_value=([], "")):

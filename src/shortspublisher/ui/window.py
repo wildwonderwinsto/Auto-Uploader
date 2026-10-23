@@ -29,6 +29,7 @@ from ..execution import AutomaticPublisher
 from ..library import LibraryService
 from ..recurring import RecurringService
 from ..scheduling import ScheduleService
+from ..social import FACEBOOK, INSTAGRAM, BufferPostService
 from ..tiktok import TikTokService
 from ..uploads import UploadService
 from ..watching import WatchService
@@ -37,12 +38,13 @@ from .accounts import AccountsPage, coming_soon
 from .automation import AutomationController
 from .autoupload import AutoUploadEditor
 from .background import BackgroundPage
-from .components import card, divider, icon_button, row, tidy_buttons
+from .components import card, divider, icon_button, tidy_buttons
 from .dashboard import DashboardPage
 from .execution import ExecutionController
 from .recurring import RecurringController
 from .scheduling import ScheduleController
-from .tiktok import TikTokController
+from .social import SocialController
+from .upload_all import UploadAll
 from .uploads import UploadPanel
 from .videos import VideosPage
 from .watching import WatchPanel
@@ -66,7 +68,12 @@ PAGES = (
     Page("videos", "Videos", "videos", "Add videos, write their details and upload them"),
     Page("queue", "Schedule", "calendar", "Everything waiting to upload, and when"),
     Page("calendar", "Calendar", "calendar", "Your uploads by day", nav="queue"),
-    Page("automation", "Auto Upload", "auto", "Upload new videos from a folder automatically"),
+    Page(
+        "automation",
+        "Auto Upload",
+        "auto",
+        "Upload automatically at set times, from a folder or videos you pick",
+    ),
     Page("accounts", "Accounts", "accounts", "Connect the platforms you upload to"),
     Page("settings", "Settings", "settings", "Background uploading, limits and connections"),
 )
@@ -156,31 +163,66 @@ class MainWindow(QMainWindow):
         self.recurring.idle.connect(self._finish_close)
         self.automation = AutomationController(AutomationService(self.schedules.service), self)
         self.automation.idle.connect(self._finish_close)
-        self.automatic.recurring_updated.connect(self.recurring.render)
-        self.schedules.queue.recurring_slot.addWidget(self.recurring.queue)
+        self.automatic.recurring_updated.connect(self.recurring.changed)
         self.background = BackgroundPage(background or LaunchAgent(uploads.store.library), self)
         self.background.idle.connect(self._finish_close)
         self.background.status_changed.connect(self.automation.render)
         self.videos.tabs.addTab(self.uploads, "Publish")
         self.videos.tabs.addTab(self.schedule_panel, "Schedule")
-        # TikTok via Buffer: its own credentials namespace, consent and records.
-        self.tiktok = TikTokController(
-            TikTokService(uploads.store.library, KeychainSecrets("ShortsPublisher.TikTok")), self
-        )
-        self.tiktok.idle.connect(self._finish_close)
-        self.videos.tabs.addTab(self.tiktok.video_panel, "TikTok")
-        # One set of details: TikTok's only own setting sits with them, and its caption follows them.
-        self.videos.editor.tiktok_slot.insertWidget(0, self.tiktok.ai_field)
-        self.videos.editor.changed.connect(
-            lambda: self.tiktok.follow_details(self.videos.editor.value())
-        )
-        self.tiktok.changed.connect(self.mark_tiktok_posts)
-        self.videos.when_changed = self.tiktok.set_when
-        self.tiktok.set_when("now")
-        self.accounts.grid.add(self.tiktok.card)
-        for platform in ("instagram", "facebook", "snapchat"):
-            self.accounts.soon.add(coming_soon(platform))
-        self.accounts.setup_requested.connect(lambda: self.navigate("settings"))
+        # TikTok, Instagram and Facebook via Buffer: one controller each, with its own consent
+        # and records. They share Stage 19's Keychain namespace (the Buffer sign-in and hosting
+        # secret); the TikTok controller owns the shared Settings.
+        library = uploads.store.library
+        secrets = KeychainSecrets("ShortsPublisher.TikTok")
+        self.tiktok = SocialController(TikTokService(library, secrets), self, owner=True)
+        self.instagram = SocialController(BufferPostService(INSTAGRAM, library, secrets), self)
+        self.facebook = SocialController(BufferPostService(FACEBOOK, library, secrets), self)
+        self.socials = (self.tiktok, self.instagram, self.facebook)
+        slots = {
+            "tiktok": self.videos.editor.tiktok_slot,
+            "instagram": self.videos.editor.instagram_slot,
+            "facebook": self.videos.editor.facebook_slot,
+        }
+        for social in self.socials:
+            social.idle.connect(self._finish_close)
+            # Pages 5, 6 and 7 of the video editor.
+            self.videos.tabs.addTab(social.video_panel, social.name)
+            # One set of details: a platform's own setting sits with them, and its caption
+            # follows them.
+            if social.spec.ai_label:
+                slots[social.key].insertWidget(0, social.ai_field)
+            self.videos.editor.changed.connect(
+                lambda s=social: s.follow_details(self.videos.editor.value())
+            )
+            social.changed.connect(self.mark_buffer_posts)
+            social.set_when("now")
+            self.accounts.grid.add(social.card)
+            for other in self.socials:
+                if other is not social:
+                    social.buffer_changed.connect(other.sync)
+        self.videos.when_changed = self.set_buffer_when
+        # Page 8, the Upload step: the details go to every ticked platform at once. Each
+        # platform's own page (Options) links back to it.
+        self.upload_all = UploadAll(self)
+        self.videos.tabs.addTab(self.upload_all, "Upload")
+        for panel in (self.uploads, self.schedule_panel, *(s.video_panel for s in self.socials)):
+            back = icon_button("All Platforms", "chevron-left", role="Ghost")
+            back.setAccessibleName("Back to all platforms")
+            back.clicked.connect(lambda: self.videos.go_step(3))
+            panel_layout = panel.layout()
+            assert isinstance(panel_layout, QVBoxLayout)
+            panel_layout.insertWidget(0, back, 0, Qt.AlignmentFlag.AlignLeft)
+        for signal in (
+            self.uploads.changed,
+            self.accounts.state_changed,
+            self.schedules.idle,
+            self.videos.idle,
+            self.videos.editor.changed,
+            *(social.changed for social in self.socials),
+        ):
+            signal.connect(self.upload_all.render)
+        self.accounts.soon.add(coming_soon("snapchat"))
+        self.accounts.setup_requested.connect(lambda: self.open_setup(self.accounts.setup_guide))
         self.accounts.hold_refresh = self.upload_due_soon
         self.uploads.fix_button.clicked.connect(lambda: self.navigate("accounts"))
         # Settings: one card per topic, each with a plain explanation.
@@ -200,12 +242,18 @@ class MainWindow(QMainWindow):
         connections_body.addWidget(self.tiktok.insights_setup)
         self.background.connections_slot.addWidget(connections)
         self.background.hosting_slot.addWidget(self.tiktok.hosting)
-        self.automation.tiktok_slot.addWidget(self.tiktok.automation)
+        for social in self.socials:
+            self.automation.tiktok_slot.addWidget(social.automation)
         self.automation.folders_slot.addWidget(self.watching)
+        # Upload queues sit beside folder uploads: both upload automatically at set times.
+        self.automation.queue_new_slot.addWidget(self.recurring.single)
+        self.automation.queue_new_slot.addWidget(self.recurring.new)
+        self.automation.queue_slot.addWidget(self.recurring.queue)
         self.automation.editor_factory = lambda controller, profile: AutoUploadEditor(
             controller, self.tiktok, profile
         )
-        self.schedules.queue.tiktok_slot.addWidget(self.tiktok.queue)
+        for social in self.socials:
+            self.schedules.queue.tiktok_slot.addWidget(social.queue)
         self.uploads.changed.connect(self.videos.tabs.resize_to_current)
         self.uploads.idle.connect(self._finish_close)
         self.uploads.idle.connect(self.update_upload_context)
@@ -219,27 +267,15 @@ class MainWindow(QMainWindow):
             self.dashboard.entries_changed.connect(schedule_page.render_agenda)
         self.accounts.state_changed.connect(lambda _: self.dashboard.refresh())
         self.accounts.idle.connect(self.dashboard.schedule)  # the first check has finished
+        # Load view counts as soon as YouTube is connected, without waiting for the next minute.
+        self.accounts.state_changed.connect(lambda _: self.dashboard.load_stats())
         for signal in (
             self.uploads.changed,
             self.automatic.changed,
             self.automatic.recurring_updated,
-            self.tiktok.changed,
+            *(social.changed for social in self.socials),
         ):
             signal.connect(self.dashboard.schedule)
-        limits, limits_body = card(20, 10)
-        limits_body.addWidget(label("Daily upload limit", "Heading"))
-        limits_body.addWidget(
-            label(
-                "The most scheduled and automatic uploads ShortsScheduler starts in one day, "
-                "across all your schedules. Uploads you start by hand don't count.",
-                "Muted",
-            )
-        )
-        self.automatic.limit.setPrefix("")
-        self.automatic.limit.setSuffix(" per day")
-        self.automatic.save_limit.setText("Save")
-        limits_body.addWidget(row(self.automatic.limit, self.automatic.save_limit))
-        self.background.limits_slot.addWidget(limits)
         for page in PAGES:
             self.indices[page.key] = self.stack.addWidget(
                 self.videos
@@ -277,10 +313,19 @@ class MainWindow(QMainWindow):
             self.buttons[page.key] = button
             nav.addWidget(button)
         nav.addStretch()
-        status, status_layout = card(14, 8, "RailStatus")
-        status_layout.addWidget(self.automatic.state)
-        status_layout.addWidget(self.automatic.button)
-        nav.addWidget(status)
+        nav.addWidget(self.automatic.rail)
+        # Planned uploads held back while auto uploading is off: say so where they are planned.
+        self.dashboard.banner_slot.addWidget(self.automatic.banner())
+        for schedule in (self.schedules.queue, self.schedules.calendar):
+            schedule.body.insertWidget(1, self.automatic.banner())
+        self.automation.body.insertWidget(1, self.automatic.banner())
+        for signal in (
+            self.recurring.idle,
+            self.automation.idle,
+            self.automatic.recurring_updated,
+            *(social.changed for social in self.socials),
+        ):
+            signal.connect(lambda *_: self.automatic.render_switch())
         navigation = QScrollArea()
         navigation.setFixedWidth(220)
         navigation.setWidgetResizable(True)
@@ -310,16 +355,30 @@ class MainWindow(QMainWindow):
         )
         return jobs or plans
 
-    def mark_tiktok_posts(self) -> None:
+    def open_setup(self, section: QWidget) -> None:
+        """Settings, scrolled so the section a setup step needs is in view."""
+        self.navigate("settings")
+        if self.stack.currentWidget() is self.background:
+            QTimer.singleShot(0, lambda: self.background.ensureWidgetVisible(section, 0, 24))
+
+    def set_buffer_when(self, when: str) -> None:
+        """Now or Schedule, chosen once in the Upload step for every platform."""
+        for social in self.socials:
+            social.set_when(when)
+
+    def mark_buffer_posts(self) -> None:
         posted = {
-            p["video_id"]
-            for p in self.tiktok.data.get("posts", [])
-            if p.get("state") == "Sent by Buffer" and p.get("video_id") is not None
+            social.key: {
+                p["video_id"]
+                for p in social.data.get("posts", [])
+                if p.get("state") == "Sent by Buffer" and p.get("video_id") is not None
+            }
+            for social in self.socials
         }
         hosting = self.tiktok.data.get("hosting") or {}
-        self.videos.tiktok_limit = hosting.get("max_bytes") or self.videos.tiktok_limit
-        if posted != self.videos.tiktok_posted:
-            self.videos.tiktok_posted = posted
+        limit = hosting.get("max_bytes") or self.videos.hosting_limit
+        if posted != self.videos.buffer_posted or limit != self.videos.hosting_limit:
+            self.videos.buffer_posted, self.videos.hosting_limit = posted, limit
             self.videos.render_library()
 
     def adopt_unplaced(self) -> None:
@@ -343,7 +402,7 @@ class MainWindow(QMainWindow):
             self.automation,
             self.background,
             self.watching,
-            self.tiktok,
+            *self.socials,
             self.dashboard,
         )
         for owner in owners:
@@ -412,11 +471,13 @@ class MainWindow(QMainWindow):
             video, prep = None, None
         for index in range(3):
             self.videos.tabs.setTabEnabled(index, self.videos.selected is not None)
-        self.videos.tabs.setTabEnabled(5, self.videos.selected is not None)
+        for page in (5, 6, 7, 8):
+            self.videos.tabs.setTabEnabled(page, self.videos.selected is not None)
         self.uploads.set_history_mode(self.videos.mode == "history")
-        self.tiktok.context(video.id if video else None)
-        if prep:
-            self.tiktok.follow_details(self.videos.editor.value())
+        for social in self.socials:
+            social.context(video.id if video else None)
+            if prep:
+                social.follow_details(self.videos.editor.value())
         self.videos.sync_navigation()
         self.uploads.context(
             video.id if video else None,
@@ -461,7 +522,7 @@ class MainWindow(QMainWindow):
             and self.automation.request_close()
             and self.background.request_close()
             and self.watching.request_close()
-            and self.tiktok.request_close()
+            and all([social.request_close() for social in self.socials])
         ):
             event.accept()
         else:
@@ -478,7 +539,7 @@ class MainWindow(QMainWindow):
             or self.automation.closing
             or self.background.closing
             or self.watching.closing
-            or self.tiktok.closing
+            or any(social.closing for social in self.socials)
         ):
             self.close()
 
@@ -507,7 +568,7 @@ class MainWindow(QMainWindow):
                 or not self.automation.request_close()
                 or not self.background.request_close()
                 or not self.watching.request_close()
-                or not self.tiktok.request_close()
+                or not all([social.request_close() for social in self.socials])
             ):
                 event.ignore()
                 return True

@@ -157,8 +157,8 @@ performed. Evidence: `artifacts/stage12-evidence/performance.json`.
 
 Read-only before/after hashes match all **15 live-library tables**, all three genuine source videos,
 and all **250 retained ShortsStudio reference files**. The live database was already schema 8 at
-this stage's start and remains unchanged. The genuine Stage 6 Private `bfNDN1Gq540`, Stage 7 Public
-`OxgK8zkDmkI` and Stage 9 automatic Public `vmbsEJ4E9Rc` records are preserved. No real credential or
+this stage's start and remains unchanged. The genuine Stage 6 Private `<youtube-video-1>`, Stage 7 Public
+`<youtube-video-2>` and Stage 9 automatic Public `<youtube-video-3>` records are preserved. No real credential or
 resumable session was read or modified. ShortsStudio git status remains clean. The production
 LaunchAgent and login plist are absent, and the Stage 12 test labels were removed.
 Evidence: `preservation-before.json`, `preservation-after.json`, `service-cleanup.json` under

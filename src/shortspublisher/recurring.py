@@ -164,9 +164,7 @@ class RecurringService:
             limit = old["approved_limit"]
         limit = current_limit if limit is None else limit
         if not 1 <= limit <= current_limit:
-            raise ScheduleError(
-                "The approved limit cannot exceed the current global automatic daily limit."
-            )
+            raise ScheduleError(f"YouTube allows at most {current_limit} uploads a day.")
         opportunities = rule.next(self.clock())
         instant = opportunities[0]
         local = instant.astimezone(ZoneInfo(rule.zone))

@@ -10,7 +10,13 @@ from threading import Event
 
 from support import make_video
 
-from shortspublisher.library import Library, LibraryError, LibraryService, source_status
+from shortspublisher.library import (
+    SCHEMA_VERSION,
+    Library,
+    LibraryError,
+    LibraryService,
+    source_status,
+)
 from shortspublisher.media import Inspector
 from shortspublisher.preparation import (
     PreparationStore,
@@ -89,7 +95,7 @@ class MigrationTests(unittest.TestCase):
         library.initialize()
         library.initialize()
         with sqlite3.connect(self.path) as db:
-            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 12)
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], SCHEMA_VERSION)
             self.assertEqual([row[:-1] for row in db.execute("SELECT * FROM videos")], original)
         video = library.get(17)
         self.assertEqual(video.media.frames, 48)

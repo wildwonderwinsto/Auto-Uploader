@@ -192,7 +192,7 @@ heartbeat. This verification did not launch, stop or modify that separate applic
 ownership row is not claimed, and it was not restored over an active application's state.
 
 All three genuine source hashes and all 250 ShortsStudio reference files match. The account,
-preparations, schedules, attempts and remote IDs bfNDN1Gq540, OxgK8zkDmkI and vmbsEJ4E9Rc are retained.
+preparations, schedules, attempts and remote IDs <youtube-video-1>, <youtube-video-2> and <youtube-video-3> are retained.
 ShortsStudio git status is clean. Real Keychain/session secrets were not read; preservation relies
 on isolated test identifiers rather than comparing secrets. No ShortsPublisher LaunchAgent remains
 loaded and production login plists are absent. Evidence: preservation-before.json,

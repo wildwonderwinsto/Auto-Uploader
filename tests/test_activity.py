@@ -1,3 +1,5 @@
+import os
+import time
 import unittest
 from datetime import UTC, datetime
 
@@ -150,6 +152,43 @@ class TimelineTests(unittest.TestCase):
         recent = activity.recent(entries)
         self.assertEqual(recent[0].platform, "tiktok")
         self.assertEqual(activity.since(recent, datetime(2026, 10, 5, tzinfo=UTC)), 1)
+
+    def test_other_buffer_platforms_and_reconnect_wording(self):
+        entries = activity.timeline(
+            [],
+            [],
+            set(),
+            {},
+            [],
+            {
+                "instagram": [post("Waiting for Instagram reconnection")],
+                "facebook": [post("Manual completion required")],
+            },
+        )
+        self.assertEqual(
+            [(e.platform, e.status) for e in entries],
+            [("instagram", "Reconnect Instagram"), ("facebook", "Finish in the Facebook app")],
+        )
+
+    def test_undated_entries_sort_in_every_time_zone(self):
+        # datetime.min/max.astimezone() overflow on one side of UTC each; sorting must not.
+        previous = os.environ.get("TZ")
+        self.addCleanup(time.tzset)
+        self.addCleanup(
+            lambda: (
+                os.environ.pop("TZ", None)
+                if previous is None
+                else os.environ.__setitem__("TZ", previous)
+            )
+        )
+        undated = activity.Entry("tiktok", "Posting", "", activity.DONE, "Posted")
+        dated = activity.Entry(
+            "tiktok", "Old", "2026-10-01T00:00:00+00:00", activity.DONE, "Posted"
+        )
+        for zone in ("Asia/Tokyo", "America/New_York"):
+            os.environ["TZ"] = zone
+            time.tzset()
+            self.assertEqual(activity.recent([undated, dated]), [dated, undated])
 
 
 class GroupTests(unittest.TestCase):

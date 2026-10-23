@@ -244,9 +244,7 @@ class AutomationService:
                 0
             ]
             if type(data["limit"]) is not int or not 1 <= data["limit"] <= limit:
-                raise ScheduleError(
-                    "The approved cap must be within the current global automatic limit."
-                )
+                raise ScheduleError(f"YouTube allows at most {limit} uploads a day.")
             if identity:
                 old = read_profile(db, identity)
                 if old["revision"] != revision or not old["revoked"]:
@@ -319,7 +317,7 @@ class AutomationService:
                 or json.loads(account[0])["id"] != proposal["channel_id"]
                 or settings["limit"] > limit
             ):
-                raise ScheduleError("Channel or global limit changed during approval.")
+                raise ScheduleError("The channel changed during approval; review it again.")
             revision = old["revision"] + 1 if old else 1
             db.execute(
                 """INSERT INTO recurring_plans VALUES(?,?,'youtube',?,?,?,1,?,1,1,?,?,?,?,?,?,?)""",

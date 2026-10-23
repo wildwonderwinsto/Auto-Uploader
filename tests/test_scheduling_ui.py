@@ -75,7 +75,8 @@ class SchedulingUiTests(unittest.TestCase):
         e = self.editor()
         from shortspublisher.ui.formatting import time_pattern
 
-        self.assertEqual(e.time.displayFormat(), time_pattern(seconds=True))
+        # No seconds: nobody plans an upload to the second.
+        self.assertEqual(e.time.displayFormat(), time_pattern())
         self.assertIn("UTC", e.feedback.text())
         self.assertTrue(e.date.calendarPopup())
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from threading import Event
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo, available_timezones
@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
     QDateEdit,
     QDialog,
     QDialogButtonBox,
+    QFormLayout,
     QHBoxLayout,
     QLabel,
     QListWidget,
@@ -46,7 +47,7 @@ from ..scheduling import Job, Proposal, ScheduleService, local_choices
 from . import theme
 from .dashboard import group_row
 from .formatting import day_label, duration, file_size, system_zone, time_pattern, timestamp
-from .icons import icon, image, logo, pixmap
+from .icons import PLATFORM_NAMES, icon, image, logo, pixmap
 from .videos import text
 
 if TYPE_CHECKING:
@@ -127,7 +128,12 @@ class ScheduleConfirmation(QDialog):
 
 class ScheduleEditor(QDialog):
     def __init__(
-        self, controller: ScheduleController, video_id: int, channel_id: str, job: Job | None = None
+        self,
+        controller: ScheduleController,
+        video_id: int,
+        channel_id: str,
+        job: Job | None = None,
+        when: datetime | None = None,
     ):
         super().__init__(controller.window)
         self.controller, self.video_id, self.channel_id, self.job = (
@@ -137,15 +143,20 @@ class ScheduleEditor(QDialog):
             job,
         )
         self.dirty = False
-        self.setWindowTitle("Reschedule / Reapprove" if job else "Schedule Video")
-        self.resize(560, 620)
+        self.setWindowTitle("Change YouTube Time" if job else "Schedule on YouTube")
+        self.resize(600, 600)
+        # Same look as the other windows: a header, the fields, and actions along the bottom.
         layout = QVBoxLayout(self)
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        content = QWidget()
-        body = QVBoxLayout(content)
-        body.addWidget(text("Plan a Public YouTube upload", "Heading"))
-        body.addWidget(text(NOTICE, "Muted"))
+        layout.setContentsMargins(24, 22, 24, 18)
+        layout.setSpacing(14)
+        layout.addWidget(text("Change the YouTube time" if job else "Schedule on YouTube", "Title"))
+        layout.addWidget(
+            text(
+                "Pick when this video uploads publicly to YouTube. You'll see the exact plan and "
+                "approve it next. It only goes out while Auto uploading is On.",
+                "Muted",
+            )
+        )
         connection = controller.window.accounts.view.connection
         channel_name = (
             job.channel_title
@@ -154,22 +165,31 @@ class ScheduleEditor(QDialog):
             if connection
             else "Channel not connected"
         )
-        body.addWidget(text("YouTube · " + channel_name))
         selected = controller.window.videos.editor.preparation
         title = (
             job.snapshot["metadata"]["title"]
             if job
-            else selected.metadata.title
+            else selected.metadata.title or "This video"
             if selected
-            else "Selected reviewed video"
+            else "This video"
         )
-        body.addWidget(text("Video: " + title))
+        destination, destination_body = card(14, 6, "Row")
+        line = QHBoxLayout()
+        line.setSpacing(12)
+        line.addWidget(image(logo("youtube", 26)))
+        names = QVBoxLayout()
+        names.setSpacing(2)
+        names.addWidget(text(title, "Subheading"))
+        names.addWidget(text(channel_name, "Subtle"))
+        line.addLayout(names, 1)
+        destination_body.addLayout(line)
+        layout.addWidget(destination)
         self.date = QDateEdit()
         self.date.setCalendarPopup(True)
-        self.date.setDisplayFormat("MMM d, yyyy")
+        self.date.setDisplayFormat("ddd, MMM d, yyyy")
         self.date.setDateRange(QDate(1900, 1, 1), QDate(9998, 12, 31))
         self.time = QTimeEdit()
-        self.time.setDisplayFormat(time_pattern(seconds=True))
+        self.time.setDisplayFormat(time_pattern())
         self.zone = QComboBox()
         self.zone.setEditable(True)
         self.zone.addItems(sorted(available_timezones()))
@@ -179,44 +199,56 @@ class ScheduleEditor(QDialog):
         initial = (
             datetime.fromisoformat(job.local_time)
             if job
-            else (controller.service.clock() + timedelta(hours=1))
+            else (when or controller.service.clock() + timedelta(hours=1))
             .astimezone(ZoneInfo(zone))
             .replace(tzinfo=None)
         )
         self.date.setDate(QDate(initial.year, initial.month, initial.day))
         self.time.setTime(QTime(initial.hour, initial.minute, initial.second))
         self.occurrence = QComboBox()
-        self.occurrence.addItem("Select occurrence if time repeats", None)
-        self.occurrence.addItem("First occurrence (earlier UTC instant)", 0)
-        self.occurrence.addItem("Second occurrence (later UTC instant)", 1)
+        self.occurrence.addItem("Choose one", None)
+        self.occurrence.addItem("The first time (before the clocks change)", 0)
+        self.occurrence.addItem("The second time (after the clocks change)", 1)
         if job:
             self.occurrence.setCurrentIndex(job.fold + 1)
+        moment = QHBoxLayout()
+        moment.setSpacing(10)
+        moment.addWidget(self.date, 3)
+        moment.addWidget(self.time, 2)
+        fields = QFormLayout()
+        fields.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
+        fields.setVerticalSpacing(8)
+        fields.addRow("Day and time", moment)
+        fields.addRow("Time zone", self.zone)
+        self.occurrence_label = QLabel("This time happens twice that day (clock change). Which?")
+        fields.addRow(self.occurrence_label, self.occurrence)
         for name, widget in (
             ("Local date", self.date),
             ("Local time", self.time),
-            ("IANA time zone", self.zone),
+            ("Time zone", self.zone),
             ("Repeated-clock occurrence", self.occurrence),
         ):
-            label = QLabel(name)
-            label.setBuddy(widget)
-            body.addWidget(label)
-            body.addWidget(widget)
-        self.feedback = text("", "Muted")
-        body.addWidget(self.feedback)
-        self.activate_after = QCheckBox("After saving, review automatic Public activation")
-        body.addWidget(self.activate_after)
-        self.review = QPushButton("Review Schedule…")
-        self.review.clicked.connect(lambda: controller.preview(self, False))
-        body.addWidget(self.review)
-        self.draft = QPushButton("Save Draft")
+            widget.setAccessibleName(name)
+        layout.addLayout(fields)
+        self.feedback = text("", "Notice")
+        layout.addWidget(self.feedback)
+        self.activate_after = QCheckBox("Then turn on the automatic Public upload for this video")
+        layout.addWidget(self.activate_after)
+        layout.addStretch()
+        footer = QHBoxLayout()
+        cancel = icon_button("Cancel", "x")
+        cancel.clicked.connect(self.reject)
+        self.draft = icon_button("Save as Draft", "check", role="Ghost")
+        self.draft.setAccessibleName("Save Draft")
         self.draft.setEnabled(job is None or job.state == "Draft")
         self.draft.clicked.connect(lambda: controller.preview(self, True))
-        body.addWidget(self.draft)
-        cancel = QPushButton("Cancel")
-        cancel.clicked.connect(self.reject)
-        body.addWidget(cancel)
-        scroll.setWidget(content)
-        layout.addWidget(scroll)
+        self.review = icon_button("Review Schedule…", "calendar", role="Primary")
+        self.review.clicked.connect(lambda: controller.preview(self, False))
+        footer.addWidget(cancel)
+        footer.addStretch()
+        footer.addWidget(self.draft)
+        footer.addWidget(self.review)
+        layout.addLayout(footer)
         for signal in (
             self.date.dateChanged,
             self.time.timeChanged,
@@ -247,9 +279,12 @@ class ScheduleEditor(QDialog):
         try:
             args = self.values()
             choices = local_choices(args["local"], args["zone"])
+            # Only asked on the rare day a clock change makes this time happen twice.
+            self.occurrence.setVisible(len(choices) > 1)
+            self.occurrence_label.setVisible(len(choices) > 1)
             self.feedback.setText(
-                "Upload starts: "
-                + " / ".join(timestamp(c, args["zone"], weekday=True) for c in choices)
+                "Uploads publicly: "
+                + " or ".join(timestamp(c, args["zone"], weekday=True) for c in choices)
             )
         except Exception as exc:
             self.feedback.setText(str(exc))
@@ -297,6 +332,7 @@ class SchedulePage(QScrollArea):
         self.controller = controller
         self.calendar_mode = calendar
         self.jobs: list[Job] = []
+        self.rendered: object = None  # what the list last showed
         self.setObjectName("calendar" if calendar else "queue")
         self.setWidgetResizable(True)
         content = QWidget()
@@ -308,7 +344,11 @@ class SchedulePage(QScrollArea):
         names.setSpacing(4)
         names.addWidget(text("Calendar" if calendar else "Schedule", "Title"))
         names.addWidget(
-            text("Everything waiting to upload on every platform, and when it goes out.", "Muted")
+            text(
+                "Everything waiting to upload on every platform, and when it goes out. To upload "
+                "automatically at set times, use Auto Upload.",
+                "Muted",
+            )
         )
         top.addLayout(names, 1)
         self.views: dict[str, QPushButton] = {}
@@ -347,6 +387,19 @@ class SchedulePage(QScrollArea):
             self.calendar.setMinimumHeight(300)
             self.calendar.selectionChanged.connect(self.render)
             holder.addWidget(self.calendar)
+            legend = QHBoxLayout()
+            legend.setSpacing(6)
+            for platform in ("youtube", "tiktok", "instagram", "facebook"):
+                legend.addWidget(image(logo(platform, 16)))
+            legend.addWidget(
+                text(
+                    "Highlighted days have uploads on any of your platforms. Choose a day to "
+                    "see them.",
+                    "Subtle",
+                ),
+                1,
+            )
+            holder.addLayout(legend)
             self.body.addWidget(frame)
         # All platforms in one agenda, grouped by day (filled from the shared timeline).
         self.agenda_frame, agenda = card(20, 4)
@@ -367,8 +420,14 @@ class SchedulePage(QScrollArea):
         )
         self.agenda_empty.setContentsMargins(0, 8, 0, 8)
         agenda.addWidget(self.agenda_empty)
+        # Calendar: from an empty day straight to the next day with an upload.
+        self.next_date: QDate | None = None
+        self.next_day = icon_button("Go to That Day", "chevron-right", role="Ghost")
+        self.next_day.clicked.connect(self.show_next_day)
+        self.next_day.hide()
+        agenda.addWidget(self.next_day, 0, Qt.AlignmentFlag.AlignLeft)
         self.body.addWidget(self.agenda_frame)
-        # Posting times (recurring queues) and TikTok posts are placed here by the window.
+        # Kept for placement compatibility; upload queues now live on the Auto Upload page.
         self.recurring_slot = QVBoxLayout()
         self.body.addLayout(self.recurring_slot)
 
@@ -482,7 +541,7 @@ class SchedulePage(QScrollArea):
             shown = [
                 e
                 for e in sorted(
-                    entries, key=lambda e: activity.instant(e) or datetime.max.astimezone()
+                    entries, key=lambda e: activity.instant(e) or datetime.max.replace(tzinfo=UTC)
                 )
                 if (moment := activity.instant(e))
                 and (local := moment.astimezone(ZoneInfo(system_zone())))
@@ -492,6 +551,33 @@ class SchedulePage(QScrollArea):
             for group in activity.grouped(shown):
                 self.agenda_rows.addWidget(group_row(group))
             self.agenda_empty.setVisible(not shown)
+            later = sorted(
+                (
+                    (local, e)
+                    for e in entries
+                    if (moment := activity.instant(e))
+                    and (local := moment.astimezone(ZoneInfo(system_zone())))
+                    and QDate(local.year, local.month, local.day) > chosen
+                ),
+                key=lambda pair: pair[0],
+            )
+            self.next_date = None
+            self.agenda_empty.setText("Nothing on this day.")
+            if later and not shown:
+                local, first = later[0]
+                self.next_date = QDate(local.year, local.month, local.day)
+                platforms = sorted(
+                    {
+                        PLATFORM_NAMES.get(e.platform, e.platform)
+                        for moment, e in later
+                        if moment.date() == local.date()
+                    }
+                )
+                self.agenda_empty.setText(
+                    f"Nothing on this day. Next: {QLocale().toString(self.next_date, 'dddd, MMMM d')}"
+                    f" ({', '.join(platforms)})."
+                )
+            self.next_day.setVisible(bool(self.next_date))
             return
         attention = [e for e in entries if e.kind == activity.ATTENTION]
         pending = activity.grouped(attention) + activity.grouped(activity.upcoming(entries))
@@ -510,6 +596,10 @@ class SchedulePage(QScrollArea):
             self.agenda_rows.addWidget(group_row(group))
         self.agenda_empty.setVisible(not pending)
 
+    def show_next_day(self) -> None:
+        if self.calendar and self.next_date:
+            self.calendar.setSelectedDate(self.next_date)
+
     def selected(self) -> Job | None:
         item = self.list.currentItem()
         return next(
@@ -517,6 +607,21 @@ class SchedulePage(QScrollArea):
         )
 
     def render(self, *_: Any) -> None:
+        automatic = getattr(self.controller.window, "automatic", None)
+        key = (
+            list(self.jobs),
+            [
+                (automatic.execution(j), automatic.attempt(j)) if automatic else None
+                for j in self.jobs
+            ],
+            self.filter.currentIndex(),
+            self.calendar.selectedDate() if self.calendar else None,
+        )
+        if key == self.rendered:
+            # The dispatcher reports every few seconds; an unchanged list isn't rebuilt.
+            self.selected_changed()
+            return
+        self.rendered = key
         selected = self.selected()
         identity = selected.id if selected else ""
         self.list.clear()
@@ -565,15 +670,26 @@ class SchedulePage(QScrollArea):
                 if self.calendar_mode
                 else "No scheduled YouTube uploads."
             )
-            + " To schedule one, open a video, choose Upload, then Schedule."
+            + " To schedule one, open a video and choose Upload."
         )
         self.list.setVisible(bool(shown))
         self.action_row.setVisible(bool(shown))
         self.plan_details.setVisible(bool(shown))
+        if self.calendar_mode:
+            # The day's uploads on every platform are listed above; this card only manages
+            # YouTube's, so it appears on days that have some.
+            self.youtube.setVisible(bool(shown))
+        else:
+            # Coming up lists every platform; this card appears once YouTube has a schedule.
+            self.youtube.setVisible(bool(self.jobs))
         window = self.controller.window
         if hasattr(window, "dashboard"):
             self.render_agenda(window.dashboard.entries)
         self.selected_changed()
+
+    def show_details(self, value: str) -> None:
+        if self.details.toPlainText() != value:  # resetting identical text would jump the view
+            self.details.setPlainText(value)
 
     def selected_changed(self, *_: Any) -> None:
         job = self.selected()
@@ -610,7 +726,7 @@ class SchedulePage(QScrollArea):
         )
         self.stop_upload.setVisible(self.stop_upload.isEnabled())
         self.refresh.setEnabled(not busy)
-        self.details.setPlainText(
+        self.show_details(
             (
                 f"UTC: {job.scheduled_utc}\nLocal ISO: {job.local_time}\n{automatic.description(job) if automatic else 'Execution disabled'}\n\nJob: {job.id}\nPlan timing/state: {job.state} · Revision {job.revision}\n{job.reason}\nApproved: {timestamp(job.approved_at, job.timezone, empty='Not approved')}\nCancelled: {timestamp(job.cancelled_at, job.timezone, empty='No')}\n\n"
                 + details(
@@ -701,10 +817,13 @@ class ScheduleController(QObject):
         if not self.worker and not self.editor and not self.closing:
             self.start("load")
 
-    def open_editor(self, video_id: int, channel_id: str, job: Job | None = None) -> None:
+    def open_editor(
+        self, video_id: int, channel_id: str, job: Job | None = None, when: datetime | None = None
+    ) -> None:
+        """when: a time already chosen (the all-platforms Upload step); still approved here."""
         if self.worker or self.editor:
             return
-        self.editor = ScheduleEditor(self, video_id, channel_id, job)
+        self.editor = ScheduleEditor(self, video_id, channel_id, job, when)
         self.editor.exec()
         self.editor.deleteLater()
         self.editor = None
@@ -723,9 +842,11 @@ class ScheduleController(QObject):
         if self.editor:
             self.editor.busy(True)
             self.editor.feedback.setText("Checking saved review, source and schedule…")
-        for page in (self.queue, self.calendar):
-            page.selected_changed()
-            page.status.setText("Reading / validating local plans…")
+        if action != "load":
+            # The regular refresh leaves buttons and status alone, so nothing flickers.
+            for page in (self.queue, self.calendar):
+                page.selected_changed()
+                page.status.setText("Reading / validating local plans…")
         self.worker.start()
 
     def receive(self, result: dict[str, Any]) -> None:
@@ -733,11 +854,16 @@ class ScheduleController(QObject):
 
     def finished(self) -> None:
         assert self.worker is not None
+        action = self.worker.action
         self.worker.deleteLater()
         self.worker = None
         result = self.pending
         if self.editor:
             self.editor.busy(False)
+        if action != "load":
+            for page in (self.queue, self.calendar):
+                page.rendered = None  # after a user action, always redraw status and buttons
+                page.render()
         if "jobs" in result:
             self.jobs = result["jobs"]
             for page in (self.queue, self.calendar):

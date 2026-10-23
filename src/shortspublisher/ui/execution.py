@@ -6,14 +6,16 @@ from datetime import datetime
 from threading import Event
 from typing import TYPE_CHECKING, Any
 
-from PySide6.QtCore import QObject, QThread, QTimer, Signal
+from PySide6.QtCore import QObject, QSize, QThread, QTimer, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QDialog,
     QDialogButtonBox,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
     QPlainTextEdit,
     QPushButton,
-    QSpinBox,
     QVBoxLayout,
 )
 
@@ -22,8 +24,9 @@ from ..background_state import BACKGROUND_CONSENT
 from ..execution import CONSENT, AutomaticPublisher
 from ..scheduling import Job, ScheduleError
 from ..upload_store import Attempt
-from .components import Section
+from .components import Section, card, icon_button, pill, restyle
 from .formatting import timestamp, upload_status
+from .icons import icon
 from .scheduling import NOTICE, details, text
 
 if TYPE_CHECKING:
@@ -139,24 +142,29 @@ class ExecutionController(QObject):
         self.closing = False
         self.running = False
         self.data: dict[str, Any] = {}
-        # Sidebar: the global switch needs its state beside it, not only an action label.
-        self.state = text("Auto uploading\nChecking…", "Muted")
+        # Sidebar: the global switch, with its state beside it and a warning when uploads are
+        # waiting while it is off. The window places `rail` at the bottom of the sidebar.
+        self.title = text("Auto uploading", "Subheading")
+        self.light = pill("…", "Neutral")
+        self.state = text("Checking…", "Muted")
         self.state.setAccessibleName("Automatic publishing state")
-        self.button = QPushButton("Checking…")
+        self.button = icon_button("Checking…", "power")
         self.button.clicked.connect(self.toggle)
         self.button.setEnabled(False)
+        self.rail, rail = card(14, 8, "RailStatus")
+        head = QHBoxLayout()
+        head.setSpacing(8)
+        head.addWidget(self.title, 1)
+        head.addWidget(self.light)
+        rail.addLayout(head)
+        rail.addWidget(self.state)
+        rail.addWidget(self.button)
+        # The same warning on the pages where uploads are planned.
+        self.banners: list[tuple[QFrame, QLabel]] = []
         self.summary = text(
             "Automatic publishing is not running. Open the application normally to start its dispatcher."
         )
         self.notification = text("No automatic uploads have run yet.")
-        self.limit = QSpinBox()
-        self.limit.setRange(1, 10)
-        self.limit.setValue(3)
-        self.limit.setPrefix("Daily automatic limit: ")
-        self.save_limit = QPushButton("Save Publishing Limit")
-        self.save_limit.clicked.connect(
-            lambda: self.control("control", (bool(self.data.get("paused", 1)), self.limit.value()))
-        )
         self.stop = QPushButton("Stop Active Scheduled Upload")
         self.stop.setEnabled(False)
         self.stop.setVisible(False)
@@ -203,8 +211,10 @@ class ExecutionController(QObject):
             paused
             and QMessageBox.question(
                 self.window,
-                "Enable scheduled publishing?",
-                "Enable automatic Public uploads for individually activated future jobs through the running desktop or separately authorized background service? Past jobs will not catch up.",
+                "Turn on auto uploading?",
+                "Your approved scheduled uploads, queued videos and watched folders will upload "
+                "PUBLICLY at their times, from this app or the background service if you allowed "
+                "it. Times that have already passed are not caught up.",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No,
             )
@@ -268,16 +278,6 @@ class ExecutionController(QObject):
             self.recurring_updated.emit(result["recurring"])
         if "jobs" in result:
             self.data = result
-            self.button.setText("Turn On…" if result["paused"] else "Pause All")
-            self.state.setText(
-                "Auto uploading\n"
-                + (
-                    "Paused · nothing will upload"
-                    if result["paused"]
-                    else "On · uploads run on time"
-                )
-            )
-            self.limit.setValue(result["daily_limit"])
             jobs = result["jobs"]
             upcoming = [
                 j
@@ -334,10 +334,99 @@ class ExecutionController(QObject):
             self.notification.setText(result["error"])
             if not self.data:
                 # Never leave the sidebar on "Checking…" when the first load failed.
-                self.state.setText("Auto uploading\nStatus unavailable · see Dashboard")
+                self.state.setText("Status unavailable · see Dashboard")
                 self.button.setText("Unavailable")
+        self.render_switch()
         self.button.setEnabled(self.control_worker is None and bool(self.data))
         self.changed.emit()
+
+    def waiting(self) -> list[str]:
+        """What won't upload while auto uploading is off, in plain words. Posts already handed
+        to Buffer are not listed: Buffer sends those itself."""
+        w = self.window
+        jobs = [
+            j
+            for j in self.data.get("jobs", [])
+            if j.execution_enabled and j.state == "Scheduled" and not self.execution(j)
+        ]
+        recurring = getattr(getattr(w, "recurring", None), "data", None) or {}
+        plans = {p["id"] for p in recurring.get("plans", []) if p["enabled"]}
+        queued = [
+            i
+            for i in recurring.get("items", [])
+            if i["state"] == "Queued" and i["plan_id"] in plans
+        ]
+        automation = getattr(w, "automation", None)
+        folders = sum(
+            bool(p["enabled"] and not p["revoked"] and not p["removed"])
+            for p in (automation.data["profiles"] if automation else [])
+        ) + sum(
+            bool(p["enabled"] and not p["revoked"])
+            for s in getattr(w, "socials", ())
+            for p in s.data["profiles"]
+        )
+
+        def count(n: int, word: str) -> str:
+            return f"{n} {word}{'s' if n != 1 else ''}"
+
+        return [
+            count(n, word)
+            for n, word in (
+                (len(jobs), "scheduled upload"),
+                (len(queued), "queued video"),
+                (folders, "watched folder"),
+            )
+            if n
+        ]
+
+    def render_switch(self) -> None:
+        """The sidebar switch and every page's warning, from the latest state."""
+        if not self.data:
+            return
+        paused = bool(self.data.get("paused", 1))
+        waiting = self.waiting() if paused else []
+        self.light.setText("Off" if paused else "On")
+        restyle(self.light, ("Warn" if waiting else "Neutral") if paused else "Good")
+        restyle(self.rail, "RailStatusWarn" if waiting else "RailStatus")
+        self.state.setText(
+            f"{' · '.join(waiting)} won't upload until you turn this on."
+            if waiting
+            else "Nothing uploads automatically."
+            if paused
+            else "Scheduled and queued uploads go out on time."
+        )
+        self.button.setText("Turn On" if paused else "Pause All")
+        restyle(self.button, "Primary" if paused else "")
+        self.button.setIcon(
+            icon("power" if paused else "pause", "#ffffff" if paused else "#c9cdd6")
+        )
+        self.button.setIconSize(QSize(16, 16))
+        message = (
+            "Auto uploading is off, so these won't go out: "
+            + ", ".join(waiting)
+            + ". Turn it on to upload them at their times."
+        )
+        for banner, label in self.banners:
+            label.setText(message)
+            banner.setVisible(bool(waiting))
+
+    def banner(self) -> QFrame:
+        """A warning bar for a page; shown only while planned uploads are held back."""
+        frame, layout = card(16, 8, "Warning")
+        line = QHBoxLayout()
+        line.setSpacing(12)
+        mark = QLabel()
+        mark.setPixmap(icon("alert", "#f2b24c").pixmap(20, 20))
+        line.addWidget(mark)
+        label = text("", "")
+        line.addWidget(label, 1)
+        turn_on = icon_button("Turn On Auto Uploading", "power", role="Primary")
+        turn_on.clicked.connect(self.toggle)
+        line.addWidget(turn_on)
+        layout.addLayout(line)
+        frame.hide()
+        self.banners.append((frame, label))
+        return frame
 
     def progress(self, attempt: Attempt) -> None:
         self.stop.setEnabled(True)

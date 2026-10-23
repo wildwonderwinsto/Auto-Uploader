@@ -82,7 +82,7 @@ media are automatically cleaned up.
 
 Default production storage was confirmed via `QStandardPaths`:
 
-`/Users/winston/Library/Application Support/ShortsPublisher/ShortsPublisher`
+`~/Library/Application Support/ShortsPublisher/ShortsPublisher`
 
 The production library was not populated with test data. Native harnesses use an explicit test
 root; ordinary launches use the OS application-data location outside the source tree.

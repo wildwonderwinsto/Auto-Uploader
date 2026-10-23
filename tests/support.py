@@ -57,6 +57,8 @@ def shutdown(app: QApplication, window: object) -> None:
         "background",
         "watching",
         "tiktok",
+        "instagram",
+        "facebook",
         "dashboard",
     ):
         controller = getattr(window, name, None)

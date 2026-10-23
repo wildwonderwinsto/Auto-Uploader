@@ -2,7 +2,7 @@
 
 **Stage 10 implements optional macOS background publishing and has passed controlled native
 LaunchAgent verification. No real background YouTube upload was authorized or performed.**
-The real StonkYa service was not installed or enabled. Its existing workspace was not migrated.
+The real the owner's channel service was not installed or enabled. Its existing workspace was not migrated.
 Stage 11, packaging, remote visibility changes and remote deletion were not implemented.
 
 ## Architecture and implemented scope
@@ -109,7 +109,7 @@ uploader, without plaintext fallback. Test LaunchAgents retrieved only synthetic
 launchd access succeeded in this logged-in user context without an observed interactive prompt.
 This is not proof of every locked-Keychain, ACL-denial, unsigned/signed-runtime or permission-dialog
 case. Missing credentials/scopes were tested under actual launchd; prior injected storage-denial and
-corruption coverage remains in the full suite. No real StonkYa token/session was read for these tests.
+corruption coverage remains in the full suite. No real the owner's channel token/session was read for these tests.
 
 Production logs rotate at 1 MB with three backups under `<data-dir>/background/logs/worker.log`.
 They record timestamps, initialization/shutdown, job/upload IDs, state changes and acknowledged byte
@@ -223,8 +223,8 @@ login plist are absent. All native harnesses removed their synthetic Keychain en
 generated databases, plists, logs and JSON evidence found no synthetic token/session capabilities.
 Superseded exploratory roots and their test cache locks were removed; final evidence remains.
 See `artifacts/stage10-final/preservation.json`. The live library remains schema 7 with the
-original Stage 6 Private `bfNDN1Gq540`, Stage 7 Public `OxgK8zkDmkI` and Stage 9 automatic Public
-`vmbsEJ4E9Rc` records. No real service is installed, no prior job gains background permission, and no
+original Stage 6 Private `<youtube-video-1>`, Stage 7 Public `<youtube-video-2>` and Stage 9 automatic Public
+`<youtube-video-3>` records. No real service is installed, no prior job gains background permission, and no
 remote content was uploaded, modified or deleted during Stage 10 development.
 
 To use the feature, close the old application and back up its database before explicitly launching
@@ -236,7 +236,7 @@ removes login startup; Remove deletes only managed service configuration. Use Up
 interrupted/uncertain outcomes rather than creating a second upload.
 
 A future real background test requires separate user authorization for a new disposable video, actual
-StonkYa identity/scopes, exact metadata/time/Public/background approval and service/global enablement.
+the owner's channel identity/scopes, exact metadata/time/Public/background approval and service/global enablement.
 Verify GUI exit, worker-owned initiation, actual returned ID, independent Public/channel/processing
 results and restart without duplication. No such real background test occurred here.
 

@@ -146,3 +146,9 @@ sign-in via an HTTPS relay page, Cloudinary public hosting, exact-time automatic
 reconciliation, duplicates per SHA-256 + account, and folder automation with separate consent.
 Verified with controlled services only; live use awaits the user's setup and authorization. See
 [Stage 19 verification](stage-19-buffer-tiktok-verification.md).
+
+Stage 20 adds Instagram Reels and Facebook Page Reels through the same Buffer path: one shared
+Buffer sign-in, per-platform limits, records, duplicates and consent, Auto Upload and Posting
+times for every platform, and the Dashboard. Verified with controlled services only; live use
+needs Instagram (Business/Creator) and a Facebook Page connected in Buffer, and the user's
+authorization. See [Stage 20 verification](stage-20-verification.md).

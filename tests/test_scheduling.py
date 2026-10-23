@@ -14,7 +14,7 @@ from unittest.mock import patch
 import test_uploads as fixtures
 from account_support import CHANNEL
 
-from shortspublisher.library import Library
+from shortspublisher.library import SCHEMA_VERSION, Library
 from shortspublisher.scheduling import (
     ScheduleError,
     ScheduleService,
@@ -367,7 +367,7 @@ class SchedulingTests(unittest.TestCase):
             before = {t: db.execute("SELECT * FROM " + t).fetchall() for t in tables}
         Library(target).initialize()
         with sqlite3.connect(target) as db:
-            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], 12)
+            self.assertEqual(db.execute("PRAGMA user_version").fetchone()[0], SCHEMA_VERSION)
             self.assertEqual(
                 before, {t: db.execute("SELECT * FROM " + t).fetchall() for t in tables}
             )

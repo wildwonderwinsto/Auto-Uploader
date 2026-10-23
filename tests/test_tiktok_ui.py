@@ -31,6 +31,8 @@ class TikTokUiTests(Fixture):
             self.w.watching,
             self.w.automatic,
             self.w.background,
+            self.w.instagram,
+            self.w.facebook,
         ):
             controller.stop_for_quit()
         self.w.close()
@@ -187,15 +189,20 @@ class TikTokUiTests(Fixture):
     def test_automation_section_and_queue_empty_state(self):
         self.w.navigate("automation")
         settle(self.app, self.c)
-        # One "New Auto Upload" covers every platform; there is no separate TikTok button.
+        # One "Watch a Folder" covers every platform; there is no separate TikTok button.
         self.assertFalse(self.c.new_automation.isVisible())
         self.assertTrue(self.w.automation.new.isVisible())
         self.assertEqual(self.c.auto_headline.text(), "No TikTok automations yet")
-        self.assertEqual(self.w.automation.new.text(), "New Auto Upload…")
+        self.assertEqual(self.w.automation.new.text(), "Watch a Folder…")
+        # Individual videos (upload queues) sit on the same page.
+        self.assertTrue(self.w.automation.page.isAncestorOf(self.w.recurring.queue))
+        self.assertTrue(self.w.recurring.new.isVisible())
         self.assertTrue(self.w.automation.page.isAncestorOf(self.w.watching))
         self.w.navigate("queue")
         settle(self.app, self.c)
-        self.assertTrue(self.c.queue_empty.isVisible())
+        # An empty platform card isn't shown; Coming up says what to do for every platform.
+        self.assertFalse(self.c.queue.isVisibleTo(self.w))
+        self.assertIn("choose Upload", self.c.queue_empty.text())
         self.assertFalse(self.c.queue_list.isVisible())
 
     def test_automation_headline_never_active_while_globally_paused(self):
