@@ -156,8 +156,10 @@ try:
     w.automatic.data = {"paused": 1}
     w.navigate("automation")
     t.reload()
-    capture("automation-paused-app-wide", [ig.automation, fb.automation])
-    headlines = [ig.auto_headline.text(), fb.auto_headline.text()]
+    w.automation.render()
+    capture("automation-paused-app-wide")
+    # One card per auto upload; each platform's own line says whether it will post.
+    headlines = [words for view in w.automation.views for _, words in view.lines]
 
     w.navigate("queue")
     t.reload()

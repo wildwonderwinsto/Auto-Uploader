@@ -75,6 +75,9 @@ class StatsWorker(QThread):
         self.result.emit(stats)
 
 
+LOGO = 28  # a platform logo button's side
+
+
 def logo_button(entry: Entry) -> QPushButton:
     """A platform logo; clicking it opens the post when the platform returned a link."""
     name = PLATFORM_NAMES[entry.platform]
@@ -82,7 +85,7 @@ def logo_button(entry: Entry) -> QPushButton:
     button.setObjectName("Logo")
     button.setIcon(logo_icon(entry.platform))
     button.setIconSize(QSize(20, 20))
-    button.setFixedSize(QSize(28, 28))
+    button.setFixedSize(QSize(LOGO, LOGO))
     when = friendly(entry.when, empty="waiting for a posting time")
     button.setToolTip(
         f"{name}: {entry.status} · {when}" + (f"\nOpen on {name}" if entry.link else "")
@@ -101,7 +104,8 @@ def group_row(group: Group, extra: str = "") -> QWidget:
     layout.setContentsMargins(0, 5, 0, 5)
     layout.setSpacing(10)
     logos = QWidget()
-    logos.setMinimumWidth(60)  # titles line up whether a video is on one platform or two
+    # Room for every platform's logo, so titles line up however many a video is on.
+    logos.setFixedWidth(len(activity.PLATFORM_ORDER[:4]) * (LOGO + 2) - 2)
     logo_row = QHBoxLayout(logos)
     logo_row.setContentsMargins(0, 0, 0, 0)
     logo_row.setSpacing(2)

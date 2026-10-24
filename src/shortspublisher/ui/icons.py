@@ -47,6 +47,8 @@ GLYPHS = {
     "edit": '<path d="M4 20h4L19 9a2.8 2.8 0 0 0-4-4L4 16z"/><path d="M13.5 6.5l4 4"/>',
     "chevron-right": '<path d="M9 5l7 7-7 7"/>',
     "chevron-left": '<path d="M15 5l-7 7 7 7"/>',
+    "chevron-up": '<path d="M5 15l7-7 7 7"/>',
+    "chevron-down": '<path d="M5 9l7 7 7-7"/>',
     "eye": '<path d="M2.5 12S6 5 12 5s9.5 7 9.5 7-3.5 7-9.5 7-9.5-7-9.5-7z"/><circle cx="12"'
     ' cy="12" r="3"/>',
     "external": '<path d="M14 4h6v6M20 4l-9 9"/><path d="M18 14v4.5a1.5 1.5 0 0 1-1.5 1.5h-11'

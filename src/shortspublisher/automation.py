@@ -247,9 +247,9 @@ class AutomationService:
                 raise ScheduleError(f"YouTube allows at most {limit} uploads a day.")
             if identity:
                 old = read_profile(db, identity)
-                if old["revision"] != revision or not old["revoked"]:
+                if old["revision"] != revision or old["removed"]:
                     raise ScheduleError(
-                        "Disable the old authorization before editing and reapproving."
+                        "This auto upload changed elsewhere. Reload and edit again."
                     )
         return dict(
             id=identity,
@@ -285,25 +285,30 @@ class AutomationService:
         )
         if fresh != proposal:
             raise ScheduleError("Automation confirmation changed. Review a fresh summary.")
-        # Capture all present names, even not yet observed by the scanner. They never inherit future-file authority.
+        # Capture all present names, even not yet observed by the scanner. They never inherit
+        # future-file authority, except videos an edited auto upload was still waiting to upload.
         root, _ = directory(proposal["folder_binding"]["path"])
-        excluded = {}
+        present = {}
         for entry in root.iterdir():
             checkpoint(cancel)
             try:
-                excluded[entry.name] = sig(entry)
+                present[entry.name] = sig(entry)
             except (OSError, WatchError):
-                excluded[entry.name] = ""
+                present[entry.name] = ""
         when = stamp(self.clock())
         identity = proposal["id"] or uuid.uuid4().hex
-        plan_id = uuid.uuid4().hex
         settings = proposal["settings"]
         with closing(self.library.connect()) as db, db:
             db.execute("BEGIN IMMEDIATE")
             validate_scope(db, proposal)
             old = read_profile(db, identity) if proposal["id"] else None
-            if old and (old["revision"] != proposal["expected_revision"] or not old["revoked"]):
+            if old and (old["revision"] != proposal["expected_revision"] or old["removed"]):
                 raise ScheduleError("Profile changed while confirming; reload.")
+            waiting = self.waiting(db, old) if old else set()
+            if old and old["folder_id"] != proposal["folder_id"]:
+                waiting = set()  # another folder: only its future files
+            excluded = {k: v for k, v in present.items() if k not in waiting}
+            plan_id = old["plan_id"] if old else uuid.uuid4().hex
             if datetime_from(proposal["opportunities"][0]) <= self.clock():
                 raise ScheduleError("First opportunity passed; confirm a fresh preview.")
             account = db.execute(
@@ -319,24 +324,54 @@ class AutomationService:
             ):
                 raise ScheduleError("The channel changed during approval; review it again.")
             revision = old["revision"] + 1 if old else 1
-            db.execute(
-                """INSERT INTO recurring_plans VALUES(?,?,'youtube',?,?,?,1,?,1,1,?,?,?,?,?,?,?)""",
-                (
-                    plan_id,
-                    proposal["name"],
-                    proposal["channel_id"],
-                    proposal["channel_title"],
-                    json.dumps(settings["rule"]),
-                    int(settings["background"]),
-                    when,
-                    CONSENT,
-                    when,
-                    when,
-                    proposal["opportunities"][0],
-                    when,
-                    settings["limit"],
-                ),
-            )
+            if old:
+                # Edited: the same plan takes the new times. Unstarted videos leave it and are
+                # enrolled again, with the new details, under the new approval.
+                db.execute(
+                    """UPDATE recurring_items SET state='Removed',removed_at=?,
+                    reason='Auto upload edited; uploads with the new settings instead'
+                    WHERE plan_id=? AND state IN ('Queued','Needs Attention') AND job_id IS NULL""",
+                    (when, plan_id),
+                )
+                db.execute(
+                    """UPDATE recurring_plans SET name=?,channel_id=?,channel_title=?,rule=?,enabled=1,
+                    background=?,revision=revision+1,approved_revision=approved_revision+1,
+                    consent_at=?,consent=?,updated_at=?,next_slot=?,watermark=?,approved_limit=?
+                    WHERE id=?""",
+                    (
+                        proposal["name"],
+                        proposal["channel_id"],
+                        proposal["channel_title"],
+                        json.dumps(settings["rule"]),
+                        int(settings["background"]),
+                        when,
+                        CONSENT,
+                        when,
+                        proposal["opportunities"][0],
+                        when,
+                        settings["limit"],
+                        plan_id,
+                    ),
+                )
+            else:
+                db.execute(
+                    """INSERT INTO recurring_plans VALUES(?,?,'youtube',?,?,?,1,?,1,1,?,?,?,?,?,?,?)""",
+                    (
+                        plan_id,
+                        proposal["name"],
+                        proposal["channel_id"],
+                        proposal["channel_title"],
+                        json.dumps(settings["rule"]),
+                        int(settings["background"]),
+                        when,
+                        CONSENT,
+                        when,
+                        when,
+                        proposal["opportunities"][0],
+                        when,
+                        settings["limit"],
+                    ),
+                )
             db.execute(
                 """INSERT INTO automation_profiles(id,name,platform,folder_id,folder_binding,channel_id,settings,revision,enabled,consent_at,consent,plan_id,created_at,updated_at)
                 VALUES(?,?,'youtube',?,?,?,?,?,1,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET
@@ -378,6 +413,38 @@ class AutomationService:
             checkpoint(cancel)
         return identity
 
+    @staticmethod
+    def waiting(db: sqlite3.Connection, p: dict[str, Any]) -> set[str]:
+        """Files this profile has not uploaded or started yet: an edit applies to them."""
+        return {
+            r[0]
+            for r in db.execute(
+                """SELECT d.name FROM automation_decisions d
+                LEFT JOIN recurring_items i ON i.id=d.item_id
+                WHERE d.profile_id=? AND d.profile_revision=? AND (
+                    (d.item_id IS NULL AND d.state IN ('Needs review','Queue full'))
+                    OR (i.state IN ('Queued','Needs Attention') AND i.job_id IS NULL))""",
+                (p["id"], p["revision"]),
+            )
+        }
+
+    @staticmethod
+    def owned(
+        db: sqlite3.Connection, p: dict[str, Any], name: str, video_id: int, prep: Any
+    ) -> bool:
+        """Whether an earlier approval of this profile wrote these exact saved details."""
+        row = db.execute(
+            """SELECT metadata,preparation_revision FROM automation_decisions
+            WHERE profile_id=? AND name=? AND video_id=? AND profile_revision<? AND metadata!=''
+            ORDER BY profile_revision DESC LIMIT 1""",
+            (p["id"], name, video_id, p["revision"]),
+        ).fetchone()
+        return bool(
+            row
+            and row["preparation_revision"] == prep.revision
+            and json.loads(row["metadata"]) == normalized(asdict(prep.metadata))
+        )
+
     def control(self, identity: str, revision: int, action: str) -> None:
         if action not in ("pause", "resume", "disable", "remove"):
             raise ScheduleError("Unknown automation control.")
@@ -397,6 +464,14 @@ class AutomationService:
                 "UPDATE recurring_plans SET enabled=?,revision=revision+1 WHERE id=?",
                 (int(action == "resume"), p["plan_id"]),
             )
+            if action == "remove":
+                # A deleted auto upload leaves nothing waiting behind it.
+                db.execute(
+                    """UPDATE recurring_items SET state='Removed',removed_at=?,
+                    reason='Auto upload deleted before this video uploaded'
+                    WHERE plan_id=? AND state IN ('Queued','Needs Attention') AND job_id IS NULL""",
+                    (stamp(self.clock()), p["plan_id"]),
+                )
             db.execute(
                 "UPDATE automation_profiles SET enabled=?,revoked=?,removed=?,updated_at=? WHERE id=?",
                 (
@@ -597,14 +672,31 @@ class AutomationService:
                 return
             identity = old["id"] if old else uuid.uuid4().hex
             prep = PreparationStore.read(db, video.id)
+            carried = bool(
+                prep.revision and not old and self.owned(db, p, file["name"], video.id, prep)
+            )
+            if carried and prep.metadata != proposed:
+                # Details this auto upload wrote itself (never edited by hand) follow its edit.
+                db.execute(
+                    "UPDATE preparations SET payload=?,revision=revision+1,modified_at=? "
+                    "WHERE video_id=? AND platform='youtube'",
+                    (json.dumps(asdict(proposed)), when, video.id),
+                )
+                prep = PreparationStore.read(db, video.id)
             if prep.revision == 0:
                 db.execute(
                     "INSERT INTO preparations(video_id,platform,payload,revision,modified_at) VALUES(?,'youtube',?,1,?)",
                     (video.id, json.dumps(asdict(proposed)), when),
                 )
                 prep = PreparationStore.read(db, video.id)
-            elif settings["mode"] == "automatic" and (
-                not old or prep.revision != old["preparation_revision"] or prep.metadata != proposed
+            elif (
+                settings["mode"] == "automatic"
+                and not carried
+                and (
+                    not old
+                    or prep.revision != old["preparation_revision"]
+                    or prep.metadata != proposed
+                )
             ):
                 raise ScheduleError(
                     "Saved metadata was edited or already exists; individual review is required. Automation does not overwrite it."
@@ -652,8 +744,11 @@ class AutomationService:
                 return
             # Different byte identities generating an indistinguishable title need a human decision.
             for previous in db.execute(
-                "SELECT metadata FROM automation_decisions WHERE profile_id=? AND item_id IS NOT NULL",
-                (p["id"],),
+                """SELECT d.metadata FROM automation_decisions d
+                LEFT JOIN recurring_items i ON i.id=d.item_id
+                WHERE d.profile_id=? AND d.item_id IS NOT NULL AND d.source_hash!=?
+                AND coalesce(i.state,'')!='Removed'""",
+                (p["id"], digest),
             ):
                 if (
                     unicodedata.normalize("NFKC", json.loads(previous[0])["title"]).casefold()

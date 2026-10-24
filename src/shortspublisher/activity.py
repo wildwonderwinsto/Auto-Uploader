@@ -49,7 +49,13 @@ class Entry:
 
 
 def title_of(snapshot: dict[str, Any]) -> str:
-    return str(snapshot.get("metadata", {}).get("title") or snapshot.get("filename") or "Video")
+    # Plans keep the details as "metadata"; upload records as the "payload" sent to YouTube.
+    return str(
+        snapshot.get("metadata", {}).get("title")
+        or snapshot.get("payload", {}).get("snippet", {}).get("title")
+        or snapshot.get("filename")
+        or "Video"
+    )
 
 
 def youtube_uploads(attempts: Iterable[Attempt]) -> list[Entry]:
@@ -60,8 +66,11 @@ def youtube_uploads(attempts: Iterable[Attempt]) -> list[Entry]:
         processed = a.processing in ("processed", "succeeded")
         link = f"https://youtu.be/{a.remote_id}" if a.remote_id else ""
         when = a.completed_at or a.updated_at or a.created_at
-        if a.state in ("Public Verified", "Uploaded Private"):
-            privacy = "Public" if a.state == "Public Verified" else "Private"
+        if a.state in ("Public Verified", "Uploaded Private", "Processing"):
+            # Processing: on YouTube with its privacy verified; YouTube is still preparing it.
+            privacy = (
+                "Private" if a.state == "Uploaded Private" or a.privacy == "private" else "Public"
+            )
             kind, status = DONE, privacy if processed else f"{privacy} · YouTube is processing"
         elif a.state in ("Preparing", "Uploading", "Awaiting Confirmation"):
             size = a.snapshot.get("size") or 0
@@ -159,6 +168,22 @@ def youtube_queue(recurring: dict[str, Any]) -> list[Entry]:
     return entries
 
 
+def queued_posts(recurring: dict[str, Any]) -> list[Entry]:
+    """TikTok, Instagram and Facebook videos still waiting their turn in a video queue."""
+    return [
+        Entry(
+            item["platform"],
+            str(item.get("title") or "Video"),
+            "",
+            UPCOMING,
+            "Waiting in queue",
+            video_id=item["video_id"],
+        )
+        for item in recurring.get("queue_items", [])
+        if item["state"] == "Waiting"
+    ]
+
+
 def tiktok_posts(posts: Iterable[dict[str, Any]]) -> list[Entry]:
     return buffer_posts("tiktok", posts)
 
@@ -220,6 +245,7 @@ def timeline(
         *youtube_uploads(attempts),
         *youtube_plans(jobs, started),
         *youtube_queue(recurring),
+        *queued_posts(recurring),
         *tiktok_posts(posts),
         *(e for key, items in (others or {}).items() for e in buffer_posts(key, items)),
     ]

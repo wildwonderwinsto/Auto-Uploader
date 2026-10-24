@@ -144,12 +144,17 @@ def upload_status(state: str, processing: str = "") -> str:
         return "Video processed · " + (
             "Public verified" if state == "Public Verified" else "Private upload"
         )
+    if state in ("Public Verified", "Uploaded Private", "Processing") and processing not in (
+        "failed",
+        "rejected",
+        "terminated",
+    ):
+        # Checked again automatically until YouTube finishes; nothing for the person to do.
+        return "Uploaded · YouTube is processing it"
     return {
         "Needs Reconciliation": "Check upload result",
         "Awaiting Confirmation": "Waiting for your confirmation",
         "Preparing": "Preparing upload",
-        "Uploaded Private": "Uploaded privately · Check processing",
-        "Public Verified": "Public visibility verified · Check processing",
         "Interrupted": "Upload interrupted · Check session",
         "Paused": "Upload paused",
     }.get(state, state)

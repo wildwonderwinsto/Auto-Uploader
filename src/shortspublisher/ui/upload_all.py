@@ -34,6 +34,8 @@ if TYPE_CHECKING:
 
 PLATFORM_ORDER = ("youtube", "tiktok", "instagram", "facebook")
 UNSENT = ("Uploading to media host", "Hosted and ready", "Waiting for Buffer limit")
+UPCOMING = (*UNSENT, "Sending to Buffer", "Scheduled in Buffer")
+DONE = ("Uploaded", "Posted", "Scheduled")  # row words that mean the video is already there
 
 
 class UploadAll(QWidget):
@@ -42,6 +44,7 @@ class UploadAll(QWidget):
         self.window_ = window
         self.video_id: int | None = None
         self.touched: set[str] = set()  # platforms the person ticked or unticked themselves
+        self.available: list[str] = []  # platforms this video can go to right now
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 4, 0, 4)
         layout.setSpacing(12)
@@ -75,7 +78,9 @@ class UploadAll(QWidget):
             line.addWidget(more)
             layout.addWidget(frame)
             self.rows[platform] = (check, status, more)
-        when = QHBoxLayout()
+        self.when_row = QWidget()
+        when = QHBoxLayout(self.when_row)
+        when.setContentsMargins(0, 0, 0, 0)
         when.setSpacing(8)
         label = QLabel("When")
         label.setObjectName("Subheading")
@@ -91,10 +96,11 @@ class UploadAll(QWidget):
         self.when.setAccessibleName("Upload time on every platform")
         when.addWidget(self.when)
         when.addStretch(1)
-        layout.addLayout(when)
+        layout.addWidget(self.when_row)
         self.go = icon_button("Upload…", "upload", role="Primary")
         self.go.clicked.connect(self.upload)
-        layout.addWidget(row(self.go))
+        self.go_row = row(self.go)
+        layout.addWidget(self.go_row)
         self.summary = text("", "Subtle")
         layout.addWidget(self.summary)
         layout.addStretch()
@@ -144,9 +150,12 @@ class UploadAll(QWidget):
                 if a.video_id == video.id and not a.released and a.state != "Cancelled"
             ]
             if done:
-                return False, "Already uploaded · " + upload_status(
-                    done[0].state, done[0].processing
-                )
+                words = upload_status(done[0].state, done[0].processing)
+                if words.startswith("Video processed"):
+                    words = "Uploaded · " + words.rsplit(" · ", 1)[-1]
+                elif not words.startswith("Uploaded"):
+                    words = "Already started · " + words
+                return False, words
             if later:
                 ready = w.schedule_button.isEnabled()
                 return ready, (
@@ -178,7 +187,12 @@ class UploadAll(QWidget):
             if p["video_id"] == video.id and not p["released"] and p["state"] != "Cancelled"
         ]
         if posted:
-            return False, f"Already {posted[0]['state'].lower()}"
+            post = posted[0]
+            if post["state"] == "Sent by Buffer":
+                return False, "Posted"
+            if post["due_at"] and post["state"] in UPCOMING:
+                return False, "Scheduled · " + timestamp(post["due_at"], weekday=True)
+            return False, f"Already started · {post['state']}"
         if social.spec.ai_label and social.ai.currentData() is None:
             return False, "Choose the AI-generated content label in Details"
         if not social.publish_button.isEnabled():
@@ -199,9 +213,13 @@ class UploadAll(QWidget):
         )
         self.not_ready.setVisible(waiting)
         self.to_review.setVisible(waiting)
+        self.available = []
         for platform, (check, status, _more) in self.rows.items():
             ready, words = self.state(platform)
-            set_choice(check, status, self.badges[platform], ready, words)
+            done = next((d for d in DONE if words.startswith(d)), "")
+            set_choice(check, status, self.badges[platform], ready, words, done)
+            if ready:
+                self.available.append(platform)
             if ready and platform not in self.touched:
                 check.setChecked(True)  # every ready platform, unless the person said no
         self.render_action()
@@ -212,6 +230,10 @@ class UploadAll(QWidget):
     def render_action(self) -> None:
         count = len(self.chosen())
         later = self.later.isChecked()
+        # Nothing it can go to yet (or anymore): no When choice and no button that can't work.
+        waiting = bool(self.available) and self.not_ready.isHidden()
+        self.when_row.setVisible(waiting)
+        self.go_row.setVisible(waiting)
         self.go.setText(
             ("Schedule on " if later else "Upload to ")
             + (f"{count} Platform{'s' if count != 1 else ''}…" if count else "Platforms…")

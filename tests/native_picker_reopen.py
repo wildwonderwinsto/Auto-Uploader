@@ -36,7 +36,7 @@ with (
     assert folders[0]["path"] == expected
     assert profiles[0]["folder_binding"]["path"] == expected
     assert profiles[0]["folder_binding"]["consent_at"] == folders[0]["consent_at"]
-    assert expected in w.automation.status.text()
+    assert [v.summary.startswith("Folder: incoming") for v in w.automation.views] == [True]
     assert not a.uploads.store.all()
     assert json.loads((root / "picker-cancel.json").read_text()) == {
         "cancel_created_folders": 0,

@@ -547,11 +547,7 @@ class SocialUiTests(Fixture):
 
     def test_automation_cards_for_each_platform(self):
         self.w.navigate("automation")
-        for controller in self.w.socials:
-            self.assertEqual(
-                controller.auto_headline.text(), f"No {controller.name} automations yet"
-            )
-            self.assertFalse(controller.automation.isVisibleTo(self.w))
+        self.assertEqual(self.w.automation.views, [])  # no empty card per platform
         for controller in self.w.socials:
             self.assertIn(f"No {controller.name} uploads yet", controller.queue_empty.text())
 
@@ -580,12 +576,53 @@ class SocialUiTests(Fixture):
         self.facebook.approve(proposal, scanner, Event())
         self.w.automatic.data = {"paused": 0}
         self.reload()
-        self.assertTrue(self.w.facebook.auto_headline.text().startswith("Active"))
+        [view] = self.w.automation.views
+        self.assertEqual(view.platforms, ("facebook",))
+        self.assertTrue(view.lines[0][1].startswith("Active"))
         self.tiktok.remove_hosting()
         self.reload()
-        self.assertEqual(
-            self.w.facebook.auto_headline.text(), "Not posting · set up video hosting in Settings"
+        [view] = self.w.automation.views
+        self.assertTrue(
+            view.lines[0][1].startswith("Not posting · set up video hosting in Settings")
         )
+
+    def test_one_auto_upload_is_one_card_and_delete_stops_every_platform(self):
+        from threading import Event
+
+        self.connect_all()
+        folder = self.root / "watched"
+        folder.mkdir()
+        scanner = self.w.watching.service
+        identity = scanner.add(
+            scanner.preview(str(folder), Event()), consent=True, existing=False, quiet=1
+        )
+        settings = dict(
+            caption_template="{filename}",
+            ai_generated=False,
+            rule=Rule("UTC", tuple(range(7)), "09:00", "21:00", 2).encode(),
+            pattern="*.mp4",
+            background=False,
+        )
+        for service in (self.instagram, self.facebook):
+            values = {
+                "name": "Clips",
+                "folder_id": identity,
+                "settings": {**settings, "daily_cap": service.spec.daily_max},
+            }
+            service.approve(service.preview(values), scanner, Event())
+        self.reload()
+        [view] = self.w.automation.views  # made together: one auto upload, both logos
+        self.assertEqual(view.platforms, ("instagram", "facebook"))
+        self.assertEqual([p for p, _ in view.lines], ["instagram", "facebook"])
+        with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes):
+            self.w.automation.act("delete", view.key)
+        for controller in (*self.w.socials, self.w.watching):
+            settle(self.app, controller)
+        self.assertEqual(self.instagram.profiles(), [])
+        self.assertEqual(self.facebook.profiles(), [])
+        self.assertEqual(scanner.folders(), [])  # nothing else used the folder
+        self.reload()
+        self.assertEqual(self.w.automation.views, [])
 
 
 if __name__ == "__main__":

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
-from pathlib import Path
 from threading import Event
 from typing import TYPE_CHECKING, Any
 
@@ -18,8 +17,6 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QHBoxLayout,
     QLineEdit,
-    QListWidget,
-    QListWidgetItem,
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
@@ -34,10 +31,11 @@ from PySide6.QtWidgets import (
 from ..automation import CONSENT, AutomationService, title_for
 from ..cadence import Rule
 from . import theme
-from .components import Section, card, day_row, flow, icon_button, natural
+from .autocards import AutoUpload, CardView, auto_uploads, build_card, describe
+from .components import Section, day_row, icon_button, natural
 from .formatting import system_zone, time_pattern, timestamp
-from .icons import image, logo, pixmap
-from .recurring import outcome, rule_label
+from .icons import PLATFORM_NAMES, image, pixmap
+from .recurring import rule_label
 from .scheduling import text
 from .watching import FolderConsent
 
@@ -482,9 +480,6 @@ class AutomationWorker(QThread):
                 )
             elif self.action == "control":
                 self.service.control(*self.argument)
-            elif self.action == "edit":
-                self.service.control(self.argument["id"], self.argument["revision"], "disable")
-                result["edit_id"] = self.argument["id"]
             result["state"] = self.service.state()
             result["recurring"] = self.service.recurring.state()
             result["folders"] = self.scanner.folders()
@@ -555,8 +550,8 @@ class AutomationController(QObject):
         self.worker: AutomationWorker | None = None
         # The editor shown for New/Edit; the window swaps in the all-platform AutoUploadEditor.
         self.editor: Any = None
-        self.editor_factory: Callable[[AutomationController, dict[str, Any] | None], Any] = (
-            ProfileEditor
+        self.editor_factory: Callable[[AutomationController, AutoUpload | None], Any] = (
+            lambda controller, group: ProfileEditor(controller, group.youtube if group else None)
         )
         self.closing = False
         self.pending: dict[str, Any] = {}
@@ -568,6 +563,7 @@ class AutomationController(QObject):
         self.files: dict[str, list[dict[str, Any]]] = {}
         self.account: dict[str, Any] = {}
         self.limit = 3
+        self.views: list[CardView] = []  # what the cards show now; redrawn only when it changes
         self.page = QScrollArea()
         self.page.setObjectName("automation")
         self.page.setWidgetResizable(True)
@@ -583,7 +579,21 @@ class AutomationController(QObject):
         names.addWidget(text("Videos upload by themselves at the times you choose.", "Muted"))
         top.addLayout(names, 1)
         body.addLayout(top)
-        # Two plain sections: folders that upload new videos, and videos picked one by one.
+        # Two plain sections, each with one button: videos picked one by one, then folders
+        # that upload new videos by themselves. The window places the queue cards and button.
+        self.queue_new_slot = QHBoxLayout()
+        body.addLayout(
+            section_head(
+                "videos",
+                "Individual videos",
+                "Upload one video now or at a time you pick, or choose several from your library "
+                "to upload one at a time, in order, at the times you choose.",
+                self.queue_new_slot,
+            )
+        )
+        self.queue_slot = QVBoxLayout()
+        body.addLayout(self.queue_slot)
+        body.addSpacing(10)
         self.new = icon_button("Watch a Folder…", "folder", role="Primary")
         self.new.setAccessibleName("New Auto Upload…")
         self.new.clicked.connect(lambda: self.start("open"))
@@ -602,73 +612,15 @@ class AutomationController(QObject):
             "Notice",
         )
         body.addWidget(self.folders_empty)
-        self.youtube_card, youtube = card(20, 12)
-        heading = QHBoxLayout()
-        heading.setSpacing(10)
-        heading.addWidget(image(logo("youtube", 24)))
-        heading.addWidget(text("YouTube", "Heading"), 1)
-        self.profiles = QComboBox()
-        self.profiles.setAccessibleName("YouTube auto uploads")
-        self.profiles.setSizeAdjustPolicy(
-            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
-        )
-        self.profiles.currentIndexChanged.connect(self.render)
-        heading.addWidget(self.profiles)
-        youtube.addLayout(heading)
-        self.headline = text("No YouTube auto uploads yet", "Notice")
-        youtube.addWidget(self.headline)
-        self.status = text(
-            "Choose New Folder Upload to pick a folder, details, times and platforms.", "Muted"
-        )
-        youtube.addWidget(self.status)
-        self.activity = QListWidget()
-        self.activity.setWordWrap(True)
-        self.activity.setFixedHeight(170)
-        self.activity.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        youtube.addWidget(self.activity)
-        self.buttons: dict[str, QPushButton] = {}
-        for action, label, glyph, role in (
-            ("pause", "Pause", "pause", ""),
-            ("resume", "Resume", "play", "Primary"),
-            ("edit", "Edit…", "edit", ""),
-            ("review", "Open Selected Video", "film", ""),
-            ("queue", "Schedule", "calendar", "Ghost"),
-            ("history", "Upload History", "history", "Ghost"),
-            ("disable", "Turn Off…", "power", "Danger"),
-            ("remove", "Remove…", "trash", "Danger"),
-        ):
-            button = icon_button(label, glyph, role=role)
-            button.clicked.connect(lambda checked=False, a=action: self.action(a))
-            self.buttons[action] = button
-        self.buttons["disable"].setAccessibleName("Revoke Approval…")
-        youtube.addWidget(flow(*self.buttons.values()))
         self.feedback = text("", "Muted")
-        youtube.addWidget(self.feedback)
-        # Raw profile and decisions, for support; available as a tooltip on the headline.
-        self.details = QPlainTextEdit()
-        self.details.setReadOnly(True)
-        self.details.hide()
-        body.addWidget(self.youtube_card)
-        # TikTok, Instagram and Facebook auto uploads and watched folders are placed here by the
-        # window.
-        self.tiktok_slot = QVBoxLayout()
-        body.addLayout(self.tiktok_slot)
+        self.feedback.hide()
+        body.addWidget(self.feedback)
+        # One card per auto upload, for all of its platforms.
+        self.cards = QVBoxLayout()
+        self.cards.setSpacing(12)
+        body.addLayout(self.cards)
         self.folders_slot = QVBoxLayout()
         body.addLayout(self.folders_slot)
-        # Individual videos: the window places the queue card and its start button here.
-        self.queue_new_slot = QHBoxLayout()
-        body.addSpacing(10)
-        body.addLayout(
-            section_head(
-                "videos",
-                "Individual videos",
-                "Upload one video now or at a time you pick, or choose several from your library "
-                "to upload one at a time, in order, at the times you choose.",
-                self.queue_new_slot,
-            )
-        )
-        self.queue_slot = QVBoxLayout()
-        body.addLayout(self.queue_slot)
         body.addStretch()
         self.page.setWidget(content)
         self.summary = text("Automatic Posting · no profile loaded.", "Muted")
@@ -680,10 +632,15 @@ class AutomationController(QObject):
     def pause_all(self) -> None:
         self.window.automatic.control("control", (True, None))
 
-    def current(self) -> dict[str, Any] | None:
-        return next(
-            (p for p in self.data["profiles"] if p["id"] == self.profiles.currentData()), None
-        )
+    def groups(self) -> list[AutoUpload]:
+        return auto_uploads(self.data["profiles"], getattr(self.window, "socials", ()))
+
+    def group(self, key: Any) -> AutoUpload | None:
+        return next((g for g in self.groups() if list(g.key) == list(key or ())), None)
+
+    def say(self, message: str) -> None:
+        self.feedback.setText(message)
+        self.feedback.setVisible(bool(message))
 
     def activate(self) -> None:
         if not self.closing:
@@ -708,8 +665,6 @@ class AutomationController(QObject):
         if action != "load":
             # Regular refreshes leave the buttons alone, so nothing flickers every few seconds.
             self.new.setEnabled(False)
-            for button in self.buttons.values():
-                button.setEnabled(False)
             if self.editor:
                 self.editor.review.setEnabled(False)
                 self.editor.add_folder.setEnabled(False)
@@ -720,7 +675,7 @@ class AutomationController(QObject):
 
     def finished(self) -> None:
         assert self.worker
-        action = self.worker.action
+        action, argument = self.worker.action, self.worker.argument
         self.worker.deleteLater()
         self.worker = None
         result = self.pending
@@ -729,13 +684,11 @@ class AutomationController(QObject):
             self.idle.emit()
             return
         self.new.setEnabled(True)
-        for button in self.buttons.values():
-            button.setEnabled(True)
         if self.editor:
             self.editor.review.setEnabled(True)
             self.editor.add_folder.setEnabled(True)
         if "error" in result:
-            self.feedback.setText(result["error"])
+            self.say(result["error"])
             if self.editor:
                 self.editor.feedback.setText(result["error"])
                 self.editor.feedback.setVisible(True)
@@ -751,14 +704,6 @@ class AutomationController(QObject):
             )
             self.files = result["files"]
             self.limit = self.recurring["control"]["daily_limit"]
-            selected = self.profiles.currentData()
-            self.profiles.blockSignals(True)
-            self.profiles.clear()
-            for p in self.data["profiles"]:
-                if not p["removed"]:
-                    self.profiles.addItem(p["name"], p["id"])
-            self.profiles.setCurrentIndex(max(0, self.profiles.findData(selected)))
-            self.profiles.blockSignals(False)
             self.render()
         if "folder_proposal" in result and self.editor:
             dialog = FolderConsent(result["folder_proposal"], self.editor)
@@ -793,18 +738,17 @@ class AutomationController(QObject):
             confirmation.deleteLater()
         if "approved" in result and self.editor:
             self.editor.dirty = False
-            self.feedback.setText(
-                "Auto upload turned on. Videos added to the folder from now on will upload on schedule once Auto uploading is on in the sidebar."
+            self.say(
+                "Auto upload saved. New videos in the folder upload on schedule once Auto "
+                "uploading is on in the sidebar."
             )
             if hasattr(self.editor, "approved"):
                 self.editor.approved()  # other platforms ask for their own approval next
             else:
                 self.editor.accept()
-        if (action == "open" or "edit_id" in result) and "state" in result and not self.editor:
-            profile = next(
-                (p for p in self.data["profiles"] if p["id"] == result.get("edit_id")), None
-            )
-            self.editor = self.editor_factory(self, profile)
+        if action == "open" and "state" in result and not self.editor:
+            # A new auto upload, or (with its folder and name) an existing one to edit.
+            self.editor = self.editor_factory(self, self.group(argument) if argument else None)
             self.editor.exec()
             self.editor.deleteLater()
             self.editor = None
@@ -814,9 +758,7 @@ class AutomationController(QObject):
             self.queued = None
             self.start(action, argument)
 
-    def render(self) -> None:
-        p = self.current()
-        self.activity.clear()
+    def render(self, *_: Any) -> None:
         enabled = sum(
             bool(p["enabled"] and not p["revoked"] and not p["removed"])
             for p in self.data["profiles"]
@@ -829,111 +771,85 @@ class AutomationController(QObject):
                 else ""
             )
         )
-        for key in ("pause", "resume", "disable", "edit", "remove", "review"):
-            self.buttons[key].setVisible(p is not None)
-        self.activity.setVisible(p is not None)  # no empty list box before the first automation
-        self.profiles.setVisible(len(self.data["profiles"]) > 1)
-        # A platform's card appears once it has an auto upload; until then one line explains.
-        self.youtube_card.setVisible(any(not x["removed"] for x in self.data["profiles"]))
-        socials = getattr(self.window, "socials", ())
-        self.folders_empty.setVisible(
-            not self.youtube_card.isVisibleTo(self.page)
-            and not any(s.data["profiles"] for s in socials)
-        )
-        if not p:
-            self.headline.setText("No YouTube auto uploads yet")
-            self.status.setText(
-                "Choose New Folder Upload to pick a folder, details, times and platforms. You can "
-                "still upload single videos from Videos."
+        socials = {s.key: s for s in getattr(self.window, "socials", ())}
+        paused = self.recurring["control"].get("paused", True)
+        service = self.window.background.service_status
+        views = [
+            describe(
+                group,
+                folders=self.known_folders(),
+                recurring=self.recurring,
+                decisions=self.data["decisions"],
+                socials=socials,
+                youtube_headline=lambda p, watching: headline(p, watching, paused, service),
             )
-            return
-        plan = next((x for x in self.recurring["plans"] if x["id"] == p["plan_id"]), None)
-        decisions = [d for d in self.data["decisions"] if d["profile_id"] == p["id"]]
-        items = {i["id"]: i for i in self.recurring["items"]}
-        waiting = sum(
-            d["item_id"] in items and items[d["item_id"]]["state"] == "Queued" for d in decisions
-        )
-        attention = sum(d["state"] in ("Needs review", "Queue full") for d in decisions)
-        folder = next((f for f in self.folders if f["id"] == p["folder_id"]), None)
-        watching = bool(folder and folder["enabled"] and not folder["removed"])
-        global_paused = self.recurring["control"].get("paused", True)
-        active = p["enabled"] and not p["revoked"]
-        self.buttons["pause"].setVisible(active)
-        self.buttons["disable"].setVisible(active)
-        self.buttons["resume"].setVisible(not p["enabled"] and not p["revoked"])
-        self.headline.setText(
-            headline(p, watching, global_paused, self.window.background.service_status)
-        )
-        path = p["folder_binding"]["path"]
-        self.status.setToolTip(f"Folder: {path}")
-        self.status.setText(
-            f"Folder: {folder['name'] if folder else Path(path).name} · "
-            + ("Watching for new videos" if watching else "Folder watching paused or unavailable")
-            + "\n"
-            f"Channel: {plan['channel_title'] if plan else 'Not available'}\n"
-            f"Schedule: {rule_label(Rule.decode(p['settings']['rule']))}\n"
-            f"Queue: {waiting} waiting to post · {attention} need your review\n"
-            f"Next posting time: {timestamp(plan['next_slot'], p['settings']['rule']['zone'], weekday=True) if plan else 'Not scheduled'}\n"
-            + runs_when(p, self.window.background.service_status)
-        )
-        for d in decisions:
-            item = items.get(d["item_id"])
-            row = QListWidgetItem(f"{d['name']} · {outcome(item) if item else d['state']}")
-            row.setToolTip(d["reason"])
-            row.setData(Qt.ItemDataRole.UserRole, d["video_id"])
-            self.activity.addItem(row)
-        known = {d["name"] for d in decisions}
-        for file in self.files.get(p["folder_id"], []):
-            if file["name"] not in known:
-                row = QListWidgetItem(f"{file['name']} · {file['state']}")
-                row.setData(Qt.ItemDataRole.UserRole, file["video_id"])
-                row.setToolTip(file["message"])
-                self.activity.addItem(row)
-        verified = [
-            i
-            for i in items.values()
-            if i["plan_id"] == p["plan_id"]
-            and i.get("attempt_state") == "Public Verified"
-            and i.get("processing") in ("processed", "succeeded")
+            for group in self.groups()
         ]
-        if verified:
-            self.status.setText(
-                self.status.text()
-                + "\nLast published: "
-                + verified[-1]["snapshot"]["metadata"]["title"]
-            )
-        self.details.setPlainText(
-            json.dumps({"profile": p, "decisions": decisions}, indent=2, ensure_ascii=False)
-        )
-        self.headline.setToolTip(f"{p['name']} · approved {timestamp(p['consent_at'])}")
+        self.folders_empty.setVisible(not views)
+        if views == self.views:
+            return  # the same cards: nothing is rebuilt, so nothing flickers
+        self.views = views
+        while self.cards.count():
+            item = self.cards.takeAt(0)
+            widget = item.widget() if item else None
+            if widget:
+                widget.hide()
+                widget.deleteLater()
+        for view in views:
+            self.cards.addWidget(build_card(view, self.act))
 
-    def action(self, action: str) -> None:
-        p = self.current()
-        if action == "queue":
-            self.window.navigate("queue")
-        elif action == "history":
-            self.window.show_upload_history()
-        elif action == "review":
-            row = self.activity.currentItem()
-            if row and row.data(Qt.ItemDataRole.UserRole):
-                self.window.navigate("videos")
-                self.window.videos.start("select", row.data(Qt.ItemDataRole.UserRole))
-        elif p:
-            if (
-                action in ("edit", "remove", "disable")
-                and QMessageBox.question(
-                    self.window,
-                    "Revoke automation authorization?",
-                    "This blocks new uploads under this profile. Existing transfers/history remain. Editing requires renewed consent; cancelling the editor does not restore approval.",
-                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                    QMessageBox.StandardButton.No,
-                )
-                != QMessageBox.StandardButton.Yes
-            ):
-                return
-            self.start("edit", p) if action == "edit" else self.start(
-                "control", (p["id"], p["revision"], action)
+    def known_folders(self) -> list[dict[str, Any]]:
+        """The folders this page loaded, or (until it does) those the Buffer platforms loaded."""
+        socials = getattr(self.window, "socials", ())
+        folders = {f["id"]: f for s in socials for f in s.data.get("folders", [])}
+        folders.update({f["id"]: f for f in self.folders})
+        return list(folders.values())
+
+    def act(self, action: str, key: tuple[str, str]) -> None:
+        """Edit, pause, resume or delete one auto upload on every platform it uses."""
+        group = self.group(key)
+        if not group:
+            return
+        if action == "edit":
+            self.start("open", group.key)
+            return
+        names = " and ".join(PLATFORM_NAMES[p] for p in group.platforms)
+        if action == "delete":
+            others = [
+                g for g in self.groups() if g.folder_id == group.folder_id and g.key != group.key
+            ]
+            answer = QMessageBox.question(
+                self.window,
+                "Delete this auto upload?",
+                f"“{group.name}” stops uploading new videos to {names}"
+                + ("" if others else ", and its folder is no longer watched")
+                + ".\n\nVideos already uploaded stay on "
+                + names
+                + ". Nothing is deleted from your channels or accounts, and your video files "
+                "stay where they are. A post already scheduled in Buffer still goes out unless "
+                "you cancel it under Schedule.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Cancel,
             )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+        control = {"pause": "pause", "resume": "resume", "delete": "remove"}[action]
+        if p := group.youtube:
+            self.start("control", (p["id"], p["revision"], control))
+        socials = {s.key: s for s in getattr(self.window, "socials", ())}
+        for key_, p in group.buffer.items():
+            socials[key_].control_automation(p["id"], control)
+        if action == "delete":
+            folder = next((f for f in self.known_folders() if f["id"] == group.folder_id), None)
+            if folder and not others:
+                self.window.watching.start("control", (folder["id"], folder["revision"], "remove"))
+        self.say(
+            {
+                "pause": f"“{group.name}” is paused. Nothing new is sent to {names}.",
+                "resume": f"“{group.name}” is on again.",
+                "delete": f"“{group.name}” was deleted. Videos already uploaded stay on {names}.",
+            }[action]
+        )
 
     def request_close(self) -> bool:
         self.timer.stop()

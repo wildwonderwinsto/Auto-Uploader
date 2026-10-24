@@ -243,17 +243,24 @@ class MainWindow(QMainWindow):
         self.background.connections_slot.addWidget(connections)
         self.background.hosting_slot.addWidget(self.tiktok.hosting)
         for social in self.socials:
-            self.automation.tiktok_slot.addWidget(social.automation)
+            # Its part of each auto upload card and each video queue card.
+            social.changed.connect(self.automation.render)
+            social.changed.connect(self.recurring.render)
         self.automation.folders_slot.addWidget(self.watching)
         # Upload queues sit beside folder uploads: both upload automatically at set times.
-        self.automation.queue_new_slot.addWidget(self.recurring.single)
-        self.automation.queue_new_slot.addWidget(self.recurring.new)
+        self.automation.queue_new_slot.addWidget(self.recurring.add)
         self.automation.queue_slot.addWidget(self.recurring.queue)
-        self.automation.editor_factory = lambda controller, profile: AutoUploadEditor(
-            controller, self.tiktok, profile
+        self.automation.editor_factory = lambda controller, group: AutoUploadEditor(
+            controller, self.tiktok, group
         )
         for social in self.socials:
             self.schedules.queue.tiktok_slot.addWidget(social.queue)
+        for signal in (self.uploads.changed, self.automatic.changed):
+            signal.connect(
+                lambda *_: self.schedules.queue.render_uploads(
+                    self.uploads.attempts or self.automatic.data.get("attempts", [])
+                )
+            )
         self.uploads.changed.connect(self.videos.tabs.resize_to_current)
         self.uploads.idle.connect(self._finish_close)
         self.uploads.idle.connect(self.update_upload_context)

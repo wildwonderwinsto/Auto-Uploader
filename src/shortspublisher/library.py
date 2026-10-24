@@ -12,7 +12,7 @@ from typing import Any
 from .media import InspectionError, Inspector, Media, checkpoint
 from .preparation import PreparationStore
 
-SCHEMA_VERSION = 16
+SCHEMA_VERSION = 17
 
 
 class LibraryError(Exception):
@@ -217,6 +217,11 @@ class Library:
                 from .fallback_schema import migrate as migrate_fallback
 
                 migrate_fallback(db)
+
+            if version < 17:
+                from .queues_schema import migrate as migrate_queues
+
+                migrate_queues(db)
 
     @staticmethod
     def decode(row: sqlite3.Row) -> Video:

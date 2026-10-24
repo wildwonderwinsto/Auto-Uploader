@@ -925,11 +925,21 @@ class VideosPage(QScrollArea):
             )
             return
         result = evaluate(media)
-        fits = result.status in READINESS_LABELS
-        self.readiness.setText("Fits" if fits else "Check")
-        restyle(self.readiness, "Good" if fits else "Warn")
-        self.readiness.setToolTip("\n".join(result.messages) + "\n\n" + LIMITATIONS)
-        lines = [f"YouTube: {m}" for m in result.messages if not fits]
+        # The app decides by YouTube's own Shorts rules (length and shape). Other notes, such
+        # as an unknown pixel shape or no sound, stay in the tooltip; they don't stop an upload.
+        blocking = [m for m in result.messages if m.startswith(("Longer than", "Landscape"))]
+        self.readiness.setText("Won't post" if blocking else "Fits")
+        restyle(self.readiness, "Bad" if blocking else "Good")
+        notes = [m for m in result.messages if m not in blocking]
+        if result.status in READINESS_LABELS:
+            notes = []  # the passed checks themselves, not notes
+        self.readiness.setToolTip(
+            "\n".join(blocking or ["Length and shape suit YouTube Shorts."])
+            + "".join(f"\n{m}" for m in notes)
+            + "\n\n"
+            + LIMITATIONS
+        )
+        lines = [f"YouTube: {m}" for m in blocking]
         for spec in PLATFORMS:
             problems = media_errors(spec, video, self.hosting_limit)
             badge = self.fits[spec.key]

@@ -28,7 +28,7 @@ from .upload_http import (
     retry_delay,
     session_url,
 )
-from .upload_store import Attempt, UploadStore
+from .upload_store import PROCESSED, Attempt, UploadStore
 
 
 class UploadService:
@@ -299,6 +299,8 @@ class UploadService:
                                 cancel,
                                 verify_missing=False,
                             )
+                        elif action == "processing":
+                            self.check_processing(argument, cancel)
                         else:
                             raise AccountError("Unknown upload operation.")
                 return {"attempts": self.store.all()}
@@ -348,6 +350,31 @@ class UploadService:
                 return {"error": error, "attempts": self.store.all()}
             except Exception:
                 return {"error": error}
+
+    def check_processing(self, identities: list[str], cancel: Event) -> None:
+        """Read-only: ask YouTube again whether finished uploads are done processing.
+
+        Quiet by design: any failure leaves the saved result exactly as it was, to be asked again
+        later; it never turns a verified upload into one that needs reconciliation."""
+        for identity in identities:
+            check_cancel(cancel)
+            attempt = self.store.get(identity)
+            if (
+                attempt.released
+                or not attempt.remote_id
+                or attempt.state not in ("Processing", "Public Verified", "Uploaded Private")
+                or attempt.processing in PROCESSED
+            ):
+                continue
+            try:
+                _, tokens = self.credentials(attempt.channel_id, cancel)
+                reply = self.http.verify(tokens, attempt.remote_id)
+            except Exception:  # noqa: BLE001 - asked again later; never a raw transport error
+                return
+            items = reply.body.get("items", []) if reply.status == 200 else []
+            if isinstance(items, list) and len(items) == 1:
+                if items[0].get("id") == attempt.remote_id:
+                    self.result(attempt, UploadReply(200, items[0]), tokens, cancel, False)
 
     def transfer(
         self, attempt: Attempt, initial: bool, cancel: Event, progress: Callable[[Attempt], None]

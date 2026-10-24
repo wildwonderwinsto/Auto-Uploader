@@ -40,7 +40,7 @@ try:
                     else:
                         bar.setValue(0)
                     # Scroll the TikTok section into view for pages where it sits low.
-                    for widget in (c.card, c.hosting, c.automation, c.queue):
+                    for widget in (c.card, c.hosting, c.queue):
                         if position == "top" and widget.isVisible() and target.isAncestorOf(widget):
                             target.ensureWidgetVisible(widget, 0, 0)
                 app.processEvents()
@@ -140,7 +140,8 @@ try:
     w.navigate("automation")
     t.reload()
     capture("automation", "automation-paused-app-wide")
-    paused_headline = c.auto_headline.text()
+    w.automation.render()
+    paused_headline = " ".join(words for v in w.automation.views for _, words in v.lines)
 
     w.navigate("queue")
     t.reload()

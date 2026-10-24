@@ -79,7 +79,6 @@ from .components import (
 )
 from .formatting import handle, system_zone, time_pattern, timestamp
 from .icons import PLATFORM_NAMES, image, logo
-from .recurring import rule_label
 from .videos import text
 from .watching import FolderConsent
 
@@ -159,6 +158,16 @@ ACTIVE_STATES = (
     "Waiting for Facebook reconnection",
     "Hosting failed",
 )
+# What `BufferPostService.cancel` accepts: nothing Buffer has started publishing.
+CANCELLABLE = (
+    "Scheduled in Buffer",
+    "Hosted and ready",
+    "Waiting for Buffer limit",
+    "Waiting for TikTok reconnection",
+    "Waiting for Instagram reconnection",
+    "Waiting for Facebook reconnection",
+    "Hosting failed",
+)
 RELEASABLE = (
     "Failed",
     "Needs reconciliation",
@@ -192,8 +201,9 @@ def label_for(post: dict[str, Any]) -> str:
         if post["due_at"]
         else timestamp(post["created_at"], weekday=True)
     )
-    # Same three lines as a scheduled YouTube upload: title, time, account · state.
-    return f"{post['caption'][:60] or 'Untitled'}\n{when}\n{post['channel_name']} · {post['state']}"
+    # Same three lines as a YouTube upload: title, time, account · state.
+    state = "Posted" if post["state"] == "Sent by Buffer" else post["state"]
+    return f"{post['caption'][:60] or 'Untitled'}\n{when}\n{post['channel_name']} · {state}"
 
 
 class SocialController(QObject):
@@ -236,7 +246,6 @@ class SocialController(QObject):
         self.build_card()
         self.build_hosting()
         self.build_video()
-        self.build_automation()
         self.build_queue()
         self.timer = QTimer(self)
         self.timer.setInterval(60000)
@@ -362,7 +371,6 @@ class SocialController(QObject):
             self.card_feedback,
             self.hosting_feedback,
             self.video_feedback,
-            self.auto_feedback,
             self.queue_feedback,
         ):
             label.setText(message)
@@ -394,11 +402,6 @@ class SocialController(QObject):
             self.refresh_button,
             self.cancel_post_button,
             self.release_button,
-            self.new_automation,
-            self.auto_pause,
-            self.auto_resume,
-            self.auto_revoke,
-            self.auto_remove,
             self.queue_refresh,
             self.queue_cancel,
         ]
@@ -502,7 +505,6 @@ class SocialController(QObject):
             self.cloud_key.setText(hosting["api_key"])
         self.render_backups()
         self.render_video()
-        self.render_automation()
         self.render_queue()
         self.render_summary()
         self.changed.emit()
@@ -1438,77 +1440,17 @@ class SocialController(QObject):
             bool(post and post["state"] in RELEASABLE and not post["released"])
         )
 
-    # Automatic Posting ----------------------------------------------------------------------
+    # Auto Upload ----------------------------------------------------------------------------
+    # The Auto Upload page shows each auto upload as one card for all of its platforms
+    # (ui/autocards.py). These describe and change this platform's part of one.
 
-    def build_automation(self) -> None:
-        self.automation, body = card(20, 12)
-        heading = QHBoxLayout()
-        heading.setSpacing(10)
-        heading.addWidget(image(logo(self.key, 24)))
-        heading.addWidget(text(self.name, "Heading"), 1)
-        self.auto_profiles = QComboBox()
-        self.auto_profiles.setAccessibleName(f"{self.name} automations")
-        self.auto_profiles.currentIndexChanged.connect(lambda _: self.render_automation())
-        heading.addWidget(self.auto_profiles)
-        # Kept for its busy state; new auto uploads start from New Folder Upload above.
-        self.new_automation = QPushButton(f"New {self.name} Automation…")
-        self.new_automation.clicked.connect(self.new_platform_automation)
-        self.new_automation.hide()
-        body.addLayout(heading)
-        self.auto_headline = text(f"No {self.name} automations yet", "Notice")
-        self.auto_status = text("", "Muted")
-        self.auto_activity = QListWidget()
-        self.auto_activity.setFixedHeight(140)
-        self.auto_activity.setWordWrap(True)
-        for widget in (self.auto_headline, self.auto_status, self.auto_activity):
-            body.addWidget(widget)
-        self.auto_pause = icon_button("Pause", "pause")
-        self.auto_resume = icon_button("Resume", "play", role="Primary")
-        self.auto_revoke = icon_button("Turn Off…", "power", role="Danger")
-        self.auto_revoke.setAccessibleName("Revoke Approval…")
-        self.auto_remove = icon_button("Remove…", "trash", role="Danger")
-        for button, action in (
-            (self.auto_pause, "pause"),
-            (self.auto_resume, "resume"),
-            (self.auto_revoke, "revoke"),
-            (self.auto_remove, "remove"),
-        ):
-            button.clicked.connect(lambda checked=False, a=action: self.control(a))
-        body.addWidget(flow(self.auto_pause, self.auto_resume, self.auto_revoke, self.auto_remove))
-        self.auto_feedback = text("", "Muted")
-        body.addWidget(self.auto_feedback)
-
-    def current_profile(self) -> dict[str, Any] | None:
-        return next(
-            (p for p in self.data["profiles"] if p["id"] == self.auto_profiles.currentData()), None
-        )
-
-    def render_automation(self) -> None:
-        selected = self.auto_profiles.currentData()
-        self.auto_profiles.blockSignals(True)
-        self.auto_profiles.clear()
-        for p in self.data["profiles"]:
-            self.auto_profiles.addItem(p["name"], p["id"])
-        self.auto_profiles.setCurrentIndex(max(0, self.auto_profiles.findData(selected)))
-        self.auto_profiles.blockSignals(False)
-        p = self.current_profile()
-        self.auto_profiles.setVisible(len(self.data["profiles"]) > 1)
-        self.automation.setVisible(bool(self.data["profiles"]))
-        self.auto_activity.setVisible(p is not None)
-        for button in (self.auto_pause, self.auto_resume, self.auto_revoke, self.auto_remove):
-            button.setVisible(p is not None)
-        if not p:
-            self.auto_headline.setText(f"No {self.name} automations yet")
-            self.auto_status.setText(
-                f"Choose New Folder Upload and tick {self.name} to post new folder videos to "
-                f"{self.name}."
-            )
-            return
+    def automation_headline(self, p: dict[str, Any]) -> str:
+        """Never "Active" while something stops it from posting."""
         paused = bool(self.window.automatic.data.get("paused", 1))
         connected = bool(
             self.data["connection"] and self.data["connection"].get("status") == "Connected"
         )
-        self.auto_headline.setText(
+        return (
             "Needs approval again"
             if p["revoked"]
             else f"Paused · no new {self.name} posts are scheduled"
@@ -1521,8 +1463,9 @@ class SocialController(QObject):
             if paused
             else "Active · Buffer posts each video at its approved time"
         )
-        rule = Rule.decode(p["settings"]["rule"])
-        folder = next((f for f in self.data.get("folders", []) if f["id"] == p["folder_id"]), None)
+
+    def automation_next(self, p: dict[str, Any]) -> str:
+        """The one post this auto upload has on its way to Buffer, or in it."""
         pending = [
             x
             for x in self.data["posts"]
@@ -1530,43 +1473,21 @@ class SocialController(QObject):
             and not x["released"]
             and x["state"] in ACTIVE_STATES + ("Publishing", "Sending to Buffer")
         ]
-        self.auto_status.setText(
-            f"Folder: {folder['name'] if folder else 'unavailable'} · {self.name}: {p['channel_name']}\n"
-            f"Schedule: {rule_label(rule)} · up to {p['settings']['daily_cap']} a day\n"
-            + (
-                f"Next post: {timestamp(pending[0]['due_at'], weekday=True)} ({pending[0]['state']})"
-                if pending and pending[0]["due_at"]
-                else "No post scheduled in Buffer right now"
-            )
-            + (f"\n{p['status']}" if p["status"] else "")
+        waiting = sum(
+            d["state"] == "Waiting for next opportunity"
+            for d in self.data.get("decisions", {}).get(p["id"], [])
+            if d["profile_revision"] == p["revision"]
         )
-        self.auto_pause.setVisible(bool(p["enabled"]))
-        self.auto_resume.setVisible(not p["enabled"] and not p["revoked"])
-        self.auto_revoke.setVisible(not p["revoked"])
-        decisions = self.data.get("decisions", {}).get(p["id"], [])
-        self.auto_activity.setVisible(bool(decisions))
-        self.auto_activity.clear()
-        for d in self.data.get("decisions", {}).get(p["id"], []):
-            self.auto_activity.addItem(
-                f"{d['name']} · {d['state']}"
-                + (f" · {d['reason']}" if d["reason"] and d["state"] != "Excluded existing" else "")
-            )
+        line = (
+            f"Next post {timestamp(pending[0]['due_at'], weekday=True)}"
+            if pending and pending[0]["due_at"]
+            else "Nothing in Buffer right now"
+        )
+        return line + (f" · {waiting} more waiting their turn" if waiting else "")
 
-    def control(self, action: str) -> None:
-        p = self.current_profile()
-        if not p:
-            return
-        if (
-            action in ("revoke", "remove")
-            and QMessageBox.question(
-                self.window,
-                f"Stop this {self.name} automation?",
-                "No new videos will be posted under it. A post already scheduled in Buffer stays scheduled — cancel it in Publishing Queue if needed.",
-            )
-            != QMessageBox.StandardButton.Yes
-        ):
-            return
-        self.run(lambda c: self.service.control(p["id"], action), self.reload())
+    def control_automation(self, identity: str, action: str) -> None:
+        """pause, resume or remove this platform's part of an auto upload."""
+        self.run(lambda c: self.service.control(identity, action), self.reload())
 
     def review_automation(
         self, values: dict[str, Any], done: Callable[[bool], None], parent: QWidget
@@ -1611,25 +1532,6 @@ class SocialController(QObject):
 
         self.run(guarded(lambda c: self.service.preview(values)), reviewed)
 
-    def new_platform_automation(self) -> None:
-        editor = AutomationEditor(self)
-        if editor.exec() != QDialog.DialogCode.Accepted:
-            return
-        values = editor.values()
-
-        def reviewed(proposal: dict[str, Any]) -> None:
-            consent = AutomationConsent(proposal, self.spec, self.window)
-            if consent.exec() == QDialog.DialogCode.Accepted:
-                scanner = self.window.watching.service
-                self.run(
-                    lambda c: self.service.approve(proposal, scanner, c),
-                    self.reload(
-                        f"{self.name} automation enabled. Only videos added from now on are eligible."
-                    ),
-                )
-
-        self.run(lambda c: self.service.preview(values), reviewed)
-
     # Queue ----------------------------------------------------------------------------------
 
     def build_queue(self) -> None:
@@ -1643,7 +1545,11 @@ class SocialController(QObject):
         self.queue_list.setWordWrap(True)
         self.queue_list.setMinimumHeight(150)
         self.queue_list.setAccessibleName(f"{self.name} posts")
+        self.queue_list.currentRowChanged.connect(lambda _: self.queue_selected())
         self.queue_empty = text("", "Muted")
+        # Like the YouTube uploads card: open what was posted; cancel only what still can be.
+        self.queue_open = icon_button(f"Open on {self.name}", "external")
+        self.queue_open.clicked.connect(self.open_post)
         self.queue_refresh = icon_button("Refresh Status", "refresh", role="Ghost")
         self.queue_refresh.setAccessibleName(f"Refresh {self.name} Status")
         self.queue_refresh.clicked.connect(self.poll)
@@ -1652,17 +1558,25 @@ class SocialController(QObject):
         self.queue_cancel.clicked.connect(lambda: self.cancel_post(self.queue_list))
         self.queue_feedback = text("", "Muted")
         self.queue_feedback.hide()
-        self.queue_actions = flow(self.queue_cancel, self.queue_refresh)
+        self.queue_actions = flow(self.queue_open, self.queue_cancel, self.queue_refresh)
         for widget in (self.queue_empty, self.queue_list, self.queue_actions, self.queue_feedback):
             body.addWidget(widget)
 
     def render_queue(self) -> None:
+        chosen = self.selected_post(self.queue_list)
+        self.queue_list.blockSignals(True)
         self.queue_list.clear()
         for post in self.data["posts"]:
             item = QListWidgetItem(label_for(post))
             item.setData(Qt.ItemDataRole.UserRole, post["id"])
             item.setToolTip(post["error"] or post["external_link"])
             self.queue_list.addItem(item)
+            if chosen and post["id"] == chosen["id"]:
+                self.queue_list.setCurrentItem(item)  # a refresh keeps the selection
+        if self.queue_list.count() and not self.queue_list.currentItem():
+            self.queue_list.setCurrentRow(0)
+        self.queue_list.blockSignals(False)
+        self.queue_selected()
         count = len(self.data["posts"])
         self.queue_empty.setText(
             f"{count} saved"
@@ -1672,6 +1586,23 @@ class SocialController(QObject):
         self.queue_list.setVisible(bool(count))
         self.queue_actions.setVisible(bool(count))
         self.queue.setVisible(bool(count))  # Coming up already lists every platform
+
+    def queue_selected(self) -> None:
+        post = self.selected_post(self.queue_list)
+        self.queue_open.setEnabled(bool(post and post["external_link"]))
+        self.queue_open.setToolTip(
+            ""
+            if post and post["external_link"]
+            else f"Available once {self.name} has the post and Buffer reports its link"
+        )
+        self.queue_cancel.setVisible(
+            bool(post and post["state"] in CANCELLABLE and not post["released"])
+        )
+
+    def open_post(self) -> None:
+        post = self.selected_post(self.queue_list)
+        if post and post["external_link"]:
+            open_page(post["external_link"])
 
 
 class AddBufferAccount(QDialog):

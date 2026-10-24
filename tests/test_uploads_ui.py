@@ -96,6 +96,40 @@ class UploadUiTests(unittest.TestCase):
         self.page.upload_button.click()
         self.assertEqual(self.fixture.http.initiations, 1)
 
+    def test_schedule_page_lists_uploads_made_now(self):
+        page = self.window.schedules.queue
+        self.assertTrue(page.uploads_card.isHidden())  # no empty card
+        self.upload()
+        # Uploaded with "Now", never scheduled: still listed, like TikTok's posts are.
+        self.assertFalse(page.uploads_card.isHidden())
+        self.assertEqual(page.upload_list.count(), 1)
+        self.assertIn("Video processed", page.upload_list.item(0).text())
+        self.assertTrue(page.open_upload.isEnabled())
+        with patch("shortspublisher.ui.scheduling.QDesktopServices.openUrl") as opened:
+            page.open_on_youtube()
+        self.assertIn(upload_fixtures.REMOTE_ID, opened.call_args.args[0].toString())
+
+    def test_processing_result_updates_by_itself(self):
+        self.fixture.http.processing = "processing"
+        self.upload()
+        self.assertEqual(self.page.selected().state, "Processing")
+        self.assertIn("YouTube is processing it", self.page.history.item(0).text())
+        # Still processing: it holds nothing up, and the reason says it is already uploaded.
+        self.assertIn("already been uploaded", self.page.reason.text())
+        self.fixture.http.processing = "processed"
+        feedback = self.page.feedback.text()
+        self.page.check_processing()
+        self.assertIsNotNone(self.page.worker)
+        self.assertTrue(self.page.reload_button.isEnabled())  # a background check disables nothing
+        settle(self.app, self.page)
+        self.assertEqual(self.page.selected().state, "Uploaded Private")
+        self.assertIn("Video processed", self.page.history.item(0).text())
+        self.assertEqual(self.page.feedback.text(), feedback)  # quiet: nothing else changed
+        calls = self.fixture.http.verify_calls
+        self.page.check_processing()  # done: not asked again
+        settle(self.app, self.page)
+        self.assertEqual(self.fixture.http.verify_calls, calls)
+
     def test_no_permission_and_dirty_review_disable(self):
         view = self.page.account
         view = replace(view, upload_allowed=False)

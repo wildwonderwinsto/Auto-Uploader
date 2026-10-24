@@ -334,6 +334,25 @@ class UploadServiceTests(unittest.TestCase):
         self.run_action("verify", old.id)
         self.assertEqual(self.store.get(old.id).state, "Uploaded Private")
 
+    def test_processing_is_checked_again_quietly(self):
+        self.http.processing = "processing"
+        old = self.confirm()
+        self.assertEqual(old.state, "Processing")
+        # A failed check changes nothing: never "Needs Reconciliation" for a verified upload.
+        self.http.verify_reply = UploadReply(503)
+        result = self.run_action("processing", [old.id])
+        self.assertNotIn("error", result)
+        self.assertEqual(self.store.get(old.id).state, "Processing")
+        self.http.verify_reply = None
+        self.http.processing = "processed"
+        self.run_action("processing", [old.id])
+        done = self.store.get(old.id)
+        self.assertEqual((done.state, done.processing), ("Uploaded Private", "processed"))
+        calls = self.http.verify_calls
+        self.run_action("processing", [old.id])  # finished: YouTube isn't asked again
+        self.assertEqual(self.http.verify_calls, calls)
+        self.assertEqual(self.http.initiations, 1)
+
     def test_missing_privacy_verification_unavailable_preserves_id(self):
         self.http.privacy = ""
         self.http.verify_reply = UploadReply(503)

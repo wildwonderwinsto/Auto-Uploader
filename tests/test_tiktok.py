@@ -655,6 +655,38 @@ class AutomationTests(Fixture):
         self.assertEqual(len(self.buffer.creates), 2)
         self.assertEqual(self.buffer.creates[1]["dueAt"], "2030-01-01T11:00:00Z")
 
+    def test_edit_applies_to_waiting_videos_only(self):
+        identity = self.approve()
+        self.arrive("First_clip.mp4")
+        self.arrive("Second_clip.mp4")
+        self.scan()
+        self.assertEqual(len(self.buffer.creates), 1)  # one in Buffer; the other waits its turn
+        proposal = self.service.preview(
+            {
+                "id": identity,
+                "name": "TT",
+                "folder_id": self.folder,
+                "settings": {**self.settings, "caption_template": "{filename} #new"},
+            }
+        )
+        self.assertEqual(self.service.approve(proposal, self.scanner, Event()), identity)
+        self.scan()
+        self.assertEqual(len(self.buffer.creates), 1)  # the first is not sent again
+        self.buffer.send("post-1")
+        self.now = datetime(2030, 1, 1, 9, 5, tzinfo=UTC)
+        self.scan()
+        sent, waited = (c["text"] for c in self.buffer.creates)
+        self.assertTrue(sent.endswith(" #fyp") and waited.endswith(" #new"), (sent, waited))
+        self.assertNotEqual(sent.split(" #")[0], waited.split(" #")[0])
+        decisions = {
+            d["name"]: d["state"]
+            for d in self.service.decisions(identity)
+            if d["profile_revision"] == 2
+        }
+        self.assertEqual(decisions["Existing.mp4"], "Excluded existing")
+        first = sent.split(" #")[0].replace(" ", "_") + ".mp4"
+        self.assertEqual(decisions[first], "Excluded existing")  # already in Buffer
+
     def test_daily_cap_moves_to_next_day(self):
         self.approve(daily_cap=1)
         self.arrive("First_clip.mp4")

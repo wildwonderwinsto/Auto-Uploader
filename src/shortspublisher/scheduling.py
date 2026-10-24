@@ -21,6 +21,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from .library import Library, LibraryError, source_status
 from .preparation import PreparationStore, media_token, review_checks
 from .source import fingerprint, signature
+from .upload_store import SETTLED
 
 
 class ScheduleError(Exception):
@@ -208,11 +209,17 @@ class ScheduleService:
         }
 
     def _conflicts(
-        self, db: sqlite3.Connection, video_id: int, channel: str, digest: str, excluding: str = ""
+        self,
+        db: sqlite3.Connection,
+        video_id: int,
+        channel: str,
+        digest: str,
+        excluding: str = "",
+        queue: str = "",
     ) -> None:
         from .recurring import reservation_conflict
 
-        reservation_conflict(db, channel, video_id, digest, excluding)
+        reservation_conflict(db, channel, video_id, digest, excluding, queue)
         if db.execute(
             """SELECT 1 FROM scheduled_jobs WHERE id!=? AND platform='youtube'
                 AND channel_id=? AND state NOT IN ('Draft','Cancelled') AND (video_id=? OR source_hash=?)""",
@@ -227,7 +234,7 @@ class ScheduleService:
             same = row["channel_id"] == channel and (
                 row["video_id"] == video_id or json.loads(row["snapshot"])["sha256"] == digest
             )
-            if same or row["state"] not in ("Uploaded Private", "Public Verified", "Failed"):
+            if same or row["state"] not in SETTLED:
                 raise ScheduleError(
                     "Upload history contains a completed or unresolved conflict. Inspect and deliberately reconcile it in Upload History first."
                 )
@@ -242,7 +249,9 @@ class ScheduleService:
         job_id: str = "",
         expected_revision: int = 0,
         cancel: Event | None = None,
+        queue: str = "",
     ) -> Proposal:
+        """`queue`: a recurring plan being edited; its own unstarted entries don't conflict."""
         cancel = cancel or Event()
         instant = resolve_time(local, zone, occurrence, self.clock())
         with closing(self.library.connect()) as db:
@@ -258,7 +267,7 @@ class ScheduleService:
                 raise ScheduleError(
                     "Video, metadata or channel changed during preparation. Review again."
                 )
-            self._conflicts(db, video_id, channel_id, digest, job_id)
+            self._conflicts(db, video_id, channel_id, digest, job_id, queue)
             if job_id:
                 self._unclaimed(db, job_id)
                 old = self._get(db, job_id)

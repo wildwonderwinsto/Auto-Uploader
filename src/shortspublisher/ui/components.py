@@ -557,10 +557,13 @@ def platform_choice(platform: str) -> tuple[QFrame, QCheckBox, QLabel, QLabel, Q
     return frame, check, detail, badge, line
 
 
-def set_choice(check: QCheckBox, detail: QLabel, badge: QLabel, ready: bool, words: str) -> None:
+def set_choice(
+    check: QCheckBox, detail: QLabel, badge: QLabel, ready: bool, words: str, done: str = ""
+) -> None:
+    """`done`: what the badge says when the video is already there (Uploaded, Scheduled…)."""
     detail.setText(words)
-    badge.setText("Ready" if ready else "Not available")
-    restyle(badge, "Good" if ready else "Neutral")
+    badge.setText("Ready" if ready else done or "Not available")
+    restyle(badge, "Good" if ready or done else "Neutral")
     check.setEnabled(ready)
     if not ready:
         check.setChecked(False)

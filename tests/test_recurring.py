@@ -112,6 +112,48 @@ class RecurringTests(unittest.TestCase):
             [second.id, self.u.video.id],
         )
 
+    def test_edit_replaces_unstarted_videos_times_and_details(self):
+        plan = self.approve()
+        second = self.extra()
+        # Details edited after queueing, then approved again: the edit uses the new details.
+        prep = self.u.preps.get(self.u.video.id)
+        prep = self.u.preps.save(self.u.video.id, replace(prep.metadata, title="Renamed"), 1)
+        self.u.preps.complete(self.u.video.id, prep.revision, self.u.video.inspection_revision)
+        old = self.r.state()["plans"][0]
+        with self.assertRaises(ScheduleError):  # without replace, times can't change
+            self.r.preview(
+                [second.id],
+                CHANNEL.id,
+                Rule("UTC", (0,), "18:00", "18:00", 0),
+                "Q",
+                Event(),
+                plan_id=plan,
+            )
+        evening = Rule("UTC", (0, 1, 2, 3, 4), "18:00", "18:00", 0)
+        proposal = self.r.preview(
+            [second.id, self.u.video.id],
+            CHANNEL.id,
+            evening,
+            "Evenings",
+            Event(),
+            plan_id=plan,
+            replace=True,
+        )
+        self.r.approve(proposal, Event(), consent=True, restrictions_resolved=True)
+        state = self.r.state()
+        [edited] = state["plans"]
+        self.assertEqual((edited["id"], edited["name"]), (plan, "Evenings"))
+        self.assertEqual(Rule.decode(edited["rule"]), evening)
+        self.assertEqual(edited["approved_revision"], old["approved_revision"] + 1)
+        queued = [i for i in state["items"] if i["state"] == "Queued"]
+        self.assertEqual([i["video_id"] for i in queued], [second.id, self.u.video.id])
+        self.assertEqual(queued[1]["snapshot"]["metadata"]["title"], "Renamed")
+        self.assertEqual([i["state"] for i in state["items"]].count("Removed"), 1)
+        self.r.control(plan, edited["revision"], "clear")
+        state = self.r.state()
+        self.assertFalse(state["plans"][0]["enabled"])
+        self.assertEqual({i["state"] for i in state["items"]}, {"Removed"})
+
     def test_unreviewed_rejected(self):
         second = self.extra(review=False)
         with self.assertRaises(ScheduleError):

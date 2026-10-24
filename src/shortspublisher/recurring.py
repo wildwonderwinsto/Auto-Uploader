@@ -52,12 +52,14 @@ def item_binding(plan: dict[str, Any], video_id: int, snapshot: dict[str, Any]) 
 
 
 def reservation_conflict(
-    db: sqlite3.Connection, channel: str, video: int, digest: str, job: str = ""
+    db: sqlite3.Connection, channel: str, video: int, digest: str, job: str = "", queue: str = ""
 ) -> None:
+    """`queue`: a plan being edited, whose own unstarted videos it is about to replace."""
     if db.execute(
         """SELECT 1 FROM recurring_items WHERE channel_id=? AND state!='Removed'
-        AND (video_id=? OR source_hash=?) AND (job_id IS NULL OR job_id!=?)""",
-        (channel, video, digest, job),
+        AND (video_id=? OR source_hash=?) AND (job_id IS NULL OR job_id!=?)
+        AND NOT (plan_id=? AND state IN ('Queued','Needs Attention') AND job_id IS NULL)""",
+        (channel, video, digest, job, queue),
     ).fetchone():
         raise ScheduleError(
             "This video or identical content already belongs to a recurring queue on this channel. Remove its unstarted entry before approving another use."
@@ -114,9 +116,15 @@ class RecurringService:
         )
 
     def conflict(
-        self, db: sqlite3.Connection, video: int, channel: str, digest: str, job: str = ""
+        self,
+        db: sqlite3.Connection,
+        video: int,
+        channel: str,
+        digest: str,
+        job: str = "",
+        queue: str = "",
     ) -> None:
-        self.schedules._conflicts(db, video, channel, digest, job)
+        self.schedules._conflicts(db, video, channel, digest, job, queue)
         # Recurring automation never interprets an acknowledged/released old upload as permission
         # to repost. Even failed attempts require a separate supported deliberate workflow.
         for row in db.execute(
@@ -138,7 +146,10 @@ class RecurringService:
         background: bool = False,
         plan_id: str = "",
         limit: int | None = None,
+        replace: bool = False,
     ) -> dict[str, Any]:
+        """`replace`: an edit of the plan; these videos and this rule replace its unstarted
+        videos and its times. Otherwise videos are added under its approved rule."""
         rule.validate()
         if not 1 <= len(videos) <= 100 or len(set(videos)) != len(videos):
             raise ScheduleError(
@@ -153,10 +164,12 @@ class RecurringService:
             ).fetchone()[0]
             old = self.plan(db, plan_id) if plan_id else None
         if old:
-            if (
-                normalized(rule.encode()) != old["rule"]
-                or channel != old["channel_id"]
-                or background != bool(old["background"])
+            if channel != old["channel_id"] or (
+                not replace
+                and (
+                    normalized(rule.encode()) != old["rule"]
+                    or background != bool(old["background"])
+                )
             ):
                 raise ScheduleError(
                     "Rule and channel are immutable. Create a new plan with renewed approval to change them."
@@ -171,6 +184,7 @@ class RecurringService:
         snapshots: list[dict[str, Any]] = []
         hashes = set()
         for video in videos:
+            own = plan_id if replace else ""  # its own unstarted entry is being replaced
             proposal = self.schedules.preview(
                 video,
                 channel,
@@ -178,10 +192,11 @@ class RecurringService:
                 rule.zone,
                 local.fold,
                 cancel=cancel,
+                queue=own,
             )
             snap = proposal.snapshot
             with closing(self.library.connect()) as db:
-                self.conflict(db, video, channel, snap["sha256"])
+                self.conflict(db, video, channel, snap["sha256"], queue=own)
             if snap["sha256"] in hashes:
                 raise ScheduleError(
                     "The selected batch contains identical bytes under different library entries."
@@ -190,8 +205,9 @@ class RecurringService:
             snapshots.append({"video_id": video, "snapshot": snap})
         return {
             "plan_id": plan_id,
+            "replace": bool(old and replace),
             "expected_revision": old["revision"] if old else 0,
-            "name": old["name"] if old else name,
+            "name": old["name"] if old and not replace else name,
             "channel_id": channel,
             "channel_title": snapshots[0]["snapshot"]["channel_title"],
             "rule": normalized(rule.encode()),
@@ -217,6 +233,7 @@ class RecurringService:
             background=proposal["background"],
             plan_id=proposal["plan_id"],
             limit=proposal["approved_limit"],
+            replace=proposal.get("replace", False),
         )
         if fresh != proposal:
             raise ScheduleError(
@@ -238,6 +255,31 @@ class RecurringService:
             if proposal["approved_limit"] > current_limit:
                 raise ScheduleError("The global daily limit changed during approval.")
             identity = old["id"] if old else uuid.uuid4().hex
+            if old and proposal["replace"]:
+                # Edited: its unstarted videos make way for the new list, and its times change.
+                db.execute(
+                    """UPDATE recurring_items SET state='Removed',removed_at=?,
+                    reason='Queue edited; approved again with its new times and details'
+                    WHERE plan_id=? AND state IN ('Queued','Needs Attention') AND job_id IS NULL""",
+                    (now, identity),
+                )
+                db.execute(
+                    """UPDATE recurring_plans SET name=?,rule=?,background=?,
+                    approved_revision=approved_revision+1,consent_at=?,consent=?,updated_at=?,
+                    next_slot=?,watermark=? WHERE id=?""",
+                    (
+                        proposal["name"],
+                        json.dumps(proposal["rule"]),
+                        int(proposal["background"]),
+                        now,
+                        CONSENT,
+                        now,
+                        proposal["opportunities"][0],
+                        now,
+                        identity,
+                    ),
+                )
+                old = self.plan(db, identity)
             plan = old or dict(
                 id=identity,
                 name=proposal["name"],
@@ -328,6 +370,15 @@ class RecurringService:
                     "UPDATE recurring_plans SET enabled=? WHERE id=?",
                     (int(action == "resume"), identity),
                 )
+            elif action == "clear":
+                # The queue no longer uploads to YouTube, or was deleted: nothing waits here.
+                db.execute(
+                    """UPDATE recurring_items SET state='Removed',removed_at=?,
+                    reason='Removed from the queue before it uploaded'
+                    WHERE plan_id=? AND state IN ('Queued','Needs Attention') AND job_id IS NULL""",
+                    (now, identity),
+                )
+                db.execute("UPDATE recurring_plans SET enabled=0 WHERE id=?", (identity,))
             elif action in ("remove", "up", "down"):
                 row = db.execute(
                     "SELECT * FROM recurring_items WHERE id=? AND plan_id=?", (item_id, identity)
@@ -448,7 +499,7 @@ class RecurringService:
                 )
                 continue
             if db.execute(
-                "SELECT 1 FROM upload_attempts WHERE released=0 AND state NOT IN ('Cancelled','Uploaded Private','Public Verified','Failed')"
+                "SELECT 1 FROM upload_attempts WHERE released=0 AND state NOT IN ('Cancelled','Uploaded Private','Public Verified','Processing','Failed')"
             ).fetchone():
                 self.record_slot(
                     db,
@@ -570,4 +621,12 @@ class RecurringService:
                 for r in db.execute("SELECT * FROM recurring_slots ORDER BY instant DESC LIMIT 200")
             ]
             control = dict(db.execute("SELECT * FROM publishing_control WHERE id=1").fetchone())
-        return {"plans": plans, "items": items, "slots": slots, "control": control}
+            # Plans that carry an auto upload's YouTube part, not a queue someone made.
+            automatic = [r[0] for r in db.execute("SELECT plan_id FROM automation_profiles")]
+        return {
+            "plans": plans,
+            "items": items,
+            "slots": slots,
+            "control": control,
+            "automatic": automatic,
+        }

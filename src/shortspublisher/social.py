@@ -44,7 +44,9 @@ from .buffer import (
 )
 from .cadence import Rule
 from .hosting import FREE_PLAN_MAX_BYTES, CloudinaryHost, HostingError
-from .library import Library, LibraryError, Video
+from .library import Library, LibraryError, Video, source_status
+from .preparation import PreparationStore, review_checks
+from .queues import decode as decode_queue
 from .scheduling import ScheduleError
 from .source import fingerprint
 
@@ -1738,9 +1740,23 @@ class BufferPostService:
         with closing(self.library.connect()) as db, db:
             db.execute("BEGIN IMMEDIATE")
             old = db.execute(
-                f"SELECT revision FROM {self.table}_profiles WHERE id=?", (identity,)
+                f"SELECT revision,folder_id FROM {self.table}_profiles WHERE id=?", (identity,)
             ).fetchone()
             revision = (old[0] if old else 0) + 1
+            # An edit applies to the videos it was still waiting to send; anything already
+            # on its way to Buffer, or in it, keeps the settings it was sent with.
+            waiting = (
+                {
+                    r[0]
+                    for r in db.execute(
+                        f"""SELECT name FROM {self.table}_decisions WHERE profile_id=? AND
+                        profile_revision=? AND state IN ('Waiting for next opportunity','Needs review')""",
+                        (identity, old[0]),
+                    )
+                }
+                if old and old[1] == proposal["folder_id"]
+                else set()
+            )
             db.execute(
                 f"""INSERT INTO {self.table}_profiles(id,revision,name,folder_id,channel_id,channel_name,settings,consent,enabled,revoked,removed,status,created_at,updated_at)
                 VALUES(?,?,?,?,?,?,?,?,1,0,0,'',?,?) ON CONFLICT(id) DO UPDATE SET revision=excluded.revision,name=excluded.name,
@@ -1760,6 +1776,8 @@ class BufferPostService:
                 ),
             )
             for name, observed in folder["candidates"].items():
+                if name in waiting:
+                    continue
                 db.execute(
                     f"""INSERT OR IGNORE INTO {self.table}_decisions(profile_id,profile_revision,name,state,reason,source_sha256,created_at,updated_at)
                     VALUES(?,?,?,'Excluded existing','Present at authorization; future files only',?,?,?)""",
@@ -1834,6 +1852,8 @@ class BufferPostService:
                             OSError,
                         ) as exc:
                             self.status(p["id"], str(exc))
+                if self.connection() and self.hosting():
+                    self.advance_queues(cancel, background=background)
                 if self.connection():
                     self.refresh(cancel)
                     self.cleanup()
@@ -1938,6 +1958,123 @@ class BufferPostService:
                     file["video_id"],
                 )
 
+    def next_slot(self, rule: Rule, used: list[str], cap: int) -> datetime | None:
+        """The first posting time after the last one used (and at least five minutes away) on
+        a day that still has room under `cap`."""
+        zone = ZoneInfo(rule.zone)
+        counts: dict[Any, int] = {}
+        for due in used:
+            day = parse(due).astimezone(zone).date()
+            counts[day] = counts.get(day, 0) + 1
+        latest = max((parse(d) for d in used), default=self.clock())
+        after = max(self.clock() + timedelta(minutes=5), latest)
+        return next(
+            (t for t in rule.next(after, 32) if counts.get(t.astimezone(zone).date(), 0) < cap),
+            None,
+        )
+
+    def advance_queues(self, cancel: Event, *, background: bool = False) -> None:
+        """Send each queue's next waiting video to Buffer once the one before it has posted.
+
+        One at a time, so a change to the queue or to a video's details still applies to every
+        video not sent yet. Held while automatic publishing is paused for the whole app."""
+        with closing(self.library.connect()) as db:
+            paused = db.execute("SELECT paused FROM publishing_control WHERE id=1").fetchone()
+            queues = [
+                decode_queue(r)
+                for r in db.execute("SELECT * FROM queues WHERE enabled=1 AND removed=0")
+            ]
+        for queue in queues:
+            if self.spec.key not in queue["platforms"] or (background and not queue["background"]):
+                continue
+            if cancel.is_set():
+                return
+            try:
+                self.advance_queue(queue, bool(paused and paused[0]), cancel)
+            except (SocialError, BufferError, HostingError, LibraryError, OSError):
+                continue  # recorded on the post or item; tried again on the next pass
+
+    def advance_queue(self, queue: dict[str, Any], paused: bool, cancel: Event) -> None:
+        with closing(self.library.connect()) as db:
+            pending = db.execute(
+                f"SELECT * FROM {self.table}_posts WHERE profile_id=? AND released=0 AND state IN ({','.join('?' * len(UNSENT))})",
+                (queue["id"], *UNSENT),
+            ).fetchone()
+            used = [
+                r[0]
+                for r in db.execute(
+                    f"SELECT due_at FROM {self.table}_posts WHERE profile_id=? AND due_at IS NOT NULL AND state NOT IN ('Cancelled','Missed — not sent')",
+                    (queue["id"],),
+                )
+            ]
+            items = db.execute(
+                "SELECT * FROM queue_items WHERE queue_id=? AND platform=? AND state='Waiting' "
+                "ORDER BY position,id",
+                (queue["id"], self.spec.key),
+            ).fetchall()
+        if pending:
+            if pending["state"] in (
+                "Uploading to media host",
+                "Hosted and ready",
+                "Waiting for Buffer limit",
+                self.spec.reconnect_state,
+            ):
+                self.host_and_submit(pending["id"], cancel)
+            return  # the next video waits until this one has posted
+        if paused or not items:
+            return
+        slot = self.next_slot(Rule.decode(queue["rule"]), used, self.spec.daily_max)
+        if slot is None:
+            return
+        for item in items:
+            try:
+                video = self.library.get(item["video_id"])
+            except LibraryError:
+                self.queue_item(item["id"], "Needs attention", "Removed from the library.")
+                continue
+            with closing(self.library.connect()) as db:
+                prep = PreparationStore.read(db, video.id)
+            if review_checks(video, prep, source_status(video)).state != "Review Complete":
+                # Edited since it was queued: it waits (and the next ready video goes first)
+                # until its details are marked ready again.
+                self.queue_item(
+                    item["id"], "Waiting", "Mark this video ready in Review to send it."
+                )
+                continue
+            ai = self.draft(video.id)["ai_generated"] if self.spec.ai_label else False
+            if ai is None:
+                self.queue_item(
+                    item["id"], "Waiting", "Choose the AI-generated content label in Details."
+                )
+                continue
+            caption = caption_from(
+                prep.metadata.title,
+                prep.metadata.description,
+                tuple(prep.metadata.tags),
+                hashtags=self.spec.hashtags_max,
+            )
+            try:
+                post_id = self.reserve(
+                    video.id, caption, bool(ai), slot, "manual", queue["id"], cancel
+                )
+            except SocialError as exc:
+                self.queue_item(item["id"], "Needs attention", str(exc))
+                continue
+            self.queue_item(item["id"], "Sent", "", post_id)
+            try:
+                self.host_and_submit(post_id, cancel)
+            except SocialError:
+                pass  # recorded on the post; retried on the next pass
+            return
+
+    def queue_item(self, identity: str, state: str, reason: str, post: str | None = None) -> None:
+        with closing(self.library.connect()) as db, db:
+            db.execute(
+                "UPDATE queue_items SET state=?,reason=?,post_id=coalesce(?,post_id),updated_at=? "
+                "WHERE id=?",
+                (state, reason, post, stamp(self.clock()), identity),
+            )
+
     def advance(self, p: dict[str, Any], cancel: Event) -> None:
         """Submit at most one post per automation: the oldest waiting video, at the next free slot."""
         connection = self.connection()
@@ -1984,22 +2121,7 @@ class BufferPostService:
         if not waiting:
             self.status(p["id"], "Waiting for new videos.")
             return
-        rule = Rule.decode(p["settings"]["rule"])
-        zone = ZoneInfo(rule.zone)
-        counts: dict[Any, int] = {}
-        for due in used:
-            day = parse(due).astimezone(zone).date()
-            counts[day] = counts.get(day, 0) + 1
-        latest = max((parse(d) for d in used), default=self.clock())
-        after = max(self.clock() + timedelta(minutes=5), latest)
-        slot = next(
-            (
-                t
-                for t in rule.next(after, 32)
-                if counts.get(t.astimezone(zone).date(), 0) < int(p["settings"]["daily_cap"])
-            ),
-            None,
-        )
+        slot = self.next_slot(Rule.decode(p["settings"]["rule"]), used, p["settings"]["daily_cap"])
         if slot is None:
             self.status(p["id"], "Daily limit reached for the coming days.")
             return

@@ -25,6 +25,11 @@ STATES = frozenset(
         "Cancelled",
     )
 )
+# Finished attempts that hold nothing up: on YouTube with verified privacy and channel (still
+# processing, or done), or failed. The same video or bytes is still checked separately.
+SETTLED = ("Uploaded Private", "Public Verified", "Processing", "Failed")
+# YouTube's own processing results; anything else is checked again later.
+PROCESSED = ("processed", "succeeded", "failed", "rejected", "terminated")
 
 
 @dataclass(frozen=True)

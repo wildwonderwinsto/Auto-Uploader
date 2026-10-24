@@ -4,11 +4,12 @@ import unittest
 from unittest.mock import patch
 
 import test_automation as fixtures
-from PySide6.QtWidgets import QFileDialog, QMessageBox, QPlainTextEdit
+from PySide6.QtWidgets import QFileDialog, QMessageBox, QPlainTextEdit, QPushButton
 from support import settle
 
 from shortspublisher.app import build
 from shortspublisher.ui.automation import ProfileConsent, ProfileEditor
+from shortspublisher.ui.autoupload import AutoUploadEditor
 
 
 class AutomationUiTests(unittest.TestCase):
@@ -131,29 +132,94 @@ class AutomationUiTests(unittest.TestCase):
         e.day_preset.setCurrentIndex(2)
         self.assertEqual([d.isChecked() for d in e.days], [False] * 5 + [True] * 2)
 
+    def buttons(self):
+        return [
+            b.text() for b in self.c.page.findChildren(QPushButton) if b.isVisibleTo(self.c.page)
+        ]
+
     def test_overview_and_queue_use_saved_records(self):
         self.f.approve()
         self.f.arrival()
         self.f.scan()
         self.c.activate()
         settle(self.app, self.c)
-        self.assertIn("Queue: 1 waiting to post", self.c.status.text())
+        [view] = self.c.views  # one card for the auto upload
+        self.assertEqual(view.platforms, ("youtube",))
+        self.assertIn("1 waiting their turn", view.lines[0][1])
         self.assertIn("global publishing paused", self.c.summary.text())
-        self.assertEqual(self.c.activity.count(), 1)
+        self.assertEqual(len(view.recent), 1)
+        self.assertIn("First_title.mp4 · YouTube: Approved and queued", view.recent[0])
         self.w.recurring.activate()
         settle(self.app, self.w.recurring)
-        self.assertIn("Automation-approved", self.w.recurring.items.item(0).text())
+        # Its own YouTube plan is shown on its card, not again as a queue of videos.
+        self.assertEqual(self.w.recurring.views, [])
 
     def test_pause_control_persists(self):
         self.f.approve()
         self.c.activate()
         settle(self.app, self.c)
-        self.c.action("pause")
+        self.assertIn("Pause Auto Upload", self.buttons())
+        self.c.act("pause", self.c.views[0].key)
         settle(self.app, self.c)
         self.assertFalse(self.f.state()["profiles"][0]["enabled"])
-        self.assertTrue(self.c.headline.text().startswith("Paused"))
-        self.assertTrue(self.c.buttons["resume"].isVisibleTo(self.c.page))
-        self.assertFalse(self.c.buttons["pause"].isVisibleTo(self.c.page))
+        [view] = self.c.views
+        self.assertEqual(view.state, "Paused")
+        self.assertTrue(view.lines[0][1].startswith("Paused"))
+        self.assertIn("Resume Auto Upload", self.buttons())
+        self.assertNotIn("Pause Auto Upload", self.buttons())
+
+    def test_delete_stops_it_and_leaves_nothing_behind(self):
+        self.f.approve()
+        self.f.arrival()
+        self.f.scan()
+        self.c.activate()
+        settle(self.app, self.c)
+        with patch.object(
+            QMessageBox, "question", return_value=QMessageBox.StandardButton.Cancel
+        ) as asked:
+            self.c.act("delete", self.c.views[0].key)
+        settle(self.app, self.c)
+        self.assertIn("stay on YouTube", asked.call_args.args[2])  # nothing on YouTube changes
+        self.assertFalse(self.f.state()["profiles"][0]["removed"])
+        with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes):
+            self.c.act("delete", self.c.views[0].key)
+        settle(self.app, self.c)
+        settle(self.app, self.w.watching)
+        self.assertTrue(self.f.state()["profiles"][0]["removed"])
+        self.assertEqual([i["state"] for i in self.f.f.r.state()["items"]], ["Removed"])
+        self.assertFalse(self.f.scanner.folders())  # its folder is no longer watched
+        self.c.activate()
+        settle(self.app, self.c)
+        self.assertEqual(self.c.views, [])
+        self.assertTrue(self.c.folders_empty.isVisibleTo(self.c.page))
+        self.assertIn("was deleted", self.c.feedback.text())
+
+    def test_edit_opens_with_its_settings_and_keeps_it_running(self):
+        self.f.approve()
+        self.c.activate()
+        settle(self.app, self.c)
+        seen = []
+
+        def shown(editor):
+            seen.append(
+                (
+                    editor.windowTitle(),
+                    editor.name.text(),
+                    editor.template.text(),
+                    editor.targets["youtube"].isChecked(),
+                    editor.values()["identity"],
+                )
+            )
+            return 0
+
+        with patch.object(AutoUploadEditor, "exec", shown):
+            self.c.act("edit", self.c.views[0].key)
+            settle(self.app, self.c)
+        p = self.f.state()["profiles"][0]
+        self.assertEqual(
+            seen, [("Edit Auto Upload", "My automation", "{filename} #Shorts", True, p["id"])]
+        )
+        self.assertTrue(p["enabled"] and not p["revoked"])  # opening the editor changes nothing
 
     def test_manual_import_and_navigation_retained(self):
         self.w.navigate("automation")
@@ -204,8 +270,10 @@ class AutomationUiTests(unittest.TestCase):
         self.c.activate()
         settle(self.app, self.c)
         # An enabled profile must not read as active while the global switch blocks posting.
-        self.assertTrue(self.c.headline.text().startswith("Not posting"), self.c.headline.text())
-        self.assertIn("paused for the whole app", self.c.headline.text())
-        self.assertNotIn("Active", self.c.headline.text())
-        self.assertIn("Watching for new videos", self.c.status.text())
-        self.assertIn("Background service:", self.c.status.text())
+        [view] = self.c.views
+        line = view.lines[0][1]
+        self.assertTrue(line.startswith("Not posting"), line)
+        self.assertIn("paused for the whole app", line)
+        self.assertNotIn("Active", line)
+        self.assertEqual(view.state, "Held back")
+        self.assertNotIn("isn't being watched", view.summary)

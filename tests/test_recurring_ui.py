@@ -161,27 +161,35 @@ class RecurringUiTests(unittest.TestCase):
         e.dirty = False
         e.reject()
 
-    def test_queue_calendar_and_dashboard_use_same_plan(self):
+    def test_queue_card_shows_its_videos(self):
         self.f.approve()
         self.c.refresh()
         settle(self.app, self.c)
-        self.assertEqual(self.c.items.count(), 1)
-        self.assertEqual(self.c.opportunities.count(), 8)
-        self.assertIn("Paused", self.c.status.text())
+        [view] = self.c.views  # one card per queue
+        self.assertEqual(view.platforms, ("youtube",))
+        self.assertEqual(view.state, "Paused")
+        self.assertTrue(view.lines[0][1].startswith("1 waiting"))
+        self.assertIn("YouTube: Waiting", view.videos[0])
         self.assertIn("1 videos waiting", self.c.summary.text())
-        self.assertIn("Approved and queued", self.c.items.item(0).text())
 
-    def test_paused_append_rule_is_read_only(self):
+    def test_edit_opens_with_the_queue_and_everything_can_change(self):
         self.f.approve()
         self.c.refresh()
         settle(self.app, self.c)
-        e = RecurringEditor(self.c, self.c.current())
+        queue = self.c.queue_of(self.c.views[0].key)
+        e = RecurringEditor(self.c, queue)
         self.addCleanup(e.deleteLater)
         self.addCleanup(e.preview.release)
-        self.assertFalse(e.frequency.isEnabled())
-        self.assertFalse(e.zone.isEnabled())
-        self.assertFalse(e.background.isEnabled())
-        self.assertFalse(e.videos.item(0).flags() & Qt.ItemFlag.ItemIsUserCheckable)
+        self.assertEqual(e.windowTitle(), "Edit Queue")
+        for field in (e.frequency, e.zone, e.background, e.name, e.targets["youtube"]):
+            self.assertTrue(field.isEnabled())
+        self.assertTrue(e.targets["youtube"].isChecked())
+        item = e.videos.item(0)
+        self.assertTrue(item.flags() & Qt.ItemFlag.ItemIsUserCheckable)  # its own video
+        self.assertEqual(item.checkState(), Qt.CheckState.Checked)
+        values = e.values()
+        self.assertTrue(values["replace"])
+        self.assertEqual(values["plan_id"], queue.plan["id"])
 
     def test_verified_outcome_is_conservative(self):
         self.assertEqual(outcome({"attempt_state": "Needs Reconciliation"}), "Needs reconciliation")
@@ -198,10 +206,42 @@ class RecurringUiTests(unittest.TestCase):
         self.c.start("approve", self.f.proposal())
         settle(self.app, self.c)
         self.assertEqual(len(self.c.data["plans"]), 1, self.c.feedback.text())
-        self.assertFalse(self.c.current()["enabled"])
-        self.c.toggle()
+        [view] = self.c.views
+        self.assertFalse(view.enabled)
+        self.c.act("resume", view.key)
         settle(self.app, self.c)
-        self.assertTrue(self.c.current()["enabled"])
+        self.assertTrue(self.c.data["plans"][0]["enabled"])
+        self.assertEqual(self.f.u.http.initiations, 0)
+
+    def test_saved_queue_is_on_and_delete_leaves_nothing_waiting(self):
+        from shortspublisher.cadence import Rule
+
+        plan = self.f.approve()
+        rule = Rule("UTC", tuple(range(7)), "09:00", "21:00", 2)
+        self.c.start(
+            "queue_save",
+            dict(
+                identity="",
+                revision=0,
+                name="My queue",
+                rule=rule,
+                videos={},
+                plan_id=plan,
+                background=False,
+                clear_plan=None,
+            ),
+        )
+        settle(self.app, self.c)
+        [view] = self.c.views  # the queue row and its YouTube plan: still one card
+        self.assertEqual((view.platforms, view.enabled), (("youtube",), True))
+        self.assertTrue(self.c.data["plans"][0]["enabled"])  # approved and saved: it's on
+        with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes):
+            self.c.act("delete", view.key)
+        settle(self.app, self.c)
+        self.assertEqual(self.c.views, [])
+        self.assertEqual({i["state"] for i in self.f.r.state()["items"]}, {"Removed"})
+        self.assertFalse(self.f.r.state()["plans"][0]["enabled"])
+        self.assertFalse(self.c.empty.isHidden())
         self.assertEqual(self.f.u.http.initiations, 0)
 
 

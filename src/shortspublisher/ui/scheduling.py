@@ -16,9 +16,10 @@ from PySide6.QtCore import (
     QTime,
     QTimer,
     QTimeZone,
+    QUrl,
     Signal,
 )
-from PySide6.QtGui import QColor, QTextCharFormat
+from PySide6.QtGui import QColor, QDesktopServices, QTextCharFormat
 from PySide6.QtWidgets import (
     QCalendarWidget,
     QCheckBox,
@@ -44,9 +45,18 @@ from PySide6.QtWidgets import (
 from .. import activity
 from ..activity import Entry
 from ..scheduling import Job, Proposal, ScheduleService, local_choices
+from ..upload_store import Attempt
 from . import theme
 from .dashboard import group_row
-from .formatting import day_label, duration, file_size, system_zone, time_pattern, timestamp
+from .formatting import (
+    day_label,
+    duration,
+    file_size,
+    system_zone,
+    time_pattern,
+    timestamp,
+    upload_status,
+)
 from .icons import PLATFORM_NAMES, icon, image, logo, pixmap
 from .videos import text
 
@@ -495,6 +505,30 @@ class SchedulePage(QScrollArea):
         self.plan_details.body.addWidget(self.details)
         youtube.addWidget(self.plan_details)
         self.body.addWidget(self.youtube)
+        # Every YouTube upload, now or scheduled, like each Buffer platform's card below it.
+        self.uploads_card, uploads = card(20, 12)
+        top = QHBoxLayout()
+        top.setSpacing(10)
+        top.addWidget(image(logo("youtube", 22)))
+        top.addWidget(text("YouTube uploads", "Heading"), 1)
+        uploads.addLayout(top)
+        self.uploads_count = text("", "Muted")
+        uploads.addWidget(self.uploads_count)
+        self.upload_list = QListWidget()
+        self.upload_list.setWordWrap(True)
+        self.upload_list.setMinimumHeight(150)
+        self.upload_list.setAccessibleName("YouTube uploads")
+        self.upload_list.currentRowChanged.connect(self.upload_selected)
+        uploads.addWidget(self.upload_list)
+        self.open_upload = icon_button("Open on YouTube", "external")
+        self.open_upload.clicked.connect(self.open_on_youtube)
+        self.upload_history = icon_button("Upload History…", "history", role="Ghost")
+        self.upload_history.clicked.connect(self.show_upload)
+        uploads.addWidget(flow(self.open_upload, self.upload_history))
+        self.shown_uploads: list[Attempt] = []
+        self.uploads_card.hide()  # an empty platform card isn't shown
+        if not calendar:
+            self.body.addWidget(self.uploads_card)
         self.tiktok_slot = QVBoxLayout()
         self.body.addLayout(self.tiktok_slot)
         self.body.addStretch()
@@ -686,6 +720,55 @@ class SchedulePage(QScrollArea):
         if hasattr(window, "dashboard"):
             self.render_agenda(window.dashboard.entries)
         self.selected_changed()
+
+    def render_uploads(self, attempts: list[Attempt]) -> None:
+        """Every YouTube upload, newest first: title, time, channel and where it is now."""
+        if self.calendar_mode:
+            return
+        shown = [a for a in attempts if a.state != "Cancelled"]  # never sent anything
+        if shown == self.shown_uploads:
+            return  # unchanged: the list keeps its selection and doesn't flicker
+        self.shown_uploads = shown
+        row = self.upload_list.currentRow()
+        self.upload_list.blockSignals(True)
+        self.upload_list.clear()
+        for attempt in shown:
+            item = QListWidgetItem(
+                f"{activity.title_of(attempt.snapshot)}\n"
+                f"{timestamp(attempt.completed_at or attempt.created_at, weekday=True)}\n"
+                f"{attempt.snapshot.get('channel_title', 'YouTube')} · "
+                f"{upload_status(attempt.state, attempt.processing)}"
+            )
+            item.setToolTip(attempt.error)
+            self.upload_list.addItem(item)
+        self.upload_list.blockSignals(False)
+        if shown:
+            self.upload_list.setCurrentRow(max(0, min(row, len(shown) - 1)))
+        self.uploads_count.setText(f"{len(shown)} saved")
+        self.uploads_card.setVisible(bool(shown))
+        self.upload_selected()
+
+    def chosen_upload(self) -> Attempt | None:
+        row = self.upload_list.currentRow()
+        return self.shown_uploads[row] if 0 <= row < len(self.shown_uploads) else None
+
+    def upload_selected(self, *_: Any) -> None:
+        attempt = self.chosen_upload()
+        self.open_upload.setEnabled(bool(attempt and attempt.remote_id))
+
+    def open_on_youtube(self) -> None:
+        attempt = self.chosen_upload()
+        if attempt and attempt.remote_id:
+            QDesktopServices.openUrl(QUrl(f"https://youtu.be/{attempt.remote_id}"))
+
+    def show_upload(self) -> None:
+        window = self.controller.window
+        attempt = self.chosen_upload()
+        window.show_upload_history()
+        if attempt:
+            for index, item in enumerate(window.uploads.attempts):
+                if item.id == attempt.id:
+                    window.uploads.history.setCurrentRow(index)
 
     def show_details(self, value: str) -> None:
         if self.details.toPlainText() != value:  # resetting identical text would jump the view

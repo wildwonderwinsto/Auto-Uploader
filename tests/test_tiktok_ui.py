@@ -1,6 +1,7 @@
 """TikTok UI in the real window: isolated SQLite and files, controlled Buffer and Cloudinary."""
 
 import unittest
+from datetime import timedelta
 from threading import Event
 from unittest.mock import patch
 
@@ -158,6 +159,19 @@ class TikTokUiTests(Fixture):
         self.assertEqual(self.c.video_history.count(), 1)
         self.assertIn("Publishing", self.c.video_history.item(0).text())
         self.assertIn("Hello #fyp", self.c.queue_list.item(0).text())
+        # Publishing: nothing to open yet, and too late to cancel, so no Cancel button.
+        self.assertFalse(self.c.queue_open.isEnabled())
+        self.assertTrue(self.c.queue_cancel.isHidden())
+        self.buffer.send("post-1")
+        self.now += timedelta(minutes=10)
+        self.service.refresh(Event())
+        self.reload()
+        self.assertIn("· Posted", self.c.queue_list.item(0).text())
+        self.assertTrue(self.c.queue_open.isEnabled())
+        self.assertTrue(self.c.queue_cancel.isHidden())
+        with patch("shortspublisher.ui.social.open_page") as opened:
+            self.c.queue_open.click()
+        opened.assert_called_once_with("https://www.tiktok.com/@mytiktok/video/123")
 
     def test_publish_confirmation_cancel_sends_nothing(self):
         video = self.ready()
@@ -190,13 +204,14 @@ class TikTokUiTests(Fixture):
         self.w.navigate("automation")
         settle(self.app, self.c)
         # One "Watch a Folder" covers every platform; there is no separate TikTok button.
-        self.assertFalse(self.c.new_automation.isVisible())
         self.assertTrue(self.w.automation.new.isVisible())
-        self.assertEqual(self.c.auto_headline.text(), "No TikTok automations yet")
+        self.assertEqual(self.w.automation.views, [])
+        self.assertTrue(self.w.automation.folders_empty.isVisible())
         self.assertEqual(self.w.automation.new.text(), "Watch a Folder…")
-        # Individual videos (upload queues) sit on the same page.
+        # Individual videos (upload queues) sit on the same page, with one button too.
         self.assertTrue(self.w.automation.page.isAncestorOf(self.w.recurring.queue))
-        self.assertTrue(self.w.recurring.new.isVisible())
+        self.assertTrue(self.w.recurring.add.isVisible())
+        self.assertEqual(self.w.recurring.add.text(), "Add Videos…")
         self.assertTrue(self.w.automation.page.isAncestorOf(self.w.watching))
         self.w.navigate("queue")
         settle(self.app, self.c)
@@ -228,13 +243,16 @@ class TikTokUiTests(Fixture):
         self.service.approve(proposal, scanner, Event())
         self.w.automatic.data = {"paused": 1}
         self.reload()
-        self.assertIn("paused for the whole app", self.c.auto_headline.text())
-        self.assertNotIn("Active", self.c.auto_headline.text())
+        [view] = self.w.automation.views
+        self.assertEqual(view.platforms, ("tiktok",))
+        self.assertIn("paused for the whole app", view.lines[0][1])
+        self.assertNotIn("Active", view.lines[0][1])
+        self.assertEqual(view.state, "Held back")
         self.w.automatic.data = {"paused": 0}
         self.reload()
-        self.assertTrue(self.c.auto_headline.text().startswith("Active"))
-        self.assertTrue(self.c.auto_pause.isVisibleTo(self.c.automation))
-        self.assertFalse(self.c.auto_resume.isVisibleTo(self.c.automation))
+        [view] = self.w.automation.views
+        self.assertTrue(view.lines[0][1].startswith("Active"))
+        self.assertEqual((view.state, view.paused), ("On", False))
 
 
 if __name__ == "__main__":

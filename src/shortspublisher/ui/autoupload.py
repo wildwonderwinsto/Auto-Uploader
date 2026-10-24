@@ -46,6 +46,7 @@ from .icons import PLATFORM_NAMES, image, logo
 from .recurring import DAY_NAMES, rule_label
 
 if TYPE_CHECKING:
+    from .autocards import AutoUpload
     from .automation import AutomationController
     from .social import SocialController
 
@@ -60,6 +61,16 @@ def form() -> QFormLayout:
     layout.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
     layout.setVerticalSpacing(8)
     return layout
+
+
+def split_caption(template: str) -> dict[str, Any]:
+    """The shared details back from a caption made by `caption_from` (older auto uploads kept
+    only the caption): title, then description, then hashtags."""
+    parts = template.split("\n\n")
+    tags: list[str] = []
+    if len(parts) > 1 and all(word.startswith("#") for word in parts[-1].split()):
+        tags = [word[1:] for word in parts.pop().split()]
+    return {"title_template": parts[0], "description": "\n\n".join(parts[1:]), "tags": tags}
 
 
 def platform_box(platform: str, note: str) -> tuple[QWidget, QVBoxLayout]:
@@ -82,10 +93,14 @@ class AutoUploadEditor(QDialog):
         self,
         controller: AutomationController,
         tiktok: SocialController,
-        profile: dict[str, Any] | None = None,
+        group: AutoUpload | None = None,
     ) -> None:
         super().__init__(controller.window)
-        self.controller, self.tiktok, self.profile = controller, tiktok, profile
+        self.controller, self.tiktok, self.group = controller, tiktok, group
+        # Editing: each platform's saved profile is replaced only when its new approval is
+        # given; until then the auto upload keeps running as it was.
+        self.profile = group.youtube if group else None
+        editing = group is not None
         self.socials: tuple[SocialController, ...] = getattr(
             controller.window, "socials", (tiktok,)
         )
@@ -93,7 +108,7 @@ class AutoUploadEditor(QDialog):
         self.approved_youtube = False
         self.approved_buffer: set[str] = set()  # Buffer platforms turned on from this dialog
         self.waiting: list[SocialController] = []  # Buffer platforms still to approve
-        self.setWindowTitle("Edit Auto Upload" if profile else "New Auto Upload")
+        self.setWindowTitle("Edit Auto Upload" if editing else "New Auto Upload")
         self.resize(720, 720)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -101,11 +116,14 @@ class AutoUploadEditor(QDialog):
         top = QVBoxLayout()
         top.setContentsMargins(24, 22, 24, 10)
         top.setSpacing(10)
-        top.addWidget(muted("Edit auto upload" if profile else "New auto upload", "Title"))
+        top.addWidget(muted("Edit auto upload" if editing else "New auto upload", "Title"))
         top.addWidget(
             muted(
-                "New videos you add to a folder upload on your schedule, with the same title, "
-                "description and tags on every platform you pick.",
+                "Changes apply to every video that hasn't uploaded yet. Videos already uploaded, "
+                "or already sent to Buffer, keep the settings they went out with."
+                if editing
+                else "New videos you add to a folder upload on your schedule, with the same "
+                "title, description and tags on every platform you pick.",
                 "Muted",
             )
         )
@@ -129,7 +147,7 @@ class AutoUploadEditor(QDialog):
         line.addWidget(self.folder, 1)
         line.addWidget(self.add_folder)
         body.addLayout(line)
-        self.name = QLineEdit(profile["name"] if profile else "My auto upload")
+        self.name = QLineEdit(group.name if group else "My auto upload")
         self.pattern = QLineEdit("*.mp4")
         self.seconds, self.mib = QSpinBox(), QSpinBox()
         self.seconds.setRange(1, 180)
@@ -204,13 +222,13 @@ class AutoUploadEditor(QDialog):
             "hashtag. Facebook Reels must be 9:16 and 3 to 90 seconds long.",
         }
         for key, note in notes.items():
-            group, group_body = platform_box(key, f"Only used on {PLATFORM_NAMES[key]}")
+            box, box_body = platform_box(key, f"Only used on {PLATFORM_NAMES[key]}")
             if key in self.ai_choices:
                 ai_form = form()
                 ai_form.addRow("AI-generated content label", self.ai_choices[key])
-                group_body.addLayout(ai_form)
-            group_body.addWidget(muted(note, "Subtle"))
-            body.addWidget(group)
+                box_body.addLayout(ai_form)
+            box_body.addWidget(muted(note, "Subtle"))
+            body.addWidget(box)
         body.addStretch()
         self.pages.addWidget(details_page)
 
@@ -293,7 +311,8 @@ class AutoUploadEditor(QDialog):
         for platform, ready, who, missing in choices:
             frame, check, detail, badge, _line = platform_choice(platform)
             set_choice(check, detail, badge, ready, who if ready else missing)
-            check.setChecked(ready and (platform == "youtube" or not profile))
+            # New: every platform that's ready. Editing: the platforms it already uses.
+            check.setChecked(ready and (platform in group.platforms if group else True))
             check.toggled.connect(self.edited)
             body.addWidget(frame)
             if platform != "snapchat":
@@ -313,7 +332,9 @@ class AutoUploadEditor(QDialog):
         self.back.clicked.connect(lambda: self.go(self.pages.currentIndex() - 1))
         self.next = icon_button("Next", "chevron-right", role="Primary")
         self.next.clicked.connect(lambda: self.go(self.pages.currentIndex() + 1))
-        self.review = icon_button("Review and Turn On…", "check", role="Primary")
+        self.review = icon_button(
+            "Review and Save…" if editing else "Review and Turn On…", "check", role="Primary"
+        )
         self.review.clicked.connect(self.start_review)
         footer.addWidget(cancel)
         footer.addStretch()
@@ -322,9 +343,9 @@ class AutoUploadEditor(QDialog):
             footer.addWidget(button)
         layout.addLayout(footer)
 
-        self.fill_folders(profile["folder_id"] if profile else None)
-        if profile:
-            self.load(profile)
+        self.fill_folders(group.folder_id if group else None)
+        if group:
+            self.load_group(group)
         for line_edit in (self.name, self.template, self.tags, self.zone, self.pattern):
             line_edit.textChanged.connect(self.edited)
         self.description.textChanged.connect(self.edited)
@@ -452,10 +473,18 @@ class AutoUploadEditor(QDialog):
         """The same choices as a Buffer platform's profile; its caption comes from the shared
         details."""
         choice = self.ai_choices.get(social.key)
+        existing = self.group.buffer.get(social.key) if self.group else None
         return {
+            **({"id": existing["id"]} if existing else {}),
             "name": self.name.text(),
             "folder_id": self.folder.currentData(),
             "settings": {
+                # Kept so the auto upload can be edited later with the same details.
+                "details": {
+                    "title_template": self.template.text(),
+                    "description": self.description.toPlainText(),
+                    "tags": self.tag_list(),
+                },
                 "caption_template": caption_from(
                     self.template.text(),
                     self.description.toPlainText(),
@@ -470,6 +499,32 @@ class AutoUploadEditor(QDialog):
             },
         }
 
+    def load_group(self, group: AutoUpload) -> None:
+        if group.youtube:
+            self.load(group.youtube)
+        else:
+            s = next(iter(group.buffer.values()))["settings"]
+            details = s.get("details") or split_caption(s["caption_template"])
+            self.template.setText(details["title_template"])
+            self.description.setPlainText(details["description"])
+            self.tags.setText(", ".join(details["tags"]))
+            self.pattern.setText(s["pattern"])
+            self.load_rule(s["rule"])
+            self.background.setChecked(bool(s["background"]))
+        for key, choice in self.ai_choices.items():
+            if key in group.buffer:
+                choice.setCurrentIndex(
+                    choice.findData(bool(group.buffer[key]["settings"]["ai_generated"]))
+                )
+
+    def load_rule(self, rule: dict[str, Any]) -> None:
+        self.zone.setText(rule["zone"])
+        self.start.setTime(QTime.fromString(rule["start"], "HH:mm"))
+        self.end.setTime(QTime.fromString(rule["end"], "HH:mm"))
+        self.frequency.setCurrentIndex(max(0, self.frequency.findData(rule["hours"])))
+        for i, day in enumerate(self.days):
+            day.setChecked(i in rule["days"])
+
     def load(self, profile: dict[str, Any]) -> None:
         s = profile["settings"]
         self.template.setText(s["title_template"])
@@ -479,13 +534,7 @@ class AutoUploadEditor(QDialog):
         self.mode.setCurrentIndex(self.mode.findData(s["mode"]))
         self.kids.setCurrentIndex(self.kids.findData(s["made_for_kids"]))
         self.synthetic.setCurrentIndex(self.synthetic.findData(s["synthetic"]))
-        rule = s["rule"]
-        self.zone.setText(rule["zone"])
-        self.start.setTime(QTime.fromString(rule["start"], "HH:mm"))
-        self.end.setTime(QTime.fromString(rule["end"], "HH:mm"))
-        self.frequency.setCurrentIndex(max(0, self.frequency.findData(rule["hours"])))
-        for i, day in enumerate(self.days):
-            day.setChecked(i in rule["days"])
+        self.load_rule(s["rule"])
         self.seconds.setValue(s["max_seconds"])
         self.mib.setValue(s["max_bytes"] // 1024**2)
         self.background.setChecked(s["background"])
@@ -532,6 +581,7 @@ class AutoUploadEditor(QDialog):
 
     def next_platform(self) -> None:
         if not self.waiting:
+            self.drop_unticked()
             self.finish()
             return
         self.review.setEnabled(False)
@@ -548,16 +598,34 @@ class AutoUploadEditor(QDialog):
         on = (["YouTube"] if self.approved_youtube else []) + [
             s.name for s in self.socials if s.key in self.approved_buffer
         ]
-        off = [social.name] + [s.name for s in self.waiting]
+        off = [social, *self.waiting]
         self.waiting = []
         if on:
+            kept = self.group is not None and all(s.key in self.group.buffer for s in off)
+            names = " and ".join(s.name for s in off)
             self.show_error(
                 f"{' and '.join(on)} {'is' if len(on) == 1 else 'are'} on. "
-                f"{' and '.join(off)} {'was' if len(off) == 1 else 'were'} not turned on; "
-                "you can add " + ("it" if len(off) == 1 else "them") + " with a new auto upload."
+                + (
+                    f"{names} kept {'its' if len(off) == 1 else 'their'} earlier settings."
+                    if kept
+                    else f"{names} {'was' if len(off) == 1 else 'were'} not turned on; you can "
+                    "add " + ("it" if len(off) == 1 else "them") + " by editing this auto upload."
+                )
             )
 
     tiktok_done = platform_done
+
+    def drop_unticked(self) -> None:
+        """Editing: platforms the person unticked stop; nothing already uploaded changes."""
+        if not self.group:
+            return
+        p = self.group.youtube
+        if p and not self.targets["youtube"].isChecked():
+            self.controller.start("control", (p["id"], p["revision"], "remove"))
+        for social in self.socials:
+            existing = self.group.buffer.get(social.key)
+            if existing and not self.targets[social.key].isChecked():
+                social.control_automation(existing["id"], "remove")
 
     def finish(self) -> None:
         self.dirty = False

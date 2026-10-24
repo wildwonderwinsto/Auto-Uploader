@@ -310,6 +310,9 @@ class WatchService:
                     if f["enabled"] and (not background or f["background"])
                 ]
                 if not folders:
+                    # Video queues still send their next TikTok, Instagram and Facebook post.
+                    for platform in (self.tiktok, self.instagram, self.facebook):
+                        platform().reconcile(self, cancel, background=background)
                     return {"imported": 0, "message": "No enabled folders."}
                 imported = 0
                 indexed: set[int] | None = None

@@ -1,6 +1,7 @@
 import os
 import time
 import unittest
+from dataclasses import replace
 from datetime import UTC, datetime
 
 from shortspublisher import activity
@@ -81,6 +82,26 @@ class TimelineTests(unittest.TestCase):
         self.assertEqual(activity.youtube_uploads([attempt("Cancelled")]), [])
         processing = activity.youtube_uploads([attempt("Uploaded Private", processing="")])[0]
         self.assertEqual(processing.status, "Private · YouTube is processing")
+
+    def test_processing_upload_is_done_and_titled_from_its_details(self):
+        # Upload records keep the title in the payload sent to YouTube, not as "metadata".
+        record = replace(
+            attempt("Processing", "vid1", processing="processing"),
+            snapshot={
+                "filename": "Welcome.mp4",
+                "payload": {"snippet": {"title": "Welcome!"}},
+                "size": 200,
+            },
+        )
+        entry = activity.youtube_uploads([record])[0]
+        self.assertEqual(
+            (entry.kind, entry.status, entry.title),
+            (activity.DONE, "Public · YouTube is processing", "Welcome!"),
+        )
+        posted = activity.buffer_posts(
+            "tiktok", [post("Sent by Buffer", video_id=1, sent_at="2026-10-01T09:00:00+00:00")]
+        )
+        self.assertEqual(len(activity.grouped([entry, *posted])), 1)  # one row, two logos
 
     def test_started_jobs_are_left_to_their_upload_record(self):
         entries = activity.youtube_plans(

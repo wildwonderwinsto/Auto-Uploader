@@ -1,4 +1,4 @@
-# Current status — 2026-10-22 (after Stage 20)
+# Current status — 2026-10-24 (after Stage 20, editable auto uploads and queues)
 
 ## Works today
 
@@ -19,9 +19,11 @@
 | **One upload for every platform**: the Upload step ticks every ready platform (each says why not, otherwise), one Now/Schedule and one button, one confirmation for the Buffer posts plus YouTube's own; the video must be marked ready for all; the queue window (Choose Videos) is now the same step-by-step window as a new auto upload (Videos · Where · When) with every ready platform ticked; the YouTube schedule window, platform rows and empty cards follow the same style | Automated + offscreen screenshots |
 | **Clearer scheduling pages**: Calendar has a legend (highlighted days = any platform), jumps from an empty day to the next upload day, and shows the YouTube management card only on days with YouTube uploads; Auto Upload has two plain sections — **Watched folders** ("Watch a Folder…" picks the folder, details, times and platforms; folder import status sits below) and **Individual videos** ("Upload One Video…" picks a library video and opens it on its Upload step; "Choose Videos…" builds a queue: queue name at the top, no channel dropdown, tick-box video list with a chosen count, Tick All Ready / Clear, Add Videos From Your Mac…, and a preview of the first video); the sidebar switch shows On/Off and turns amber with "N … won't upload until you turn this on" while anything is held back, and the same warning bar appears on Dashboard, Schedule, Calendar and Auto Upload; regular refreshes no longer disable buttons or rebuild unchanged lists (no flicker), and clicks made during a refresh run right after it | Automated + offscreen screenshots |
 | **Backup Buffer and Cloudinary accounts** (Settings, schema 15): when a Cloudinary account is over its plan's limits the next one takes the video automatically (skipped for 24 h, or until Check All finds it under its limits); more Buffer accounts (separate sign-ups with the same social accounts connected, each signed in from Settings): when one Buffer account hits its API limit (429) or refuses a post over a plan limit, the post goes through the next one automatically, to the same account only; the same Buffer account can't be added twice; posts keep their copy's account and their sign-in | Automated with controlled Buffer/Cloudinary; **not yet used live**; the providers' exact over-limit responses are assumed (Cloudinary HTTP 420/429 or a quota/usage-limit message; Buffer 429 or a refusal mentioning a limit/quota/upgrade) |
+| **Editable auto uploads and queues** (2026-10-24, schema 17): Auto Upload shows Individual videos first (one "Add Videos…" button: one video, or several in a queue) and Watched folders second; each auto upload and each queue is one card for all its platforms with Edit…, Pause/Resume and Delete… (Delete stops every platform and, when nothing else uses it, the folder; uploaded videos are never touched); edits apply to every video not uploaded yet (YouTube re-enrolls waiting videos with the new details; Buffer sends the next video with the new settings); queues send TikTok/Instagram/Facebook videos to Buffer one at a time, after the previous one posts; queues can change videos, order, times, platforms and name | Automated + offscreen screenshots; not yet used live |
+| **Upload fixes** (2026-10-24): a YouTube upload still processing is checked again automatically (every minute, then every 15 minutes, for two days) and no longer blocks other uploads; calendar/dashboard rows line up and show one row per video (the YouTube title comes from its details, not the file name); YouTube "Fits" is decided by the app from length and shape; the Upload step hides its When/Upload controls once nothing is left to upload, and done platforms say Uploaded/Posted/Scheduled; Schedule lists every YouTube upload (now or scheduled) in a "YouTube uploads" card with Open on YouTube; the TikTok, Instagram and Facebook cards match it (Open on <platform> for posted videos, "Posted" instead of "Sent by Buffer", Cancel Post only while a post can still be cancelled) | Automated |
 | **Instagram Reels and Facebook Page Reels via Buffer** (Stage 20): one shared Buffer sign-in, per-platform limits ("Fits on"), Post Now / Schedule (editor pages 6–7), status, duplicates, reconciliation, Auto Upload (folder uploads and upload queues) with separate approvals, Dashboard cards and views | Automated + native Cocoa harness with controlled Buffer/Cloudinary; **not yet used live** |
 
-Tests: 891 automated, plus 28 native macOS harness commands, `native_tiktok.py` and `native_social.py`. See
+Tests: 910 automated, plus 28 native macOS harness commands, `native_tiktok.py` and `native_social.py`. See
 `docs/stage-19-buffer-tiktok-verification.md` and `docs/stage-20-verification.md`.
 
 ## Pending / not verified
@@ -57,8 +59,10 @@ Tests: 891 automated, plus 28 native macOS harness commands, `native_tiktok.py` 
   refreshed daily, TikTok coverage not confirmed by Buffer's docs). Neither is live-verified.
   The Dashboard adds views up per video across platforms. Native macOS dialogs (file chooser)
   follow the macOS language.
-- Upload queues (formerly "Posting times", now on the Auto Upload page beside folder uploads): YouTube uses the approved recurring queue; TikTok picks schedule each selected
-  video individually in Buffer at the next posting times (one confirmation lists every post).
+- Video queues (Auto Upload → Individual videos): YouTube uses the approved recurring plan; TikTok,
+  Instagram and Facebook videos wait in the app and go to Buffer one at a time (each after the
+  previous one posts), so the app or the background service must be running for the next one to
+  be sent. A queued video whose details are edited waits until it is marked ready again.
 - The YouTube connection re-verifies itself every five minutes, but never while an upload is
   running or one is due within two minutes (the dispatcher needs the account lock).
 - Snapchat appears as a "Coming soon" card only.

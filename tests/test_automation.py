@@ -269,19 +269,60 @@ class AutomationTests(unittest.TestCase):
         self.f.dispatch()
         self.assertFalse(self.u.store.all())
 
-    def test_profile_edit_requires_disable_and_new_consent(self):
+    def test_profile_edit_needs_new_consent_and_applies_to_waiting_videos(self):
+        self.arrival("Old_file.mp4")  # present at authorization: never uploaded, even after edits
         identity = self.approve()
-        with self.assertRaises(ScheduleError):
-            self.service.preview(
-                self.folder, CHANNEL.id, "Edited", self.settings, identity=identity, revision=1
-            )
-        self.service.control(identity, 1, "disable")
+        self.arrival()
+        self.scan()
+        [queued] = [i for i in self.f.r.state()["items"] if i["state"] == "Queued"]
+        plan = self.state()["profiles"][0]["plan_id"]
         self.settings["title_template"] = "New {filename}"
+        with self.assertRaises(ScheduleError):  # an out-of-date edit is refused
+            self.service.preview(
+                self.folder, CHANNEL.id, "Edited", self.settings, identity=identity, revision=2
+            )
+        # No need to turn it off first; approving the edit replaces it in one step.
         proposal = self.service.preview(
             self.folder, CHANNEL.id, "Edited", self.settings, identity=identity, revision=1
         )
         self.service.approve(proposal, Event(), consent=True, declarations=True, restrictions=True)
-        self.assertEqual(self.state()["profiles"][0]["revision"], 2)
+        profile = self.state()["profiles"][0]
+        self.assertEqual((profile["revision"], profile["plan_id"]), (2, plan))
+        self.assertEqual(len(self.f.r.state()["plans"]), 1)  # the same plan, new times
+        old = next(i for i in self.f.r.state()["items"] if i["id"] == queued["id"])
+        self.assertEqual(old["state"], "Removed")
+        self.scan()
+        items = [i for i in self.f.r.state()["items"] if i["state"] == "Queued"]
+        self.assertEqual([i["video_id"] for i in items], [queued["video_id"]])
+        self.assertEqual(items[0]["snapshot"]["metadata"]["title"], "New First title")
+        prep = PreparationStore(self.u.library).get(queued["video_id"])
+        self.assertEqual(prep.metadata.title, "New First title")
+
+    def test_edit_keeps_details_written_by_hand(self):
+        identity = self.approve()
+        self.arrival()
+        self.scan()
+        [queued] = self.f.r.state()["items"]
+        store = PreparationStore(self.u.library)
+        prep = store.get(queued["video_id"])
+        store.save(prep.video_id, replace(prep.metadata, title="My own title"), prep.revision)
+        self.settings["title_template"] = "New {filename}"
+        self.service.approve(
+            self.service.preview(
+                self.folder, CHANNEL.id, "Edited", self.settings, identity=identity, revision=1
+            ),
+            Event(),
+            consent=True,
+            declarations=True,
+            restrictions=True,
+        )
+        self.scan()
+        self.assertEqual(store.get(queued["video_id"]).metadata.title, "My own title")
+        self.assertFalse([i for i in self.f.r.state()["items"] if i["state"] == "Queued"])
+        decisions = [d for d in self.state()["decisions"] if d["profile_revision"] == 2]
+        self.assertEqual(
+            [d["state"] for d in decisions if d["name"] == "First_title.mp4"], ["Needs review"]
+        )
 
     def test_profile_approval_rollback(self):
         with patch.object(self.service, "event", side_effect=sqlite3.OperationalError("disk full")):
@@ -468,7 +509,8 @@ class AutomationTests(unittest.TestCase):
         self.scan()
         self.service.control(identity, 1, "remove")
         self.assertTrue(self.state()["profiles"][0]["removed"])
-        self.assertEqual(len(self.f.r.state()["items"]), 1)
+        # Kept as history, but nothing is left waiting to upload.
+        self.assertEqual([i["state"] for i in self.f.r.state()["items"]], ["Removed"])
         self.assertTrue(self.root.exists())
 
     def test_global_pause_retains_queue(self):

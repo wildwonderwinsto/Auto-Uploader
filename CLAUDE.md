@@ -31,7 +31,7 @@ Never start a new stage without explicit instruction.
 .venv/bin/python -m shortspublisher --data-dir /tmp/sp-test        # isolated run
 ./install.sh                                                        # env + FFmpeg + ShortsScheduler.app
 open ShortsScheduler.app        # the USER's real data (~/Library/Application Support/ShortsPublisher/ShortsPublisher) — don't run
-QT_QPA_PLATFORM=offscreen .venv/bin/python -m unittest discover -s tests   # 891 tests, ~11 min
+QT_QPA_PLATFORM=offscreen .venv/bin/python -m unittest discover -s tests   # 910 tests, ~12 min
 cd tests && QT_QPA_PLATFORM=offscreen PYTHONPATH=../src ../.venv/bin/python -m unittest test_shell  # focused
 .venv/bin/ruff check . && .venv/bin/ruff format --check . && .venv/bin/mypy
 ```
@@ -53,10 +53,10 @@ isolated Keychain/LaunchAgent identifiers. Python 3.12 in `.venv` (uv), PySide6 
 | Upload | `uploads.py`, `upload_http.py` (resumable protocol), `upload_store.py`, `ui/uploads.py` |
 | Scheduling | `scheduling.py`, `execution.py` (+`_schema`), `ui/scheduling.py`, `ui/execution.py` |
 | Background | `background.py` (LaunchAgent), `background_state.py`, `ui/background.py` |
-| Folders/recurring/auto | `watching.py`, `recurring.py`, `cadence.py`, `automation.py` (+ `*_schema.py`), matching `ui/*.py` |
+| Folders/recurring/auto | `watching.py`, `recurring.py`, `cadence.py`, `automation.py` (+ `*_schema.py`), matching `ui/*.py`; `queues.py` + `queues_schema.py` (v17: a queue's name, times, platforms, YouTube plan and waiting Buffer videos) |
 | Buffer (TikTok, Instagram, Facebook) | `buffer.py` (PKCE OAuth, rotating refresh under a file lock, GraphQL), `hosting.py` (Cloudinary public copy), `social.py` (`Platform` specs + `BufferPostService`: posts, duplicates, status, automation, shared sign-in), `social_schema.py` (v13), `backups_schema.py` (v15) + `fallback_schema.py` (v16): backup Buffer/Cloudinary accounts, `ui/social.py` (`SocialController` per platform); `tiktok.py`, `tiktok_schema.py`, `ui/tiktok.py` keep Stage 19 names; relay page `docs/buffer-oauth-relay.html` |
 | Dashboard | `activity.py` (pure cross-platform timeline), `ui/dashboard.py`; read-only view counts via `AccountService.statistics` |
-| Auto upload | `ui/autoupload.py` (one editor → a YouTube profile and a profile per Buffer platform, each with its own consent, approved in turn) |
+| Auto upload | `ui/autoupload.py` (one editor → a YouTube profile and a profile per Buffer platform, each with its own consent, approved in turn; also edits an existing one), `ui/autocards.py` (one card per auto upload: profiles sharing folder + name), `ui/queuecards.py` (one card per video queue) |
 | Shared UI | `ui/window.py`, `ui/theme.py`, `ui/components.py` (cards, pills, `Section`, `CardGrid`, `flow`), `ui/icons.py` (SVG icons + platform logos), `ui/formatting.py` (dates/times) |
 
 Tests: `tests/test_*.py` (unittest, discovered), `tests/native_*.py` (manual native harnesses),
@@ -65,9 +65,10 @@ Tests: `tests/test_*.py` (unittest, discovered), `tests/native_*.py` (manual nat
 
 ## Database
 
-SQLite, `PRAGMA user_version`; current schema **16** (`library.SCHEMA_VERSION`; v12 = TikTok tables,
+SQLite, `PRAGMA user_version`; current schema **17** (`library.SCHEMA_VERSION`; v12 = TikTok tables,
 v13 = Instagram/Facebook tables, v14 = daily limits up to 100, v15 = backup Buffer and Cloudinary
-accounts, v16 = each backup Buffer account's own sign-in). Opening a
+accounts, v16 = each backup Buffer account's own sign-in, v17 = cross-platform video queues;
+approved by the owner 2026-10-24, applied by the app after its launch backup). Opening a
 library migrates it forward inside one `BEGIN IMMEDIATE` transaction; newer unknown versions are
 refused; failures never reset data. Add migrations as a new `*_schema.py`-style additive step and a
 fixture/test. The real library lives in the default data folder; `ShortsScheduler.app` runs
@@ -132,11 +133,15 @@ migration of the user's real library needs the user's explicit approval and a fr
   every dialog); don't hand-stretch buttons full width. Use `icon_button`, `flow`/`row`, `card` and
   `pill`; icons come from `ui/icons.py` (never emoji). Nothing collapses: `Section` is always open
   (the user dislikes reveal/dropdown sections); developer diagnostics go in tooltips or Settings.
-- Auto Upload page: two sections only — **Watched folders** (`automation.new` "Watch a Folder…" →
-  the Auto Upload editor; `WatchPanel` is just "Folder activity") and **Individual videos**
-  (`recurring.single` "Upload One Video…" → `PickVideo` → `VideosPage.open_upload`, and
-  `recurring.new` "Choose Videos…" → `RecurringEditor`, whose videos are tick boxes:
-  `checked()`, not selection). The sidebar switch
+- Auto Upload page: two sections, one button each — **Individual videos** first
+  (`recurring.add` "Add Videos…" → `AddVideos`: "One video" = `recurring.single` → `PickVideo` →
+  `VideosPage.open_upload`; "Several" = `recurring.new` → `RecurringEditor`, whose videos are tick
+  boxes in upload order: `checked()`, not selection; Move Up/Down) and **Watched folders**
+  (`automation.new` "Watch a Folder…" → the Auto Upload editor; `WatchPanel` is just "Folder
+  activity"). Each auto upload and each queue is one card (`views` / `act(action, key)`): Edit…,
+  Pause/Resume Auto Upload (or Queue), Delete… — they act on every platform, never on posted
+  videos. Editing applies to everything not uploaded yet; Buffer gets one video at a time per auto
+  upload or queue. The sidebar switch
   (`ExecutionController.rail`) and page banners (`ExecutionController.banner()`) warn whenever
   something is held back by the global pause. Timer-driven refreshes ("load", "scan", quiet
   Buffer polls) must never disable buttons or rebuild unchanged lists (flicker); clicks made

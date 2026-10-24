@@ -1,9 +1,11 @@
 """Explicit upload confirmation, acknowledged-byte progress, and durable history."""
 
+import time
+from datetime import datetime, timedelta
 from threading import Event
 from typing import Any
 
-from PySide6.QtCore import Qt, QThread, QUrl, Signal, Slot
+from PySide6.QtCore import Qt, QThread, QTimer, QUrl, Signal, Slot
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QDialog,
@@ -18,7 +20,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..accounts import AccountView
-from ..upload_store import Attempt
+from ..upload_store import PROCESSED, SETTLED, Attempt
 from ..uploads import UploadService
 from .components import FlowLayout, Section, icon_button, row
 from .formatting import duration, file_size, timestamp, upload_status
@@ -138,6 +140,9 @@ class UploadPanel(QWidget):
         self.reviewed = False
         self.planned_privacy = ""
         self.attempts: list[Attempt] = []
+        self.quiet = False  # the running work is a background processing check
+        self.queued: tuple[str, Any] | None = None  # a click that arrived during that check
+        self.checked: dict[str, float] = {}  # attempt → when its processing was last asked
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 4, 0, 4)
         layout.setSpacing(12)
@@ -223,6 +228,11 @@ class UploadPanel(QWidget):
         self.history_details = Section("Selected upload")
         self.history_details.body.addWidget(self.details)
         layout.addWidget(self.history_details)
+        # YouTube keeps processing a video after it is uploaded; ask again until it is done.
+        self.processing_timer = QTimer(self)
+        self.processing_timer.setInterval(60_000)
+        self.processing_timer.timeout.connect(self.check_processing)
+        self.processing_timer.start()
         self.refresh_controls()
 
     def set_history_mode(self, history: bool) -> None:
@@ -256,7 +266,7 @@ class UploadPanel(QWidget):
         self.refresh_controls()
 
     def refresh_controls(self) -> None:
-        busy = self.worker is not None
+        busy = self.worker is not None and not self.quiet
         reason = "Ready. Choose how to upload; you will confirm on the next screen."
         if busy:
             reason = "An upload operation is active. Stop or wait before starting another."
@@ -275,17 +285,14 @@ class UploadPanel(QWidget):
             for a in self.attempts
             if not a.released
             and a.state != "Cancelled"
-            and (
-                a.video_id == self.video_id
-                or a.state not in ("Uploaded Private", "Public Verified", "Failed")
-            )
+            and (a.video_id == self.video_id or a.state not in SETTLED)
         ]:
             # Same gate as before; the wording says which situation the user is in.
             done = [
                 a
                 for a in blocking
                 if a.video_id == self.video_id
-                and a.state in ("Uploaded Private", "Public Verified")
+                and a.state in ("Uploaded Private", "Public Verified", "Processing")
             ]
             reason = (
                 "This video has already been uploaded — see Upload History below. "
@@ -358,12 +365,19 @@ class UploadPanel(QWidget):
             self.start(action, old.id)
 
     def start(self, action: str, argument: Any = None) -> None:
+        if self.worker and self.quiet and action != "processing" and not self.closing:
+            self.queued = (action, argument)  # runs as soon as the background check ends
+            return
         if self.worker or self.closing:
             return
+        self.quiet = action == "processing"
         self.worker = UploadWorker(self.service, action, argument, self)
         self.worker.result.connect(self.receive)
         self.worker.progress.connect(self.show_progress)
         self.worker.finished.connect(self.finished)
+        if self.quiet:
+            self.worker.start()  # nothing on screen changes unless a result does
+            return
         self.feedback.setText(
             "Checking saved upload history…"
             if action == "history"
@@ -373,16 +387,49 @@ class UploadPanel(QWidget):
         self.refresh_controls()
         self.worker.start()
 
+    def check_processing(self) -> None:
+        """Ask YouTube again about uploads it is still processing: every minute for the first
+        half hour, then every 15 minutes, for two days."""
+        moment = time.monotonic()
+        current = datetime.now().astimezone()
+        due = []
+        for a in self.attempts:
+            if (
+                a.released
+                or not a.remote_id
+                or a.state not in ("Processing", "Public Verified", "Uploaded Private")
+                or a.processing in PROCESSED
+            ):
+                continue
+            try:
+                age = current - datetime.fromisoformat(a.completed_at or a.updated_at)
+            except ValueError:
+                continue
+            gap = 60 if age < timedelta(minutes=30) else 900
+            if age < timedelta(days=2) and moment - self.checked.get(a.id, 0.0) >= gap - 5:
+                due.append(a.id)
+        if due and not self.worker and not self.closing:
+            for identity in due:
+                self.checked[identity] = moment
+            self.start("processing", due)
+
     @Slot(object)
     def receive(self, result: dict[str, Any]) -> None:
+        if self.quiet:
+            # Only a changed result is shown; the list keeps its selection and nothing flickers.
+            if result.get("attempts", self.attempts) != self.attempts:
+                self.attempts = result["attempts"]
+                if self.history.count() == len(self.attempts):
+                    for index, attempt in enumerate(self.attempts):
+                        self.history.item(index).setText(self.history_text(attempt))
+                    self.select_history()
+                else:
+                    self.list_history()
+                self.changed.emit()
+            return
         if "attempts" in result:
             self.attempts = result["attempts"]
-            self.history.clear()
-            for attempt in self.attempts:
-                item = QListWidgetItem(
-                    f"{attempt.snapshot['payload']['snippet']['title']} · {attempt.requested_privacy.title()} · {upload_status(attempt.state, attempt.processing)}"
-                )
-                self.history.addItem(item)
+            self.list_history()
             if self.attempts:
                 self.history.setCurrentRow(0)
         if "error" in result:
@@ -394,14 +441,30 @@ class UploadPanel(QWidget):
         else:
             self.feedback.setText("No upload attempts yet.")
 
+    @staticmethod
+    def history_text(attempt: Attempt) -> str:
+        return (
+            f"{attempt.snapshot['payload']['snippet']['title']} · "
+            f"{attempt.requested_privacy.title()} · "
+            f"{upload_status(attempt.state, attempt.processing)}"
+        )
+
+    def list_history(self) -> None:
+        row = self.history.currentRow()
+        self.history.blockSignals(True)
+        self.history.clear()
+        for attempt in self.attempts:
+            self.history.addItem(QListWidgetItem(self.history_text(attempt)))
+        self.history.blockSignals(False)
+        if self.attempts:
+            self.history.setCurrentRow(max(0, min(row, len(self.attempts) - 1)))
+
     @Slot(object)
     def show_progress(self, attempt: Attempt) -> None:
         for index, old in enumerate(self.attempts):
             if old.id == attempt.id:
                 self.attempts[index] = attempt
-                self.history.item(index).setText(
-                    f"{attempt.snapshot['payload']['snippet']['title']} · {attempt.requested_privacy.title()} · {upload_status(attempt.state, attempt.processing)}"
-                )
+                self.history.item(index).setText(self.history_text(attempt))
                 if self.history.currentRow() == index:
                     self.select_history()
                 break
@@ -418,6 +481,14 @@ class UploadPanel(QWidget):
         worker, self.worker = self.worker, None
         if worker:
             worker.deleteLater()
+        if self.quiet:
+            self.quiet = False
+            queued, self.queued = self.queued, None
+            if queued and not self.closing:
+                self.start(*queued)
+            elif self.closing:
+                self.idle.emit()  # the quit was waiting for this check to end
+            return
         self.loaded = True
         if self.progress.maximum() == 0:
             self.progress.setRange(0, 100)

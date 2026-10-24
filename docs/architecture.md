@@ -748,3 +748,46 @@ TikTok, Instagram and Facebook after YouTube, each isolated from the others' fai
 Settings); the video editor's pages 6 and 7 are Instagram and Facebook. See
 [Stage 20 verification](stage-20-verification.md).
 
+
+## Editable auto uploads and cross-platform queues (2026-10-24, schema 17)
+
+The Auto Upload page shows **Individual videos** first (one "Add Videos…" button that asks "one
+video" or "several, one at a time") and **Watched folders** second. Each auto upload is still one
+saved profile per platform, each with its own approval, but `ui/autocards.py` groups profiles that
+share a folder and a name into one card. Its Edit, Pause and Delete act on every platform at once;
+Delete also stops watching the folder when nothing else uses it. Video queues get the same
+treatment in `ui/queuecards.py`. Cards are rebuilt only when what they show changes, so timer
+refreshes don't flicker.
+
+Editing no longer needs the old "turn it off first" step. The edited profile is replaced in one
+transaction when its new approval is given; until then it keeps running. The new approval excludes
+every file in the folder except the videos the old revision was still waiting to upload:
+- YouTube: `Needs review` / `Queue full`, or queued but not started. Their queue entries are
+  marked `Removed` and they enrol again under the new revision. Details the auto upload wrote
+  itself, never edited by hand (`AutomationService.owned`), are rewritten with the new template.
+  Hand-edited details are kept and the video needs review.
+- Buffer: `Waiting for next opportunity` / `Needs review`.
+
+The profile keeps its own recurring plan, which takes the new times.
+
+Queues (`queues.py`, `queues_schema.py`, v17) are the `queues` and `queue_items` tables:
+- `queues` holds the name, rule, Buffer platforms, background flag and the linked YouTube
+  recurring plan (`plan_id`).
+- `queue_items` holds each Buffer platform's waiting videos, in order.
+
+Buffer queue posts are no longer all scheduled in Buffer at approval. In each platform's
+`reconcile`, `BufferPostService.advance_queues` sends a queue's next ready video to Buffer only
+after the previous one has left Buffer's pending states. It uses the video's current details
+(`caption_from`) and the next free posting time (`next_slot`, shared with auto uploads), so edits
+apply to every video not yet sent. A video already sent is never added again. Folder scans now
+run that Buffer step even when no folder is watched.
+
+Editing a YouTube queue is `RecurringService.preview(..., replace=True)`. It is approved again
+with `BatchConfirmation`; its unstarted entries are replaced and its rule changes in one
+transaction. The duplicate checks skip the plan's own unstarted entries
+(`reservation_conflict(..., queue=)`). A saved queue is on immediately (its plan is resumed).
+YouTube-only plans made before v17 still show as queues while they have videos waiting.
+
+Uploads that YouTube is still processing are settled (`upload_store.SETTLED`): they no longer
+hold up other uploads, schedules or queues. `UploadPanel` asks YouTube again, quietly, every
+minute for half an hour and then every 15 minutes for two days. A failed check changes nothing.
