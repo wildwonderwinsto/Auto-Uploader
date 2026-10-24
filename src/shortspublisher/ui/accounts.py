@@ -410,15 +410,22 @@ class AccountsPage(QScrollArea):
         guided = not self.checklist.complete and not view.choices
         self.checklist.setVisible(guided)
         # The checklist says what to do next; the message only adds something when it matters.
-        self.feedback.setVisible(not guided or view.message not in ROUTINE)
+        # A plain "verified" note on a working connection would only make this card taller.
+        settled = bool(
+            connection and view.upload_allowed and view.message.startswith("Channel verified")
+        )
+        self.feedback.setVisible((not guided or view.message not in ROUTINE) and not settled)
         self.connect_button.setVisible(connection is None and not view.choices and not guided)
         self.refresh_button.setVisible(connection is not None)
         self.disconnect_button.setVisible(connection is not None)
         self.upload_permission.setVisible(connection is not None and not guided)
+        # Same size and style as the other buttons, so the row stays even.
         self.upload_permission.setText(
-            "Sign In Again for Uploads…" if view.upload_allowed else "Allow Uploads…"
+            "Sign In Again…" if view.upload_allowed else "Allow Uploads…"
         )
-        restyle(self.upload_permission, "Ghost")
+        self.upload_permission.setToolTip(
+            "Sign in to Google again to renew upload permission" if view.upload_allowed else ""
+        )
         self.channels.clear()
         for channel in view.choices:
             self.channels.addItem(f"{channel.title} · {channel.id}", channel.id)

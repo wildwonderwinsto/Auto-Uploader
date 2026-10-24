@@ -3,7 +3,15 @@
 from collections.abc import Callable, Iterable
 
 from PySide6.QtCore import QEvent, QObject, QPoint, QRect, QSize, Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import QDesktopServices, QPainter, QPaintEvent, QPixmap, QResizeEvent
+from PySide6.QtGui import (
+    QColor,
+    QDesktopServices,
+    QFont,
+    QPainter,
+    QPaintEvent,
+    QPixmap,
+    QResizeEvent,
+)
 from PySide6.QtWidgets import (
     QBoxLayout,
     QCheckBox,
@@ -21,6 +29,7 @@ from PySide6.QtWidgets import (
     QWidgetItem,
 )
 
+from . import theme
 from .icons import PLATFORM_NAMES, icon, image, logo, pixmap
 
 
@@ -223,6 +232,28 @@ def platform_top(platform: str, subtitle: str, status: QLabel) -> QHBoxLayout:
     top.addLayout(names, 1)
     top.addWidget(status, 0, Qt.AlignmentFlag.AlignTop)
     return top
+
+
+def initial_avatar(name: str, side: int = 44) -> QPixmap:
+    """A round avatar with the account's first letter, for accounts without a picture here."""
+    ratio = 2.0
+    result = QPixmap(int(side * ratio), int(side * ratio))
+    result.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(result)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(QColor(theme.ACCENT_SOFT))
+    painter.drawEllipse(result.rect())
+    font = QFont()
+    font.setPixelSize(int(side * ratio * 0.42))
+    font.setBold(True)
+    painter.setFont(font)
+    painter.setPen(QColor(theme.ACCENT_TEXT))
+    letter = next((c for c in name if c.isalnum()), "?").upper()
+    painter.drawText(result.rect(), Qt.AlignmentFlag.AlignCenter, letter)
+    painter.end()
+    result.setDevicePixelRatio(ratio)
+    return result
 
 
 def divider() -> QFrame:

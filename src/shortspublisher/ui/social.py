@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QHBoxLayout,
     QInputDialog,
+    QLabel,
     QLineEdit,
     QListWidget,
     QListWidgetItem,
@@ -69,6 +70,7 @@ from .components import (
     flow,
     guide,
     icon_button,
+    initial_avatar,
     natural,
     open_page,
     pill,
@@ -432,7 +434,10 @@ class SocialController(QObject):
         )
         restyle(self.card_status, "Good" if connected else "Bad" if connection else "Neutral")
         self.card_account.setVisible(bool(connection))
+        self.card_avatar.setVisible(bool(connection))
         self.card_account.setText(f"{handle(self.key, connection)} · through Buffer")
+        if connection:
+            self.card_avatar.setPixmap(initial_avatar(handle(self.key, connection)))
         if connection:
             self.card_detail.setText(
                 "Ready to post once video hosting is set up in Settings."
@@ -448,11 +453,11 @@ class SocialController(QObject):
                 if client
                 else "Needs a one-time Buffer app client setup in Settings first."
             )
+        # Short once connected, so every account card's buttons fit on one even row.
         self.connect_button.setText(
-            f"Reconnect {self.name} via Buffer…"
-            if connection
-            else f"Connect {self.name} via Buffer…"
+            "Reconnect…" if connection else f"Connect {self.name} via Buffer…"
         )
+        self.connect_button.setToolTip(f"Reconnect {self.name} via Buffer" if connection else "")
         restyle(self.connect_button, "" if connected else "Primary")
         self.connect_button.setEnabled(bool(client) and not self.worker)
         self.disconnect_button.setVisible(bool(connection))
@@ -537,12 +542,23 @@ class SocialController(QObject):
         body.addLayout(
             platform_top(self.key, "Posts through your Buffer account", self.card_status)
         )
+        # Laid out like YouTube's card: a round avatar, the account, then one line under it.
+        self.card_avatar = QLabel()
+        self.card_avatar.setFixedSize(44, 44)
         self.card_account = text("", "Subheading")
         self.card_detail = text("", "Muted")
+        names = QVBoxLayout()
+        names.setSpacing(2)
+        names.addWidget(self.card_account)
+        names.addWidget(self.card_detail)
+        account = QHBoxLayout()
+        account.setSpacing(12)
+        account.addWidget(self.card_avatar)
+        account.addLayout(names, 1)
+        body.addLayout(account)
         self.card_feedback = text("", "Muted")
         self.card_feedback.hide()
-        for widget in (self.card_account, self.card_detail, self.card_feedback):
-            body.addWidget(widget)
+        body.addWidget(self.card_feedback)
         self.checklist = self.setup_steps()
         body.addWidget(self.checklist)
         self.connect_button = icon_button(
