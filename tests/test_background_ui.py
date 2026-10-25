@@ -133,3 +133,19 @@ class BackgroundUiTests(unittest.TestCase):
         with patch.object(self.page, "act") as act:
             self.f.c.stop_active()
             act.assert_called_once_with("stop")
+
+    def test_sidebar_says_when_the_switched_on_service_has_stopped(self):
+        c = self.f.c
+        c.data["paused"] = 0
+        c.data["background"] = {
+            "enabled": 1,
+            "requested": 1,
+            "owner": {"kind": "background", "state": "Error"},
+        }
+        c.render_switch()
+        self.assertIn("Background uploading stopped", c.state.text())
+        self.assertEqual(c.rail.objectName(), "RailStatusWarn")
+        c.data["background"]["owner"] = {"kind": "background", "state": "Running"}
+        c.render_switch()
+        self.assertIn("go out on time", c.state.text())
+        self.assertEqual(c.rail.objectName(), "RailStatus")

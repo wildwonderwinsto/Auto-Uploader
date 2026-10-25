@@ -128,7 +128,8 @@ def run(publisher: AutomaticPublisher, cancel: Event, keeper: Keeper | None = No
             log.info("Worker shutdown complete; no automatic resume")
             return 0
         except Exception:
-            log.error("Background operation failed safely; inspect persisted history")
+            # The cause, so a stop is never a mystery (no credentials are ever logged).
+            log.exception("Background operation failed safely; inspect persisted history")
             owner.heartbeat(
                 "Error", "Background operation failed. Inspect history and restart explicitly."
             )

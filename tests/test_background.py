@@ -108,12 +108,25 @@ class BackgroundTests(unittest.TestCase):
         self.assertEqual(self.u.http.initiations, 0)
         self.assertIn("desktop-only", self.s.get(job.id).reason)
 
-    def test_enabled_service_prevents_desktop_dispatch(self):
+    def test_running_service_prevents_desktop_dispatch(self):
+        job = self.active()
+        self.manager.configure(enabled=True, requested=True, consent=True)
+        worker = Ownership(self.u.library, "background")
+        with worker.acquire() as owned:  # a live worker holds the lock for its whole life
+            self.assertTrue(owned)
+            self.f.due(job)
+            AutomaticPublisher(self.s, self.u.service).dispatch(Event(), lambda _: None)
+        self.assertEqual(self.u.http.initiations, 0)
+
+    def test_stopped_service_never_leaves_uploads_to_be_missed(self):
+        # Switched on, but its worker stopped (e.g. an update changed the library): nothing
+        # holds the dispatcher lock, so the open app uploads on time instead.
         job = self.active()
         self.manager.configure(enabled=True, requested=True, consent=True)
         self.f.due(job)
         self.a.dispatch(Event(), lambda _: None)
-        self.assertEqual(self.u.http.initiations, 0)
+        self.assertEqual(self.u.http.initiations, 1)
+        self.assertNotEqual(self.s.get(job.id).state, "Missed")
 
     def test_safe_handoff_after_stop(self):
         job = self.active()
@@ -378,15 +391,19 @@ class BackgroundTests(unittest.TestCase):
         self.assertTrue(self.u.path.exists())
         self.assertIsNotNone(self.u.accounts.repository.connection())
 
-    def test_failed_start_retains_conservative_ownership_intent(self):
+    def test_failed_start_keeps_intent_and_the_open_app_covers(self):
         self.lifecycle()
         self.manager.perform("enable", consent=True)
         self.calls.side_effect = ServiceError("controlled launch failure")
         with self.assertRaises(ServiceError):
             self.manager.perform("start")
         self.assertTrue(read(self.u.library)["requested"])
+        # No worker holds the dispatcher lock, so the open app dispatches (uploads aren't
+        # missed); a worker that starts later waits for the lock.
         with Ownership(self.u.library).acquire() as owned:
-            self.assertFalse(owned)
+            self.assertTrue(owned)
+            with Ownership(self.u.library, "background").acquire() as worker:
+                self.assertFalse(worker)
 
     def test_stale_live_pid_is_not_reported_running(self):
         self.lifecycle()

@@ -386,20 +386,33 @@ class ExecutionController(QObject):
             if n
         ]
 
+    def service_stopped(self) -> bool:
+        """Background uploading is switched on but its service isn't running (it stopped, for
+        example after an update). This app then uploads on time, but only while it is open."""
+        state = self.data.get("background") or {}
+        owner = state.get("owner") or {}
+        return bool(state.get("enabled") and state.get("requested")) and (
+            owner.get("kind") != "background" or owner.get("state") in ("Stopped", "Error")
+        )
+
     def render_switch(self) -> None:
         """The sidebar switch and every page's warning, from the latest state."""
         if not self.data:
             return
         paused = bool(self.data.get("paused", 1))
         waiting = self.waiting() if paused else []
+        stopped = self.service_stopped()
         self.light.setText("Off" if paused else "On")
         restyle(self.light, ("Warn" if waiting else "Neutral") if paused else "Good")
-        restyle(self.rail, "RailStatusWarn" if waiting else "RailStatus")
+        restyle(self.rail, "RailStatusWarn" if waiting or stopped else "RailStatus")
         self.state.setText(
             f"{' · '.join(waiting)} won't upload until you turn this on."
             if waiting
             else "Nothing uploads automatically."
             if paused
+            else "Background uploading stopped: uploads go out only while this app is open. "
+            "Restart it in Settings."
+            if stopped
             else "Scheduled and queued uploads go out on time."
         )
         self.button.setText("Turn On" if paused else "Pause All")

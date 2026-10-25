@@ -31,7 +31,7 @@ Never start a new stage without explicit instruction.
 .venv/bin/python -m shortspublisher --data-dir /tmp/sp-test        # isolated run
 ./install.sh                                                        # env + FFmpeg + ShortsScheduler.app
 open ShortsScheduler.app        # the USER's real data (~/Library/Application Support/ShortsPublisher/ShortsPublisher) — don't run
-QT_QPA_PLATFORM=offscreen .venv/bin/python -m unittest discover -s tests   # 927 tests, ~12 min
+QT_QPA_PLATFORM=offscreen .venv/bin/python -m unittest discover -s tests   # 929 tests, ~12 min
 cd tests && QT_QPA_PLATFORM=offscreen PYTHONPATH=../src ../.venv/bin/python -m unittest test_shell  # focused
 .venv/bin/ruff check . && .venv/bin/ruff format --check . && .venv/bin/mypy
 ```
@@ -99,6 +99,10 @@ migration of the user's real library needs the user's explicit approval and a fr
   execution claims. An uncertain previous upload needs reconciliation, never a blind retry.
 - Never install, enable or modify the production LaunchAgent (`com.shortspublisher.publisher`)
   unprompted. Background-service consent is separate from global publishing consent.
+  The dispatcher OS lock decides who dispatches: a live worker holds it for its whole life, so
+  the open app dispatches whenever it gets the lock, even while the service is switched on (a
+  stopped service, e.g. after an update migrated the library, never leaves uploads to be
+  missed); the sidebar then says the service stopped. Restarting the service is the user's call.
 - Never modify, move, transcode or delete original source videos.
 - Don't read real credentials. Tests use synthetic Keychain identifiers and controlled providers.
 - Don't kill running ShortsPublisher processes or interfere with an active upload.

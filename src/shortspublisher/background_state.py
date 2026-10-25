@@ -94,10 +94,14 @@ class Ownership:
             with closing(self.library.connect()) as db, db:
                 db.execute("BEGIN IMMEDIATE")
                 config = db.execute("SELECT * FROM background_config WHERE id=1").fetchone()
+                # The OS lock is held for a running worker's whole life, so holding it here
+                # means no worker is dispatching. The desktop then dispatches even while the
+                # service is switched on: one that stopped (e.g. after an update changed the
+                # library) must never leave approved uploads to be missed.
                 permitted = (
                     bool(config["enabled"] and config["requested"])
                     if self.kind == "background"
-                    else not config["requested"]
+                    else True
                 )
                 if permitted:
                     if self.depth == 0:
