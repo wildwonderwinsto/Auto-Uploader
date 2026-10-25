@@ -6,10 +6,11 @@ each new video you add. Workers own the reads and writes."""
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
-from PySide6.QtCore import QObject, Qt, QThread, Signal
+from PySide6.QtCore import QObject, Qt, Signal
 from PySide6.QtWidgets import (
     QDialog,
     QHBoxLayout,
@@ -22,7 +23,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..defaults import AI_PLATFORMS, DefaultsStore, Details
-from .components import icon_button, row
+from .components import icon_button, in_background, row
 from .icons import PLATFORM_NAMES
 from .videos import text
 
@@ -49,20 +50,6 @@ def describe(details: Details) -> str:
         f"{PLATFORM_NAMES[p]}: AI-generated label {answer(details.ai.get(p))}" for p in AI_PLATFORMS
     ]
     return "\n".join(lines)
-
-
-class Task(QThread):
-    done = Signal(object)
-
-    def __init__(self, job: Callable[[], Any], parent: QObject) -> None:
-        super().__init__(parent)
-        self.job = job
-
-    def run(self) -> None:
-        try:
-            self.done.emit({"ok": self.job()})
-        except Exception as exc:  # noqa: BLE001 - shown to the person, never dropped
-            self.done.emit({"error": str(exc) or "The details could not be read or saved."})
 
 
 class ReuseDetails(QDialog):
@@ -136,7 +123,7 @@ class DefaultsController(QObject):
         self.window = window
         self.store = DefaultsStore(window.videos.service.library)
         self.saved: Details | None = None
-        self.tasks: list[Task] = []
+        self.tasks: list[threading.Thread] = []
         editor = window.videos.editor
         editor.reuse.clicked.connect(self.reuse)
         editor.save_defaults.clicked.connect(self.save_current)
@@ -159,27 +146,20 @@ class DefaultsController(QObject):
         self.run(self.store.read, self.loaded)
 
     def run(self, job: Callable[[], Any], done: Callable[[Any], None]) -> None:
-        task = Task(job, self)
-        self.tasks.append(task)
-
         def finished(result: dict[str, Any]) -> None:
+            if thread in self.tasks:
+                self.tasks.remove(thread)
             if "error" in result:
                 QMessageBox.warning(self.window, "Upload defaults", result["error"])
             else:
                 done(result["ok"])
 
-        task.done.connect(finished)
-
-        def ended() -> None:
-            self.tasks.remove(task)
-            task.deleteLater()
-
-        task.finished.connect(ended)
-        task.start()
+        thread = in_background(self, job, finished)
+        self.tasks.append(thread)
 
     def request_close(self) -> bool:
-        for task in list(self.tasks):
-            task.wait()  # a small file read or write; never left running at quit
+        for thread in list(self.tasks):
+            thread.join(timeout=2)  # a small file read or write; never cut off at quit
         return True
 
     def loaded(self, details: Details | None) -> None:

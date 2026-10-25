@@ -7,15 +7,15 @@ refresh never flickers."""
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import threading
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
-from PySide6.QtCore import QObject, Qt, QThread, QTimer, Signal
+from PySide6.QtCore import QObject, Qt, QTimer
 from PySide6.QtWidgets import QGridLayout, QLabel, QProgressBar, QVBoxLayout
 
 from .. import usage
-from .components import card, restyle
+from .components import card, in_background, restyle
 from .formatting import timestamp
 from .icons import PLATFORM_NAMES, image, logo, pixmap
 from .videos import text
@@ -69,25 +69,11 @@ class Meter:
             widget.deleteLater()
 
 
-class Reader(QThread):
-    done = Signal(object)
-
-    def __init__(self, job: Callable[[], Any], parent: QObject) -> None:
-        super().__init__(parent)
-        self.job = job
-
-    def run(self) -> None:
-        try:
-            self.done.emit(self.job())
-        except Exception:  # noqa: BLE001 - the meters keep their last values
-            self.done.emit(None)
-
-
 class UsagePanel(QObject):
     def __init__(self, window: MainWindow) -> None:
         super().__init__(window)
         self.window = window
-        self.reader: Reader | None = None
+        self.reader: threading.Thread | None = None
         self.data: dict[str, Any] | None = None
         self.card, body = card(20, 12)
         heading = QVBoxLayout()
@@ -153,15 +139,12 @@ class UsagePanel(QObject):
         if self.reader:
             return
         library = self.window.videos.service.library
-        self.reader = Reader(lambda: usage.snapshot(library, datetime.now(UTC)), self)
-        self.reader.done.connect(self.loaded)
-        self.reader.finished.connect(self.read)
-        self.reader.start()
 
-    def read(self) -> None:
-        if self.reader:
-            self.reader.deleteLater()
+        def read(result: dict[str, Any]) -> None:
             self.reader = None
+            self.loaded(result.get("ok"))  # a failed read keeps the last values
+
+        self.reader = in_background(self, lambda: usage.snapshot(library, datetime.now(UTC)), read)
 
     def loaded(self, data: dict[str, Any] | None) -> None:
         if data is not None:
@@ -171,7 +154,7 @@ class UsagePanel(QObject):
     def request_close(self) -> bool:
         self.timer.stop()
         if self.reader:
-            self.reader.wait()  # one quick local read
+            self.reader.join(timeout=2)  # one quick local read
         return True
 
     def render(self) -> None:

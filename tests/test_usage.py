@@ -2,6 +2,7 @@
 
 import os
 import tempfile
+import threading
 import unittest
 from contextlib import closing
 from datetime import UTC, datetime, timedelta
@@ -10,11 +11,14 @@ from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+import shiboken6
+from PySide6.QtCore import QObject
 from PySide6.QtWidgets import QPushButton
 from support import shutdown
 
 from shortspublisher.app import build
 from shortspublisher.library import Library
+from shortspublisher.ui.components import in_background
 from shortspublisher.usage import snapshot
 
 NOW = datetime(2030, 1, 2, 15, 0, tzinfo=UTC)
@@ -100,6 +104,22 @@ class UsagePanelTests(unittest.TestCase):
             self.assertEqual(check.call_count, 2)
         labels = [b.text() for b in self.w.background.findChildren(QPushButton)]
         self.assertFalse([t for t in labels if "Usage" in t])
+
+    def test_background_job_result_arrives_on_the_gui_thread(self):
+        got = []
+        in_background(self.w, lambda: 7, got.append).join(5)
+        self.app.processEvents()
+        self.assertEqual(got, [{"ok": 7}])
+
+    def test_background_job_outliving_its_window_never_crashes(self):
+        gate, got = threading.Event(), []
+        parent = QObject()
+        thread = in_background(parent, lambda: gate.wait(5), got.append)
+        shiboken6.delete(parent)  # the window goes away while the job still runs
+        gate.set()
+        thread.join(5)
+        self.app.processEvents()
+        self.assertEqual(got, [])
 
 
 if __name__ == "__main__":

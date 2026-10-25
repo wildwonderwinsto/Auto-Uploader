@@ -1,6 +1,8 @@
 """Small presentation helpers shared across workflow pages."""
 
+import threading
 from collections.abc import Callable, Iterable
+from typing import Any
 
 from PySide6.QtCore import QEvent, QObject, QPoint, QRect, QSize, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import (
@@ -631,3 +633,38 @@ def step_pills(
         buttons.append(step)
     steps.addStretch()
     return steps, buttons
+
+
+class Relay(QObject):
+    done = Signal(object)
+
+
+def in_background(
+    parent: QObject, job: Callable[[], Any], done: Callable[[dict[str, Any]], None]
+) -> threading.Thread:
+    """Run a short job (a small file or database read) off the GUI thread; `done` gets
+    {"ok": value} or {"error": text} back on the GUI thread.
+
+    A plain Python thread, not a QThread: if the window is deleted while it runs, nothing
+    aborts; the late result is simply dropped."""
+    relay = Relay(parent)
+
+    def finished(result: dict[str, Any]) -> None:
+        relay.deleteLater()
+        done(result)
+
+    relay.done.connect(finished)
+
+    def work() -> None:
+        try:
+            result: dict[str, Any] = {"ok": job()}
+        except Exception as exc:  # noqa: BLE001 - handed to `done`, never dropped
+            result = {"error": str(exc) or "The operation failed safely."}
+        try:
+            relay.done.emit(result)
+        except RuntimeError:
+            pass  # the window has gone; nobody is waiting for this
+
+    thread = threading.Thread(target=work, name="ui-task", daemon=True)
+    thread.start()
+    return thread
