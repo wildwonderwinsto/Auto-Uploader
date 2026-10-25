@@ -116,8 +116,10 @@ If a Buffer or Cloudinary account reaches its plan's limits, add more accounts i
 
 Scheduled and automatic uploads only go out while **Auto uploading** (bottom of the sidebar) is
 **On** and ShortsScheduler is open — or turn on **Settings → Background uploading** to keep going
-while the app is closed (your Mac must stay awake, logged in and online). If something is waiting
-while Auto uploading is off, the sidebar and each page tell you.
+while the app is closed (your Mac must stay logged in and online). While Auto uploading is on and
+something is planned — a scheduled upload, a queued video or a watched folder — ShortsScheduler
+keeps your Mac and its screen awake (closing the lid still puts it to sleep). If something is
+waiting while Auto uploading is off, the sidebar and each page tell you.
 
 ## Your data
 

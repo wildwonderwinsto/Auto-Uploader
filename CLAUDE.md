@@ -52,7 +52,7 @@ isolated Keychain/LaunchAgent identifiers. Python 3.12 in `.venv` (uv), PySide6 
 | Google | `auth.py` (OAuth), `credentials.py` (Keychain), `youtube.py`, `accounts.py`, `ui/accounts.py` |
 | Upload | `uploads.py`, `upload_http.py` (resumable protocol), `upload_store.py`, `ui/uploads.py` |
 | Scheduling | `scheduling.py`, `execution.py` (+`_schema`), `ui/scheduling.py`, `ui/execution.py` |
-| Background | `background.py` (LaunchAgent), `background_state.py`, `ui/background.py` |
+| Background | `background.py` (LaunchAgent), `background_state.py`, `ui/background.py`, `awake.py` (`caffeinate` while an upload is planned) |
 | Folders/recurring/auto | `watching.py`, `recurring.py`, `cadence.py`, `automation.py` (+ `*_schema.py`), matching `ui/*.py`; `queues.py` + `queues_schema.py` (v17: a queue's name, times, platforms, YouTube plan and waiting Buffer videos) |
 | Buffer (TikTok, Instagram, Facebook) | `buffer.py` (PKCE OAuth, rotating refresh under a file lock, GraphQL), `hosting.py` (Cloudinary public copy), `social.py` (`Platform` specs + `BufferPostService`: posts, duplicates, status, automation, shared sign-in), `social_schema.py` (v13), `backups_schema.py` (v15) + `fallback_schema.py` (v16): backup Buffer/Cloudinary accounts, `ui/social.py` (`SocialController` per platform); `tiktok.py`, `tiktok_schema.py`, `ui/tiktok.py` keep Stage 19 names; relay page `docs/buffer-oauth-relay.html` |
 | Dashboard | `activity.py` (pure cross-platform timeline), `ui/dashboard.py`; read-only view counts via `AccountService.statistics` |

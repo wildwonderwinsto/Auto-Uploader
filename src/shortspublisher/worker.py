@@ -14,6 +14,7 @@ from pathlib import Path
 from threading import Event, Thread
 
 from .accounts import AccountRepository, AccountService
+from .awake import Keeper
 from .background_state import Ownership, read
 from .credentials import KeychainSessions, KeychainStore
 from .execution import AutomaticPublisher
@@ -25,12 +26,14 @@ from .uploads import UploadService
 from .watching import POLL_SECONDS, WatchService
 
 
-def run(publisher: AutomaticPublisher, cancel: Event) -> int:
+def run(publisher: AutomaticPublisher, cancel: Event, keeper: Keeper | None = None) -> int:
     """Dependency injection is for tests; the CLI always composes production services."""
     library = publisher.library
     publisher.ownership = Ownership(library, "background")
     owner = publisher.ownership
     log = logging.getLogger("shortspublisher.worker")
+    # Keeps the Mac and its display awake while an automatic upload is planned.
+    keeper = keeper or Keeper()
     with owner.acquire(wait=cancel) as acquired:
         if not acquired:
             log.warning("Worker not authorized or dispatcher already owned")
@@ -99,6 +102,7 @@ def run(publisher: AutomaticPublisher, cancel: Event) -> int:
 
             while not cancel.is_set():
                 result = publisher.dispatch(cancel, progress)
+                keeper.hold(bool(result.get("awake")))
                 for attempt in result["attempts"]:
                     progress(attempt)
                 for job in result["jobs"]:
@@ -130,6 +134,7 @@ def run(publisher: AutomaticPublisher, cancel: Event) -> int:
             )
             return 1
         finally:
+            keeper.hold(False)
             stop_monitor.set()
             cancel.set()
             if discovery_thread.is_alive():

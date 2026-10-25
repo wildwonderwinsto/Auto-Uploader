@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 from filelock import Timeout
 
 from .auth import AccountError
+from .awake import planned
 from .background_state import BACKGROUND_CONSENT, Ownership, read, validate_owner
 from .recurring import RecurringService, validate_job
 from .scheduling import Job, ScheduleError, ScheduleService, due_state, stamp
@@ -160,6 +161,7 @@ class AutomaticPublisher:
             control["executions"] = [
                 dict(r) for r in db.execute("SELECT * FROM scheduled_executions")
             ]
+            control["awake"] = planned(db)
         control["background"] = read(self.library)
         with closing(self.library.connect()) as db:
             control["background_jobs"] = [

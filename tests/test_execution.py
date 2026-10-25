@@ -1,6 +1,7 @@
 import json
 import shutil
 import sqlite3
+import sys
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
@@ -12,6 +13,7 @@ from unittest.mock import patch
 import test_scheduling as fixtures
 from upload_support import REMOTE_ID
 
+from shortspublisher.awake import Keeper
 from shortspublisher.execution import AutomaticPublisher, binding
 from shortspublisher.library import SCHEMA_VERSION, Library
 from shortspublisher.scheduling import ScheduleError
@@ -50,6 +52,28 @@ class ExecutionTests(unittest.TestCase):
 
     def test_migration_defaults_paused(self):
         self.assertEqual(self.a.status()["paused"], 1)
+
+    def test_awake_only_while_an_activated_upload_is_planned(self):
+        self.assertFalse(self.a.status()["awake"])
+        job = self.f.approve()
+        self.a.control(False)
+        self.assertFalse(self.a.status()["awake"])  # approved but not activated
+        self.a.authorize(job.id, job.revision, Event())
+        self.assertTrue(self.a.status()["awake"])
+        self.a.control(True)
+        self.assertFalse(self.a.status()["awake"])  # nothing uploads while paused
+
+    def test_keeper_holds_and_releases(self):
+        keeper = Keeper((sys.executable, "-c", "import time; time.sleep(60)"))
+        keeper.hold(True)
+        process = keeper.process
+        self.assertTrue(keeper.holding)
+        keeper.hold(True)
+        self.assertIs(keeper.process, process)
+        keeper.hold(False)
+        self.assertFalse(keeper.holding)
+        assert process is not None
+        self.assertIsNotNone(process.poll())
 
     def test_disabled_plan_never_uploads(self):
         job = self.f.approve()

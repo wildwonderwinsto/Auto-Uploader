@@ -44,7 +44,10 @@ Tests: 910 automated, plus 28 native macOS harness commands, `native_tiktok.py` 
 
 ## Known limitations
 
-- The Mac must be awake, logged in and online; the service doesn't wake the Mac or run before login.
+- The Mac must be logged in and online; the service doesn't wake a sleeping Mac or run before
+  login. While auto uploading is on and an upload is planned (activated schedule, queued video,
+  active watched folder or an upload running), the app and the background service each hold
+  `caffeinate -dis` (`awake.py`), keeping the Mac and display awake; closing the lid still sleeps.
 - YouTube's upload API cannot set the 18+ age restriction; such content needs manual handling.
 - Daily limits: ShortsScheduler sets none of its own (no setting or field); the schedule decides.
   Only the platforms' own ceilings apply: YouTube 100 uploads a day (its API), TikTok 25, Instagram

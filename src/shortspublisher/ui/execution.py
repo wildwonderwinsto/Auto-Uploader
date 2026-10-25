@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..auth import AccountError
+from ..awake import Keeper
 from ..background_state import BACKGROUND_CONSENT
 from ..execution import CONSENT, AutomaticPublisher
 from ..scheduling import Job, ScheduleError
@@ -142,6 +143,8 @@ class ExecutionController(QObject):
         self.closing = False
         self.running = False
         self.data: dict[str, Any] = {}
+        # Keeps the Mac and its display awake while an automatic upload is planned.
+        self.keeper = Keeper()
         # Sidebar: the global switch, with its state beside it and a warning when uploads are
         # waiting while it is off. The window places `rail` at the bottom of the sidebar.
         self.title = text("Auto uploading", "Subheading")
@@ -278,6 +281,7 @@ class ExecutionController(QObject):
             self.recurring_updated.emit(result["recurring"])
         if "jobs" in result:
             self.data = result
+            self.keeper.hold(bool(result.get("awake")))
             jobs = result["jobs"]
             upcoming = [
                 j
@@ -481,6 +485,7 @@ class ExecutionController(QObject):
     def request_close(self) -> bool:
         self.timer.stop()
         self.running = False
+        self.keeper.hold(False)
         if self.worker or self.control_worker:
             self.closing = True
             for worker in (self.worker, self.control_worker):
