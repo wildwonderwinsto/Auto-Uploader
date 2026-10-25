@@ -140,6 +140,8 @@ class ExecutionController(QObject):
         self.service, self.window = service, window
         self.worker: ExecutionWorker | None = None
         self.control_worker: ExecutionWorker | None = None
+        # Requests made while another runs go next, in order, instead of being dropped.
+        self.queued: list[tuple[str, Any]] = []
         self.closing = False
         self.running = False
         self.data: dict[str, Any] = {}
@@ -197,7 +199,10 @@ class ExecutionController(QObject):
             self.start("dispatch")
 
     def control(self, action: str, argument: Any) -> None:
-        if self.control_worker or self.closing:
+        if self.closing:
+            return
+        if self.control_worker:
+            self.queued.append((action, argument))
             return
         worker = ExecutionWorker(self.service, action, argument, self)
         self.control_worker = worker
@@ -227,8 +232,6 @@ class ExecutionController(QObject):
         self.control("control", (not paused, None))
 
     def authorize(self, job: Job) -> None:
-        if self.control_worker:
-            return
         dialog = ActivationDialog(job, self.window)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             self.control("authorize", (job.id, job.revision, dialog.background.isChecked()))
@@ -468,6 +471,9 @@ class ExecutionController(QObject):
         assert self.control_worker
         self.control_worker.deleteLater()
         self.control_worker = None
+        if self.queued and not self.closing:
+            self.control(*self.queued.pop(0))
+            return
         self.button.setEnabled(bool(self.data))
         self.idle.emit()
 
@@ -485,6 +491,7 @@ class ExecutionController(QObject):
     def request_close(self) -> bool:
         self.timer.stop()
         self.running = False
+        self.queued.clear()
         self.keeper.hold(False)
         if self.worker or self.control_worker:
             self.closing = True

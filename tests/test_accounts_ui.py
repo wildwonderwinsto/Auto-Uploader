@@ -90,8 +90,16 @@ class AccountsUiTests(unittest.TestCase):
         settle(self.app, self.page)
         self.assertEqual(self.youtube.calls, 2)
         # A stale verification checks again by itself; no "Check Again" click is needed.
+        # It runs quietly: buttons and the status stay as they are while it checks.
+        seen = []
+        self.page.state_changed.connect(seen.append)
+        status = self.page.status.text()
         self.page.expire_verification()
+        self.assertTrue(self.page.refresh_button.isEnabled())
+        self.assertEqual(self.page.status.text(), status)
+        self.assertEqual(seen, [])
         settle(self.app, self.page)
+        self.page.state_changed.disconnect(seen.append)
         self.assertEqual(self.youtube.calls, 3)
         self.assertTrue(self.page.status.text().startswith("Connected"))
         # ...but never while an upload is due, because uploads need the account first.

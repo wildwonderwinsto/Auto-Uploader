@@ -370,7 +370,7 @@ class SocialUiTests(Fixture):
         controller.context(video.id)
         settle(self.app, controller)
         # Instagram's own setting sits with the shared details, like TikTok's.
-        self.assertEqual(self.w.videos.editor.instagram_slot.indexOf(controller.ai_field), 0)
+        self.assertEqual(self.w.videos.editor.instagram_slot.indexOf(controller.ai_field), 1)
         self.assertEqual(self.w.videos.editor.facebook_slot.indexOf(self.w.facebook.ai_field), -1)
         controller.ai.setCurrentIndex(controller.ai.findData(False))
         controller.caption.setPlainText("Hello #reel")

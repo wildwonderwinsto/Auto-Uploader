@@ -176,6 +176,9 @@ class AccountsPage(QScrollArea):
         super().__init__()
         self.service = service
         self.worker: AccountWorker | None = None
+        # The regular re-check runs quietly; a click made meanwhile runs right after it.
+        self.quiet = False
+        self.queued: tuple[str, Any] | None = None
         self.closing = False
         self.loaded = False
         # The saved connection has been looked at (or there is no library to hold one yet).
@@ -317,14 +320,23 @@ class AccountsPage(QScrollArea):
         if path:
             self.start("configure", Path(path))
 
-    def start(self, action: str, argument: Any = None) -> None:
+    def start(self, action: str, argument: Any = None, *, quiet: bool = False) -> None:
+        if self.worker is not None and self.quiet and not quiet and not self.closing:
+            self.queued = (action, argument)
+            return
         if self.worker is not None or self.closing:
             return
         self.freshness.stop()
+        self.quiet = quiet
         self.worker = AccountWorker(self.service, action, argument, self)
         self.worker.result.connect(self.present)
-        self.worker.progress.connect(self.feedback.setText)
         self.worker.finished.connect(self.finished)
+        if quiet:
+            # Buttons, status and the rest of the app stay as they are unless the result
+            # differs, so the five-minute check never flickers anything.
+            self.worker.start()
+            return
+        self.worker.progress.connect(self.feedback.setText)
         self.status.setText(
             state_label("Connecting" if action == "connect" else "Verification pending")[0]
         )
@@ -463,7 +475,14 @@ class AccountsPage(QScrollArea):
         self.loaded = self.checked = True
         if self.closing:
             self.service.pending = None
-        self.set_busy(False)
+        if not self.quiet:
+            self.set_busy(False)
+        self.quiet = False
+        if self.queued and not self.closing:
+            action, argument = self.queued
+            self.queued = None
+            self.start(action, argument)
+            return
         self.idle.emit()
 
     @Slot()
@@ -511,7 +530,7 @@ class AccountsPage(QScrollArea):
         if self.view.connection and self.worker is None:
             if not self.closing and not self.hold_refresh():
                 # Check again on its own, so uploads never wait for a manual "Check Again".
-                self.start("refresh")
+                self.start("refresh", quiet=True)
                 return
             self.freshness.start(60_000)  # an upload is about to use the account; try later
             self.present(

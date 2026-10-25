@@ -46,6 +46,8 @@ class SchedulingUiTests(unittest.TestCase):
         e.show()
         e.zone.setCurrentText("UTC")
         e.date.setDate(QDate(2030, 1, 2))
+        # These tests approve the plan alone; activating it in the same approval is tested apart.
+        e.activate_after.setChecked(False)
         return e
 
     def approve(self):
@@ -68,7 +70,8 @@ class SchedulingUiTests(unittest.TestCase):
         settle(self.ui.app, self.c)
         self.assertEqual(self.c.queue.list.count(), 0)
         self.assertIn("No scheduled YouTube uploads on this day", self.c.calendar.status.text())
-        self.assertIn("No scheduled YouTube uploads.", self.c.queue.status.text())
+        self.assertIn("No YouTube uploads yet.", self.c.queue.status.text())
+        self.assertTrue(self.c.queue.youtube.isHidden())  # no empty card
         self.assertFalse(self.c.queue.list.isVisibleTo(self.c.queue))
 
     def test_editor_input_and_timezone(self):
@@ -112,7 +115,7 @@ class SchedulingUiTests(unittest.TestCase):
             QDate.fromString(job.local_time[:10], "yyyy-MM-dd")
         )
         self.assertEqual(self.c.calendar.list.count(), 1)
-        self.assertIn("Scheduled", self.c.calendar.details.toPlainText())
+        self.assertIn("Scheduled", self.c.calendar.diagnostics)
 
     def test_draft_has_no_approval(self):
         e = self.editor()
@@ -121,7 +124,7 @@ class SchedulingUiTests(unittest.TestCase):
         self.assertEqual(self.c.jobs[0].state, "Draft")
         self.assertEqual(self.c.jobs[0].approved_at, "")
 
-    def test_cancel_confirmation_and_filters(self):
+    def test_cancelled_upload_leaves_the_list(self):
         self.approve()
         with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.No):
             self.c.queue.cancel.click()
@@ -130,8 +133,7 @@ class SchedulingUiTests(unittest.TestCase):
             self.c.queue.cancel.click()
             settle(self.ui.app, self.c)
         self.assertEqual(self.c.queue.list.count(), 0)
-        self.c.queue.filter.setCurrentText("Cancelled")
-        self.assertEqual(self.c.queue.list.count(), 1)
+        self.assertEqual(self.c.service.all()[0].state, "Cancelled")
 
     def test_calendar_navigation_and_day(self):
         job = self.approve()
@@ -169,7 +171,7 @@ class SchedulingUiTests(unittest.TestCase):
         self.c.start("load")
         settle(self.ui.app, self.c)
         self.assertEqual(self.c.jobs[0].state, "Missed")
-        self.assertIn("Missed", self.c.queue.details.toPlainText())
+        self.assertIn("Missed", self.c.queue.diagnostics)
 
     def test_small_window_and_scroll(self):
         self.approve()

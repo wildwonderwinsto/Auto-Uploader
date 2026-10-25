@@ -1,15 +1,17 @@
 import time
 import unittest
-from datetime import datetime
+from datetime import UTC, datetime
 from unittest.mock import patch
 
 import test_scheduling_ui as fixtures
+from account_support import CHANNEL
 from PySide6.QtCore import QDate
 from PySide6.QtWidgets import QDialog, QMessageBox, QPlainTextEdit
 from support import settle
 
 from shortspublisher.ui.execution import ActivationDialog
 from shortspublisher.ui.formatting import timestamp
+from shortspublisher.ui.scheduling import ScheduleConfirmation
 
 
 class ExecutionUiTests(unittest.TestCase):
@@ -62,6 +64,60 @@ class ExecutionUiTests(unittest.TestCase):
         self.wait()
         return self.f.c.service.get(job.id)
 
+    def schedule_from_upload_step(self):
+        """The Upload step's YouTube schedule: one approval, no editor, no second window."""
+        when = datetime(2030, 1, 2, 12, tzinfo=UTC)
+        with (
+            patch.object(ScheduleConfirmation, "exec", return_value=QDialog.DialogCode.Accepted),
+            patch.object(ActivationDialog, "exec", side_effect=AssertionError("Second window")),
+        ):
+            self.f.c.schedule(self.f.ui.fixture.video.id, CHANNEL.id, when)
+            settle(self.app, self.f.c)
+            self.wait()
+        return self.f.c.service.all()[0]
+
+    def test_upload_step_schedule_needs_one_approval(self):
+        job = self.schedule_from_upload_step()
+        self.assertEqual(job.state, "Scheduled")
+        self.assertTrue(job.execution_enabled)
+        self.assertEqual(
+            datetime.fromisoformat(job.scheduled_utc), datetime(2030, 1, 2, 12, tzinfo=UTC)
+        )
+        self.assertEqual(self.c.data["paused"], 1)  # Auto uploading is only turned on if asked
+
+    def test_one_approval_can_also_turn_on_auto_uploading(self):
+        with patch.object(ScheduleConfirmation, "exec", return_value=QDialog.DialogCode.Accepted):
+            original = ScheduleConfirmation.__init__
+
+            def ticked(dialog, *args, **kwargs):
+                original(dialog, *args, **kwargs)
+                self.assertFalse(dialog.turn_on.isHidden())  # off now, so it's offered
+                self.assertFalse(dialog.turn_on.isChecked())  # never assumed
+                dialog.turn_on.setChecked(True)
+
+            with patch.object(ScheduleConfirmation, "__init__", ticked):
+                self.f.c.schedule(
+                    self.f.ui.fixture.video.id, CHANNEL.id, datetime(2030, 1, 2, 12, tzinfo=UTC)
+                )
+                settle(self.app, self.f.c)
+                self.wait()
+        self.assertTrue(self.f.c.service.all()[0].execution_enabled)
+        self.assertEqual(self.c.data["paused"], 0)
+
+    def test_schedule_click_during_refresh_waits_instead_of_dropping(self):
+        self.f.c.start("load")
+        self.assertIsNotNone(self.f.c.worker)
+        job = self.schedule_from_upload_step()
+        self.assertTrue(job.execution_enabled)
+
+    def test_scheduled_video_cannot_go_to_youtube_twice(self):
+        job = self.schedule_from_upload_step()
+        step = self.window.upload_all
+        ready, words = step.state("youtube")
+        self.assertFalse(ready)
+        self.assertIn("Scheduled", words)
+        self.assertIn(timestamp(job.scheduled_utc, job.timezone, weekday=True), words)
+
     def test_default_global_pause_visible(self):
         self.assertIn("Automatic publishing is paused", self.c.summary.text())
         self.assertEqual(self.c.light.text(), "Off")
@@ -70,7 +126,7 @@ class ExecutionUiTests(unittest.TestCase):
 
     def test_plan_alone_disabled(self):
         job = self.approve()
-        self.assertIn("Disabled", self.window.schedules.queue.details.toPlainText())
+        self.assertIn("Disabled", self.window.schedules.queue.diagnostics)
         self.assertFalse(job.execution_enabled)
 
     def test_activation_dialog_exact_intent(self):
@@ -133,8 +189,9 @@ class ExecutionUiTests(unittest.TestCase):
             QDate.fromString(job.local_time[:10], "yyyy-MM-dd")
         )
         for page in (self.window.schedules.queue, self.window.schedules.calendar):
+            self.assertEqual(page.list.count(), 1)  # one row: the plan shows its upload
             self.assertIn("Public verified", page.list.item(0).text())
-            self.assertIn("Video ID:", page.details.toPlainText())
+            self.assertIn("Video ID:", page.diagnostics)
             self.assertFalse(page.edit.isEnabled())
             self.assertFalse(page.cancel.isEnabled())
             self.assertTrue(page.history.isEnabled())
@@ -190,16 +247,15 @@ class ExecutionUiTests(unittest.TestCase):
         self.assertFalse(self.c.timer.isActive())
         self.assertEqual(self.f.ui.fixture.http.initiations, 1)
 
-    def test_completed_filter_uses_verified_processing(self):
+    def test_done_upload_offers_open_on_youtube_only(self):
         job = self.active()
         self.now = datetime.fromisoformat(job.scheduled_utc)
         self.c.tick()
         self.wait()
         page = self.window.schedules.queue
-        page.filter.setCurrentText("Completed")
-        self.assertEqual(page.list.count(), 1)
-        page.filter.setCurrentText("Uploading")
-        self.assertEqual(page.list.count(), 0)
+        self.assertTrue(page.open_upload.isEnabled())
+        for button in (page.edit, page.cancel, page.activate_job, page.stop_upload):
+            self.assertTrue(button.isHidden())
 
     def test_queue_stop_button_cancels_current_worker(self):
         job = self.active()

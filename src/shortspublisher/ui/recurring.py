@@ -360,12 +360,13 @@ class PickVideo(QDialog):
         self.preview.set_source(entry.video.path if entry else "")
 
     def add(self) -> None:
-        """Import files and open the first one: a new video starts with its details."""
+        """Import files and open the first one: a new video starts with its details, then
+        Next leads to its Upload step."""
         paths, _ = QFileDialog.getOpenFileNames(self, "Add videos from your Mac", "", VIDEO_FILES)
         if paths:
             self.reject()
             self.controller.window.navigate("videos")
-            self.controller.window.videos.start("import_many", paths)
+            self.controller.window.videos.import_files(paths)
 
     def open(self) -> None:
         item = self.videos.currentItem()
@@ -695,14 +696,8 @@ class RecurringEditor(QDialog):
         paths, _ = QFileDialog.getOpenFileNames(self, "Add videos from your Mac", "", VIDEO_FILES)
         if not paths:
             return
-        videos = self.controller.window.videos
-
-        def imported() -> None:
-            videos.idle.disconnect(imported)
-            self.controller.start("load")  # refills this list
-
-        videos.idle.connect(imported)
-        videos.start("import_many", paths)
+        # The list refills once the import has ended.
+        self.controller.window.videos.import_files(paths, lambda: self.controller.start("load"))
         self.feedback.setText(
             f"Adding {len(paths)} video{'s' if len(paths) != 1 else ''} to your library. Write "
             "their details and mark them ready in Videos, then tick them here."

@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 import test_recurring as fixtures
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QMessageBox, QPlainTextEdit
+from PySide6.QtWidgets import QFileDialog, QMessageBox, QPlainTextEdit
 from support import settle
 
 from shortspublisher.app import build
@@ -141,6 +141,25 @@ class RecurringUiTests(unittest.TestCase):
             self.c.single.click()
         opened.assert_called_once_with(picked[0])
         self.assertIs(self.w.stack.currentWidget(), self.w.videos)
+
+    def test_one_video_from_mac_waits_for_a_busy_videos_page(self):
+        videos = self.w.videos
+        dialog = PickVideo(self.c)
+        self.addCleanup(dialog.deleteLater)
+        self.addCleanup(dialog.preview.release)
+        with (
+            patch.object(QFileDialog, "getOpenFileNames", return_value=(["/v/new.mp4"], "")),
+            patch.object(videos, "start") as start,
+        ):
+            videos.worker = object()  # a refresh is running
+            try:
+                dialog.add()
+                start.assert_not_called()
+            finally:
+                videos.worker = None
+            videos.idle.emit()  # it ends: the import runs instead of being dropped
+        start.assert_called_once_with("import_many", ["/v/new.mp4"])
+        self.assertIs(self.w.stack.currentWidget(), videos)
 
     def test_day_presets(self):
         e = self.editor()

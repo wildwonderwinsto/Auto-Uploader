@@ -31,7 +31,7 @@ Never start a new stage without explicit instruction.
 .venv/bin/python -m shortspublisher --data-dir /tmp/sp-test        # isolated run
 ./install.sh                                                        # env + FFmpeg + ShortsScheduler.app
 open ShortsScheduler.app        # the USER's real data (~/Library/Application Support/ShortsPublisher/ShortsPublisher) — don't run
-QT_QPA_PLATFORM=offscreen .venv/bin/python -m unittest discover -s tests   # 910 tests, ~12 min
+QT_QPA_PLATFORM=offscreen .venv/bin/python -m unittest discover -s tests   # 926 tests, ~12 min
 cd tests && QT_QPA_PLATFORM=offscreen PYTHONPATH=../src ../.venv/bin/python -m unittest test_shell  # focused
 .venv/bin/ruff check . && .venv/bin/ruff format --check . && .venv/bin/mypy
 ```
@@ -56,6 +56,7 @@ isolated Keychain/LaunchAgent identifiers. Python 3.12 in `.venv` (uv), PySide6 
 | Folders/recurring/auto | `watching.py`, `recurring.py`, `cadence.py`, `automation.py` (+ `*_schema.py`), matching `ui/*.py`; `queues.py` + `queues_schema.py` (v17: a queue's name, times, platforms, YouTube plan and waiting Buffer videos) |
 | Buffer (TikTok, Instagram, Facebook) | `buffer.py` (PKCE OAuth, rotating refresh under a file lock, GraphQL), `hosting.py` (Cloudinary public copy), `social.py` (`Platform` specs + `BufferPostService`: posts, duplicates, status, automation, shared sign-in), `social_schema.py` (v13), `backups_schema.py` (v15) + `fallback_schema.py` (v16): backup Buffer/Cloudinary accounts, `ui/social.py` (`SocialController` per platform); `tiktok.py`, `tiktok_schema.py`, `ui/tiktok.py` keep Stage 19 names; relay page `docs/buffer-oauth-relay.html` |
 | Dashboard | `activity.py` (pure cross-platform timeline), `ui/dashboard.py`; read-only view counts via `AccountService.statistics` |
+| Defaults/usage | `defaults.py` + `ui/defaults.py` (Reuse Details, Upload Defaults in `upload-defaults.json` beside the library: no schema change; never the title), `usage.py` + `ui/usage.py` (Settings → Limits & usage, local counts only) |
 | Auto upload | `ui/autoupload.py` (one editor → a YouTube profile and a profile per Buffer platform, each with its own consent, approved in turn; also edits an existing one), `ui/autocards.py` (one card per auto upload: profiles sharing folder + name), `ui/queuecards.py` (one card per video queue) |
 | Shared UI | `ui/window.py`, `ui/theme.py`, `ui/components.py` (cards, pills, `Section`, `CardGrid`, `flow`), `ui/icons.py` (SVG icons + platform logos), `ui/formatting.py` (dates/times) |
 
@@ -146,6 +147,15 @@ migration of the user's real library needs the user's explicit approval and a fr
   something is held back by the global pause. Timer-driven refreshes ("load", "scan", quiet
   Buffer polls) must never disable buttons or rebuild unchanged lists (flicker); clicks made
   during one are queued.
+- Schedule page: one "YouTube uploads" card (scheduled jobs + uploads, like each Buffer card;
+  buttons appear only when the chosen row can use them; diagnostics in `SchedulePage.diagnostics`
+  / the row tooltip). The Calendar shows no YouTube card (its day agenda lists every platform).
+  A YouTube schedule from the Upload step is `ScheduleController.schedule`: one
+  `ScheduleConfirmation(activate=True)` approves the plan *and* its automatic upload (the consent
+  is shown there; Auto uploading is only turned on if its box is ticked). A YouTube plan for a
+  video blocks a second YouTube upload of it in the Upload step.
+- Dashboard platform cards show the same four columns everywhere: Uploaded · Scheduled · Views
+  (of videos uploaded from the app) · Followers (Subscribers on YouTube; "—" for Buffer platforms).
 - Wording is platform-neutral ("upload", not "publish to YouTube"); settings only one platform
   supports are labelled "Only used on YouTube/TikTok". Video details are shared: the TikTok caption
   is `tiktok.caption_from(title, description, tags)`.

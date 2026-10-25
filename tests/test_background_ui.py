@@ -1,3 +1,4 @@
+import threading
 import unittest
 from contextlib import closing
 from unittest.mock import patch
@@ -33,6 +34,28 @@ class BackgroundUiTests(unittest.TestCase):
             settle(self.f.app, self.page)
             self.assertEqual([c.args[0] for c in perform.call_args_list], ["status"])
             self.assertIn("unavailable", self.page.status.text())
+
+    def test_regular_status_check_never_flashes_buttons_or_drops_a_click(self):
+        release = threading.Event()
+        calls = []
+
+        def perform(action, **_):
+            calls.append(action)
+            if action == "status":
+                release.wait(5)
+            return {"error": "controlled"}
+
+        with (
+            patch.object(self.page.manager, "perform", side_effect=perform),
+            patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes),
+        ):
+            self.page.start("status")
+            self.assertTrue(self.page.buttons["enable"].isEnabled())  # left alone
+            self.page.buttons["enable"].click()  # clicked while the check runs
+            release.set()
+            settle(self.f.app, self.page)
+            settle(self.f.app, self.page)
+        self.assertEqual(calls, ["status", "enable"])
 
     def test_cancel_service_consent_no_write(self):
         with (

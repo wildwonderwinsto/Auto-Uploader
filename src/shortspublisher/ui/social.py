@@ -244,6 +244,7 @@ class SocialController(QObject):
         }
         self.video_id: int | None = None
         self.usage: dict[str, str] = {}  # last checked usage per Cloudinary account
+        self.host_usage: dict[str, dict[str, Any]] = {}  # the same, as numbers (Settings meters)
         self.summary = text(f"{self.name} · checking…", "Muted")
         self.build_card()
         self.build_hosting()
@@ -1150,6 +1151,9 @@ class SocialController(QObject):
         def checked(results: list[dict[str, Any]]) -> None:
             for result in results:
                 usage = result.get("usage")
+                self.host_usage[result["credential_key"]] = usage or {
+                    "error": str(result.get("error", ""))
+                }
                 self.usage[result["credential_key"]] = (
                     f"{usage.get('credits_used')} of {usage.get('credits_limit')} credits used"
                     if usage

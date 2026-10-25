@@ -8,12 +8,14 @@ from unittest.mock import patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QCoreApplication, QEvent
-from PySide6.QtWidgets import QMessageBox
+from PySide6.QtWidgets import QDialog, QMessageBox
 from support import make_video, settle
 
 from shortspublisher.app import build
+from shortspublisher.defaults import DefaultsStore
 from shortspublisher.library import LibraryService
 from shortspublisher.preparation import YouTubeMetadata
+from shortspublisher.ui.defaults import ReuseDetails
 
 SAVE = QMessageBox.StandardButton.Save
 DISCARD = QMessageBox.StandardButton.Discard
@@ -137,6 +139,82 @@ class MetadataUiTests(unittest.TestCase):
         self.assertEqual(self.page.service.preparations.get(self.video_id).reviewed_at, "")
         self.review()
         self.assertIn("Review Complete", self.page.review_state.text())
+
+    def wait_defaults(self):
+        while self.window.defaults.tasks:
+            self.app.processEvents()
+        self.app.processEvents()
+
+    def import_second(self, name="second.mp4"):
+        second = Path(self.temp.name) / name
+        second.write_bytes(self.source.read_bytes())
+        self.page.start("import", str(second))
+        settle(self.app, self.page)
+        return self.page.selected.id
+
+    def test_upload_defaults_fill_new_videos_but_never_the_title(self):
+        self.fill()
+        self.editor.privacy.setCurrentIndex(self.editor.privacy.findData("public"))
+        with patch.object(QMessageBox, "question", return_value=SAVE):
+            self.editor.save_defaults.click()
+        self.wait_defaults()
+        self.editor.save_requested.emit()
+        settle(self.app, self.page)
+        self.assertIn("first tag", self.window.defaults.summary.text())
+        self.assertFalse(self.window.defaults.clear.isHidden())
+        second_id = self.import_second()
+        saved = self.page.service.preparations.get(second_id).metadata
+        self.assertEqual(saved.title, "")
+        self.assertEqual(saved.description, "雪 and emoji 🎬\n\nhttps://example.com/watch")
+        self.assertEqual(saved.tags, ("first tag", "雪"))
+        self.assertIs(saved.made_for_kids, False)
+        self.assertEqual(saved.privacy, "public")
+        self.assertEqual(self.editor.description.toPlainText(), saved.description)
+        self.assertEqual(self.editor.title.text(), "")
+
+    def test_cleared_defaults_leave_new_videos_empty(self):
+        self.fill()
+        with patch.object(QMessageBox, "question", return_value=SAVE):
+            self.editor.save_defaults.click()
+        self.wait_defaults()
+        with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes):
+            self.window.defaults.clear.click()
+        self.wait_defaults()
+        self.editor.save_requested.emit()
+        settle(self.app, self.page)
+        second_id = self.import_second()
+        self.assertEqual(self.page.service.preparations.get(second_id).revision, 0)
+        self.assertTrue(self.window.defaults.clear.isHidden())
+
+    def test_reuse_details_copies_everything_but_the_title(self):
+        self.fill()
+        self.editor.save_requested.emit()
+        settle(self.app, self.page)
+        self.import_second()
+        self.editor.title.setText("Second video's own title")
+
+        def choose(dialog):
+            self.assertEqual(dialog.videos.count(), 1)  # never the video being edited
+            dialog.pick()
+            return QDialog.DialogCode.Accepted
+
+        with patch.object(ReuseDetails, "exec", choose):
+            self.editor.reuse.click()
+        self.wait_defaults()
+        self.assertEqual(self.editor.title.text(), "Second video's own title")
+        self.assertEqual(
+            self.editor.description.toPlainText(), "雪 and emoji 🎬\n\nhttps://example.com/watch"
+        )
+        self.assertEqual(self.editor.tags, ("first tag", "雪"))
+        self.assertEqual(self.editor.kids.currentIndex(), 2)
+        self.assertTrue(self.editor.dirty)  # shown unsaved, like typing them
+
+    def test_unreadable_defaults_file_is_ignored(self):
+        store = DefaultsStore(self.page.service.library)
+        store.path.write_text("{not json", encoding="utf-8")
+        self.assertIsNone(store.read())
+        second_id = self.import_second()
+        self.assertEqual(self.page.service.preparations.get(second_id).revision, 0)
 
     def test_switch_video_cancel_then_save_targets_original(self):
         second = Path(self.temp.name) / "second.mp4"

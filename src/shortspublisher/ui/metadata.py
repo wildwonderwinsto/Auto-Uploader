@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..defaults import Details
 from ..preparation import (
     Preparation,
     YouTubeMetadata,
@@ -85,10 +86,26 @@ class MetadataEditor(QWidget):
         layout.setContentsMargins(0, 4, 0, 4)
         layout.setSpacing(10)
         self.save_state = pill("No video selected", "Neutral")
-        layout.addWidget(self.save_state)
+        # YouTube Studio's two helpers: copy another video's details, and have every new video
+        # start with these (the title is never part of either).
+        self.reuse = icon_button("Reuse Details…", "copy")
+        self.reuse.setToolTip("Copy the description, tags and platform settings from another video")
+        self.save_defaults = icon_button("Save as Upload Defaults", "bookmark")
+        self.save_defaults.setToolTip(
+            "New videos you add start with this description, these tags and settings"
+        )
+        top = QHBoxLayout()
+        top.setSpacing(8)
+        top.addWidget(self.save_state, 0, Qt.AlignmentFlag.AlignVCenter)
+        top.addStretch(1)
+        top.addWidget(self.reuse)
+        top.addWidget(self.save_defaults)
+        layout.addLayout(top)
         layout.addWidget(
             caption("These details are used on every platform you upload this video to.", "Subtle")
         )
+        self.defaults_note = caption("", "Subtle")
+        layout.addWidget(self.defaults_note)
         self.title = QLineEdit()
         self.title.setAccessibleName("YouTube title")
         self.title.setPlaceholderText("Give your video a title")
@@ -271,6 +288,22 @@ class MetadataEditor(QWidget):
         self.synthetic.setCurrentIndex(0 if data.synthetic is None else 1 if data.synthetic else 2)
         self.privacy.setCurrentIndex(self.privacy.findData(data.privacy))
         self.loading = False
+        self.on_changed()
+
+    def apply_details(self, details: Details) -> None:
+        """Another video's details (or the defaults), shown unsaved; the title stays."""
+        metadata = details.onto(self.value())
+        self.description.setPlainText(metadata.description)
+        self.tags = metadata.tags
+        self.tag_input.clear()
+        self.tag_list.clear()
+        self.tag_list.addItems(list(self.tags))
+        for combo, value in (
+            (self.kids, metadata.made_for_kids),
+            (self.synthetic, metadata.synthetic),
+        ):
+            combo.setCurrentIndex(0 if value is None else 1 if value else 2)
+        self.privacy.setCurrentIndex(self.privacy.findData(metadata.privacy))
         self.on_changed()
 
     def add_tag(self) -> None:

@@ -193,10 +193,11 @@ class PlatformCard(QWidget):
         body.addLayout(platform_top(platform, subtitle, self.status))
         self.account = muted("", "Subheading")
         body.addWidget(self.account)
+        # The same four numbers, in the same places, on every platform's card.
         numbers = QHBoxLayout()
-        numbers.setSpacing(24)
+        numbers.setSpacing(16)
         self.values: list[tuple[QLabel, QLabel]] = []
-        for _ in range(3):
+        for _ in range(4):
             column = QVBoxLayout()
             column.setSpacing(0)
             value, label = QLabel("—"), QLabel("")
@@ -204,19 +205,21 @@ class PlatformCard(QWidget):
             label.setObjectName("StatLabel")
             column.addWidget(value)
             column.addWidget(label)
-            numbers.addLayout(column)
+            numbers.addLayout(column, 1)
             self.values.append((value, label))
-        numbers.addStretch()
         body.addLayout(numbers)
         self.note = muted("", "Subtle")
         body.addWidget(self.note)
         self.connect_button = icon_button("Connect", "link", role="Primary")
         body.addWidget(self.connect_button, 0, Qt.AlignmentFlag.AlignLeft)
 
-    def set_numbers(self, *pairs: tuple[str, str]) -> None:
-        for (value, label), (number, caption) in zip(self.values, pairs, strict=False):
+    def set_numbers(self, *rows: tuple[str, str, str]) -> None:
+        """(number, caption, tooltip) for each column."""
+        for (value, label), (number, caption, tip) in zip(self.values, rows, strict=False):
             value.setText(number)
             label.setText(caption)
+            for widget in (value, label):
+                widget.setToolTip(tip)
 
     def set_connected(
         self, connected: bool, label: str = "Connected", tone: str = "Good", *, known: bool = True
@@ -419,6 +422,34 @@ class DashboardPage(QScrollArea):
         ]
         return f"{compact(sum(known))} views" if known else ""
 
+    def numbers(self, platform: str, mine: list[Entry]) -> list[tuple[str, str, str]]:
+        """Uploaded, scheduled, views (of the videos uploaded from here, as the Views tile
+        counts them) and followers: the same columns on every card."""
+        views = self.platform_views([e for e in mine if e.kind == activity.DONE])
+        name = PLATFORM_NAMES[platform]
+        return [
+            (
+                str(len(activity.grouped([e for e in mine if e.kind == activity.DONE]))),
+                "UPLOADED",
+                f"Videos uploaded to {name} from ShortsScheduler",
+            ),
+            (
+                str(len(activity.grouped([e for e in mine if e.kind == activity.UPCOMING]))),
+                "SCHEDULED",
+                f"Videos waiting to go to {name} at a set time",
+            ),
+            (
+                compact(views[platform]) if platform in views else "—",
+                "VIEWS",
+                f"Views of the videos you uploaded to {name} from ShortsScheduler",
+            ),
+            (
+                "—",
+                "FOLLOWERS",
+                f"{name} follower counts aren't available through Buffer in ShortsScheduler",
+            ),
+        ]
+
     def refresh(self) -> None:
         self.entries = entries = self.collect()
         upcoming = activity.upcoming(entries)
@@ -487,11 +518,13 @@ class DashboardPage(QScrollArea):
             else "Checking your YouTube connection…"
         )
         channel = self.stats.get("channel", {})
-        self.youtube.set_numbers(
-            (str(sum(e.kind == activity.DONE for e in youtube)), "UPLOADED"),
-            (compact(channel["views"]) if "views" in channel else "—", "VIEWS"),
-            (compact(channel["subscribers"]) if "subscribers" in channel else "—", "SUBSCRIBERS"),
+        self.youtube.set_numbers(*self.numbers("youtube", youtube))
+        self.youtube.values[3][0].setText(
+            compact(channel["subscribers"]) if "subscribers" in channel else "—"
         )
+        self.youtube.values[3][1].setText("SUBSCRIBERS")
+        for widget in self.youtube.values[3]:
+            widget.setToolTip("Your channel's subscribers, from YouTube")
         self.youtube.note.setText(
             "Counts come from YouTube and can lag by a few minutes."
             if channel
@@ -518,12 +551,7 @@ class DashboardPage(QScrollArea):
                 if social.loaded
                 else f"Checking your {social.name} connection…"
             )
-            views = self.platform_views([e for e in mine if e.kind == activity.DONE])
-            card.set_numbers(
-                (str(sum(e.kind == activity.DONE for e in mine)), "POSTED"),
-                (str(sum(e.kind == activity.UPCOMING for e in mine)), "SCHEDULED"),
-                (compact(views[social.key]) if social.key in views else "—", "VIEWS"),
-            )
+            card.set_numbers(*self.numbers(social.key, mine))
             card.note.setText(
                 "Counts come from Buffer and refresh about once a day."
                 if insights

@@ -9,6 +9,7 @@ from pathlib import Path
 from threading import Event
 from typing import Any
 
+from .defaults import DefaultsStore
 from .media import InspectionError, Inspector, Media, checkpoint
 from .preparation import PreparationStore
 
@@ -326,6 +327,7 @@ class LibraryService:
         self.library = library
         self.inspector = inspector
         self.preparations = PreparationStore(library)
+        self.defaults = DefaultsStore(library)
 
     def execute(self, action: str, argument: Any, cancel: Event) -> dict[str, Any]:
         checkpoint(cancel)
@@ -344,6 +346,8 @@ class LibraryService:
                     media = self.inspector.inspect(Path(path), cancel)
                     checkpoint(cancel)
                     selected, created = self.library.save(path, media)
+                    if created:
+                        self.defaults.apply(selected.id, now())  # the upload defaults, if any
                     message = (
                         "Video inspected and saved to your library."
                         if created

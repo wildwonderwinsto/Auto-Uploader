@@ -182,6 +182,8 @@ QTabBar::tab:disabled {{ color: {SUBTLE}; }}
 
 QProgressBar {{ border: none; background: {RAISED}; border-radius: 3px; }}
 QProgressBar::chunk {{ background: {ACCENT}; border-radius: 3px; }}
+QProgressBar#MeterWarn::chunk {{ background: {WARN}; }}
+QProgressBar#MeterBad::chunk {{ background: {BAD}; }}
 QSlider::groove:horizontal {{ height: 4px; background: {STRONG}; border-radius: 2px; }}
 QSlider::sub-page:horizontal {{ background: {ACCENT}; border-radius: 2px; }}
 QSlider::handle:horizontal {{ background: #ffffff; width: 14px; height: 14px; margin: -5px 0;

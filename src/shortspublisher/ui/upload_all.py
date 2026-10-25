@@ -101,6 +101,22 @@ class UploadAll(QWidget):
         self.go.clicked.connect(self.upload)
         self.go_row = row(self.go)
         layout.addWidget(self.go_row)
+        # Even controls: Now and Schedule share one size, and the Upload button sits right
+        # under them at their combined width.
+        self.go.setText("Schedule on 4 Platforms…")  # the longest text it can show
+        height = self.go.sizeHint().height()
+        width = max(
+            self.now.sizeHint().width(),
+            self.later.sizeHint().width(),
+            (self.go.sizeHint().width() - when.spacing() + 1) // 2,
+        )
+        for segment in (self.now, self.later):
+            segment.setFixedSize(width, height)
+        self.go.setFixedSize(2 * width + when.spacing(), height)
+        label.setFixedWidth(label.sizeHint().width())
+        go_layout = self.go_row.layout()
+        if go_layout:
+            go_layout.setContentsMargins(label.width() + when.spacing(), 0, 0, 0)
         self.summary = text("", "Subtle")
         layout.addWidget(self.summary)
         layout.addStretch()
@@ -156,6 +172,21 @@ class UploadAll(QWidget):
                 elif not words.startswith("Uploaded"):
                     words = "Already started · " + words
                 return False, words
+            # A saved YouTube plan for this video counts as its upload: no second one.
+            planned = next(
+                (
+                    j
+                    for j in w.schedules.jobs
+                    if j.video_id == video.id and j.state not in ("Draft", "Cancelled")
+                ),
+                None,
+            )
+            if planned and planned.state in ("Scheduled", "Due"):
+                return False, "Scheduled · " + timestamp(
+                    planned.scheduled_utc, planned.timezone, weekday=True
+                )
+            if planned:
+                return False, f"{planned.state} · see YouTube uploads in Schedule"
             if later:
                 ready = w.schedule_button.isEnabled()
                 return ready, (
@@ -266,7 +297,8 @@ class UploadAll(QWidget):
                 public = w.uploads.planned_privacy == "public" or due is not None
                 lines.append(
                     f"• YouTube: {'PUBLIC' if public else 'Private'} upload {when}. YouTube's own "
-                    "confirmation with the exact details opens next."
+                    "confirmation with the exact details opens next"
+                    + (" — approving it is all that's needed." if due else ".")
                 )
             else:
                 social = next(s for s in w.socials if s.key == platform)
@@ -295,7 +327,7 @@ class UploadAll(QWidget):
             video = w.videos.selected
             connection = w.accounts.view.connection if w.accounts.view else None
             if due is not None and video and connection:
-                w.schedules.open_editor(video.id, connection.channel.id, when=due)
+                w.schedules.schedule(video.id, connection.channel.id, due)
             else:
                 w.uploads.prepare("public" if w.uploads.planned_privacy == "public" else "private")
         names = ", ".join(PLATFORM_NAMES[p] for p in chosen)

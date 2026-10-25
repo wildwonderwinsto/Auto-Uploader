@@ -98,12 +98,12 @@ class UploadUiTests(unittest.TestCase):
 
     def test_schedule_page_lists_uploads_made_now(self):
         page = self.window.schedules.queue
-        self.assertTrue(page.uploads_card.isHidden())  # no empty card
+        self.assertTrue(page.youtube.isHidden())  # no empty card
         self.upload()
         # Uploaded with "Now", never scheduled: still listed, like TikTok's posts are.
-        self.assertFalse(page.uploads_card.isHidden())
-        self.assertEqual(page.upload_list.count(), 1)
-        self.assertIn("Video processed", page.upload_list.item(0).text())
+        self.assertFalse(page.youtube.isHidden())
+        self.assertEqual(page.list.count(), 1)
+        self.assertIn("Video processed", page.list.item(0).text())
         self.assertTrue(page.open_upload.isEnabled())
         with patch("shortspublisher.ui.scheduling.QDesktopServices.openUrl") as opened:
             page.open_on_youtube()

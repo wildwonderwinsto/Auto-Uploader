@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from threading import Event
 from typing import TYPE_CHECKING, Any
@@ -44,6 +45,8 @@ from PySide6.QtWidgets import (
 
 from .. import activity
 from ..activity import Entry
+from ..background_state import BACKGROUND_CONSENT
+from ..execution import CONSENT
 from ..scheduling import Job, Proposal, ScheduleService, local_choices
 from ..upload_store import Attempt
 from . import theme
@@ -92,12 +95,28 @@ def details(
 
 
 class ScheduleConfirmation(QDialog):
-    def __init__(self, proposal: Proposal, parent: QWidget):
+    """The exact plan to approve. With `activate`, the same approval also turns on this video's
+    automatic Public upload (the consent is shown here), so no second window follows."""
+
+    def __init__(
+        self, proposal: Proposal, parent: QWidget, activate: bool = False, paused: bool = False
+    ):
         super().__init__(parent)
         self.setWindowTitle("Approve Public Publishing Plan")
-        self.resize(580, 510)
+        self.resize(580, 560 if activate else 510)
         layout = QVBoxLayout(self)
-        layout.addWidget(text("Approve this schedule?", "Heading"))
+        layout.addWidget(
+            text("Approve this Public upload?" if activate else "Approve this schedule?", "Heading")
+        )
+        if activate:
+            layout.addWidget(text(CONSENT, "Muted"))
+        # With activation in this same approval, the "activate separately" note doesn't apply.
+        notice = (
+            "Auto uploading must also be On. Pause stops new starts; it doesn't undo one "
+            "already running."
+            if activate
+            else NOTICE
+        )
         box = QPlainTextEdit()
         box.setReadOnly(True)
         box.setPlainText(
@@ -107,7 +126,7 @@ class ScheduleConfirmation(QDialog):
                 proposal.local_time,
                 proposal.timezone,
                 proposal.scheduled_utc,
-            )
+            ).replace(NOTICE, notice)
         )
         summary = QPlainTextEdit()
         summary.setReadOnly(True)
@@ -119,17 +138,31 @@ class ScheduleConfirmation(QDialog):
                 proposal.timezone,
                 proposal.scheduled_utc,
                 diagnostics=False,
-            )
+            ).replace(NOTICE, notice)
         )
         layout.addWidget(summary)
         diagnostics = Section("Schedule diagnostics")
         box.appendPlainText(f"\nUTC: {proposal.scheduled_utc}\nLocal ISO: {proposal.local_time}")
         diagnostics.body.addWidget(box)
         layout.addWidget(diagnostics)
+        self.background = QCheckBox("Also upload it while ShortsScheduler is closed")
+        self.background.setToolTip(BACKGROUND_CONSENT)
+        self.background.setVisible(activate)
+        layout.addWidget(self.background)
+        # Turning auto uploading on releases everything else that waits too, so it is asked,
+        # never assumed.
+        self.turn_on = QCheckBox(
+            "Also turn on Auto uploading (it's off; your other approved uploads, queues and "
+            "watched folders would start too)"
+        )
+        self.turn_on.setVisible(activate and paused)
+        layout.addWidget(self.turn_on)
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
-        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Approve Schedule")
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText(
+            "Approve Public Upload" if activate else "Approve Schedule"
+        )
         buttons.button(QDialogButtonBox.StandardButton.Cancel).setDefault(True)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
@@ -163,7 +196,7 @@ class ScheduleEditor(QDialog):
         layout.addWidget(
             text(
                 "Pick when this video uploads publicly to YouTube. You'll see the exact plan and "
-                "approve it next. It only goes out while Auto uploading is On.",
+                "approve it next. It goes out while Auto uploading is On.",
                 "Muted",
             )
         )
@@ -242,7 +275,9 @@ class ScheduleEditor(QDialog):
         layout.addLayout(fields)
         self.feedback = text("", "Notice")
         layout.addWidget(self.feedback)
-        self.activate_after = QCheckBox("Then turn on the automatic Public upload for this video")
+        self.activate_after = QCheckBox("Upload it automatically at that time")
+        self.activate_after.setToolTip(CONSENT)
+        self.activate_after.setChecked(True)
         layout.addWidget(self.activate_after)
         layout.addStretch()
         footer = QHBoxLayout()
@@ -441,94 +476,57 @@ class SchedulePage(QScrollArea):
         self.recurring_slot = QVBoxLayout()
         self.body.addLayout(self.recurring_slot)
 
+        # One YouTube card, like each Buffer platform's card below it: every upload, scheduled
+        # or done, in one list; each button appears only when the chosen row can use it.
         self.youtube, youtube = card(20, 12)
         heading = QHBoxLayout()
         heading.setSpacing(10)
         heading.addWidget(image(logo("youtube", 22)))
-        heading.addWidget(text("Scheduled YouTube uploads", "Heading"), 1)
-        self.filter = QComboBox()
-        self.filter.setAccessibleName("Show scheduled uploads")
-        self.filter.addItems(
-            [
-                "Active plans",
-                "All plans",
-                "Draft",
-                "Scheduled",
-                "Due",
-                "Missed",
-                "Needs Attention",
-                "Cancelled",
-                "Uploading",
-                "Interrupted",
-                "Paused",
-                "Needs Reconciliation",
-                "Processing",
-                "Public Verified",
-                "Completed",
-                "Failed",
-            ]
-        )
-        self.filter.setItemText(0, "Active")
-        self.filter.setItemText(1, "All")
-        self.filter.currentTextChanged.connect(self.render)
-        heading.addWidget(self.filter)
+        heading.addWidget(text("YouTube uploads", "Heading"), 1)
         youtube.addLayout(heading)
         self.status = text("Open or reload to read saved plans.", "Muted")
         youtube.addWidget(self.status)
         self.list = QListWidget()
         self.list.setWordWrap(True)
         self.list.setMinimumHeight(150)
+        self.list.setAccessibleName("YouTube uploads")
         self.list.currentRowChanged.connect(self.selected_changed)
         youtube.addWidget(self.list)
-        self.refresh = icon_button("Reload", "refresh", role="Ghost")
-        self.refresh.clicked.connect(lambda: controller.start("load"))
-        self.edit = icon_button("Change Time…", "edit")
-        self.edit.setAccessibleName("Reschedule / Review Again…")
-        self.edit.clicked.connect(self.edit_selected)
-        self.cancel = icon_button("Cancel Schedule…", "x", role="Danger")
-        self.cancel.clicked.connect(self.cancel_selected)
+        self.open_upload = icon_button("Open on YouTube", "external")
+        self.open_upload.clicked.connect(self.open_on_youtube)
         self.activate_job = icon_button("Approve Automatic Upload…", "check", role="Primary")
         self.activate_job.setAccessibleName("Activate automatic publishing…")
         self.activate_job.clicked.connect(self.activate_selected)
-        self.history = icon_button("Upload History…", "history")
-        self.history.clicked.connect(self.open_history)
+        self.edit = icon_button("Change Time…", "edit")
+        self.edit.setAccessibleName("Reschedule / Review Again…")
+        self.edit.clicked.connect(self.edit_selected)
+        self.cancel = icon_button("Cancel Upload…", "x", role="Danger")
+        self.cancel.clicked.connect(self.cancel_selected)
         self.stop_upload = icon_button("Stop Current Upload", "x", role="Danger")
         self.stop_upload.clicked.connect(lambda: controller.window.automatic.stop_active())
+        self.history = icon_button("Upload History…", "history", role="Ghost")
+        self.history.clicked.connect(self.open_history)
+        self.refresh = icon_button("Refresh Status", "refresh", role="Ghost")
+        self.refresh.setAccessibleName("Refresh YouTube Status")
+        self.refresh.clicked.connect(lambda: controller.start("load"))
         self.action_row = flow(
-            self.activate_job, self.edit, self.cancel, self.history, self.stop_upload, self.refresh
+            self.open_upload,
+            self.activate_job,
+            self.edit,
+            self.cancel,
+            self.stop_upload,
+            self.history,
+            self.refresh,
         )
         youtube.addWidget(self.action_row)
-        self.details = QPlainTextEdit()
-        self.details.setReadOnly(True)
-        self.details.setFixedHeight(150)
-        self.plan_details = Section("Selected upload")
-        self.plan_details.body.addWidget(self.details)
-        youtube.addWidget(self.plan_details)
-        self.body.addWidget(self.youtube)
-        # Every YouTube upload, now or scheduled, like each Buffer platform's card below it.
-        self.uploads_card, uploads = card(20, 12)
-        top = QHBoxLayout()
-        top.setSpacing(10)
-        top.addWidget(image(logo("youtube", 22)))
-        top.addWidget(text("YouTube uploads", "Heading"), 1)
-        uploads.addLayout(top)
-        self.uploads_count = text("", "Muted")
-        uploads.addWidget(self.uploads_count)
-        self.upload_list = QListWidget()
-        self.upload_list.setWordWrap(True)
-        self.upload_list.setMinimumHeight(150)
-        self.upload_list.setAccessibleName("YouTube uploads")
-        self.upload_list.currentRowChanged.connect(self.upload_selected)
-        uploads.addWidget(self.upload_list)
-        self.open_upload = icon_button("Open on YouTube", "external")
-        self.open_upload.clicked.connect(self.open_on_youtube)
-        self.upload_history = icon_button("Upload History…", "history", role="Ghost")
-        self.upload_history.clicked.connect(self.show_upload)
-        uploads.addWidget(flow(self.open_upload, self.upload_history))
-        self.shown_uploads: list[Attempt] = []
-        self.uploads_card.hide()  # an empty platform card isn't shown
+        # Developer details of the chosen row: its tooltip, not a box on the page.
+        self.diagnostics = ""
+        self.attempts: list[Attempt] = []
+        self.rows: list[Job | Attempt] = []
+        self.youtube.hide()  # an empty platform card isn't shown
         if not calendar:
-            self.body.addWidget(self.uploads_card)
+            # The calendar's day agenda already lists every platform's uploads.
+            self.body.addWidget(self.youtube)
         self.tiktok_slot = QVBoxLayout()
         self.body.addLayout(self.tiktok_slot)
         self.body.addStretch()
@@ -634,161 +632,142 @@ class SchedulePage(QScrollArea):
         if self.calendar and self.next_date:
             self.calendar.setSelectedDate(self.next_date)
 
+    def chosen(self) -> Job | Attempt | None:
+        row = self.list.currentRow()
+        return self.rows[row] if 0 <= row < len(self.rows) else None
+
     def selected(self) -> Job | None:
-        item = self.list.currentItem()
-        return next(
-            (j for j in self.jobs if item and j.id == item.data(Qt.ItemDataRole.UserRole)), None
-        )
+        chosen = self.chosen()
+        return chosen if isinstance(chosen, Job) else None
+
+    def chosen_upload(self) -> Attempt | None:
+        chosen = self.chosen()
+        if isinstance(chosen, Attempt):
+            return chosen
+        automatic = getattr(self.controller.window, "automatic", None)
+        return automatic.attempt(chosen) if automatic and chosen else None
+
+    def render_uploads(self, attempts: list[Attempt]) -> None:
+        """Uploads started now (not from a schedule) join the scheduled ones in the list."""
+        self.attempts = list(attempts)
+        self.render()
 
     def render(self, *_: Any) -> None:
         automatic = getattr(self.controller.window, "automatic", None)
-        key = (
-            list(self.jobs),
-            [
-                (automatic.execution(j), automatic.attempt(j)) if automatic else None
-                for j in self.jobs
-            ],
-            self.filter.currentIndex(),
-            self.calendar.selectedDate() if self.calendar else None,
+        jobs = [j for j in self.jobs if j.state != "Cancelled"]  # never sent anything
+        if self.calendar:
+            jobs = [
+                j
+                for j in jobs
+                if QDate.fromString(j.local_time[:10], "yyyy-MM-dd") == self.calendar.selectedDate()
+            ]
+        linked = {a.id for j in jobs if automatic and (a := automatic.attempt(j))}
+        uploads = (
+            []
+            if self.calendar_mode
+            else [a for a in self.attempts if a.state != "Cancelled" and a.id not in linked]
         )
+        # What's still to come first (soonest first), then everything else, newest first.
+        coming = sorted(
+            (j for j in jobs if j.state in ("Scheduled", "Due") and j.id not in self.claimed()),
+            key=lambda j: j.scheduled_utc,
+        )
+
+        def moment(entry: Job | Attempt) -> str:
+            if isinstance(entry, Job):
+                return entry.scheduled_utc
+            return entry.completed_at or entry.created_at
+
+        others: list[Job | Attempt] = [j for j in jobs if j not in coming]
+        others.extend(uploads)
+        rest = sorted(
+            others,
+            key=lambda e: datetime.fromisoformat(moment(e)).astimezone(UTC),
+            reverse=True,
+        )
+        rows: list[Job | Attempt] = [*coming, *rest]
+        labels = [self.label(entry) for entry in rows]
+        key = (rows, labels)
         if key == self.rendered:
             # The dispatcher reports every few seconds; an unchanged list isn't rebuilt.
             self.selected_changed()
             return
         self.rendered = key
-        selected = self.selected()
-        identity = selected.id if selected else ""
+        chosen = self.chosen()
+        identity = chosen.id if chosen else ""
+        self.rows = rows
+        self.list.blockSignals(True)
         self.list.clear()
-        shown = []
-        for job in self.jobs:
-            # The first two choices are shown as "Active" and "All".
-            wanted = (
-                ("Active plans", "All plans")[i]
-                if (i := self.filter.currentIndex()) < 2
-                else (self.filter.currentText())
-            )
-            if wanted == "Active plans" and job.state == "Cancelled":
-                continue
-            automatic = getattr(self.controller.window, "automatic", None)
-            attempt = automatic.attempt(job) if automatic else None
-            shown_state = (
-                "Completed"
-                if attempt
-                and attempt.state == "Public Verified"
-                and attempt.processing in ("processed", "succeeded")
-                else attempt.state
-                if attempt
-                else job.state
-            )
-            if wanted not in ("All plans", "Active plans") and wanted != shown_state:
-                continue
-            date = QDate.fromString(job.local_time[:10], "yyyy-MM-dd")
-            if self.calendar and date != self.calendar.selectedDate():
-                continue
-            item = QListWidgetItem(
-                f"{job.snapshot['metadata']['title']}\n{timestamp(job.scheduled_utc, job.timezone, weekday=True)}\n{job.channel_title} · {self.execution_label(job)}"
-            )
-            item.setToolTip("Approved time zone: " + job.timezone)
-            item.setData(Qt.ItemDataRole.UserRole, job.id)
+        for entry, label in zip(rows, labels, strict=True):
+            item = QListWidgetItem(label)
+            item.setData(Qt.ItemDataRole.UserRole, entry.id)
+            if isinstance(entry, Job):
+                item.setToolTip("Time zone: " + entry.timezone)
+            elif entry.error:
+                item.setToolTip(entry.error)
             self.list.addItem(item)
-            shown.append(job)
-            if job.id == identity:
+            if entry.id == identity:
                 self.list.setCurrentItem(item)
         if self.list.count() and self.list.currentRow() < 0:
             self.list.setCurrentRow(0)
+        self.list.blockSignals(False)
         self.status.setText(
-            f"{len(shown)} shown · {len(self.jobs)} saved"
-            if shown
+            f"{len(rows)} saved"
+            if rows
             else (
                 "No scheduled YouTube uploads on this day."
                 if self.calendar_mode
-                else "No scheduled YouTube uploads."
+                else "No YouTube uploads yet."
             )
-            + " To schedule one, open a video and choose Upload."
+            + " To upload one, open a video and choose Upload."
         )
-        self.list.setVisible(bool(shown))
-        self.action_row.setVisible(bool(shown))
-        self.plan_details.setVisible(bool(shown))
-        if self.calendar_mode:
-            # The day's uploads on every platform are listed above; this card only manages
-            # YouTube's, so it appears on days that have some.
-            self.youtube.setVisible(bool(shown))
-        else:
-            # Coming up lists every platform; this card appears once YouTube has a schedule.
-            self.youtube.setVisible(bool(self.jobs))
+        self.list.setVisible(bool(rows))
+        self.action_row.setVisible(bool(rows))
+        self.youtube.setVisible(bool(rows))
         window = self.controller.window
         if hasattr(window, "dashboard"):
             self.render_agenda(window.dashboard.entries)
         self.selected_changed()
 
-    def render_uploads(self, attempts: list[Attempt]) -> None:
-        """Every YouTube upload, newest first: title, time, channel and where it is now."""
-        if self.calendar_mode:
-            return
-        shown = [a for a in attempts if a.state != "Cancelled"]  # never sent anything
-        if shown == self.shown_uploads:
-            return  # unchanged: the list keeps its selection and doesn't flicker
-        self.shown_uploads = shown
-        row = self.upload_list.currentRow()
-        self.upload_list.blockSignals(True)
-        self.upload_list.clear()
-        for attempt in shown:
-            item = QListWidgetItem(
-                f"{activity.title_of(attempt.snapshot)}\n"
-                f"{timestamp(attempt.completed_at or attempt.created_at, weekday=True)}\n"
-                f"{attempt.snapshot.get('channel_title', 'YouTube')} · "
-                f"{upload_status(attempt.state, attempt.processing)}"
+    def claimed(self) -> set[str]:
+        automatic = getattr(self.controller.window, "automatic", None)
+        return {j.id for j in self.jobs if automatic and automatic.execution(j)}
+
+    def label(self, entry: Job | Attempt) -> str:
+        """Three lines, like every platform's card: title, time, channel · where it is now."""
+        if isinstance(entry, Job):
+            return (
+                f"{entry.snapshot['metadata']['title']}\n"
+                f"{timestamp(entry.scheduled_utc, entry.timezone, weekday=True)}\n"
+                f"{entry.channel_title} · {self.execution_label(entry)}"
             )
-            item.setToolTip(attempt.error)
-            self.upload_list.addItem(item)
-        self.upload_list.blockSignals(False)
-        if shown:
-            self.upload_list.setCurrentRow(max(0, min(row, len(shown) - 1)))
-        self.uploads_count.setText(f"{len(shown)} saved")
-        self.uploads_card.setVisible(bool(shown))
-        self.upload_selected()
-
-    def chosen_upload(self) -> Attempt | None:
-        row = self.upload_list.currentRow()
-        return self.shown_uploads[row] if 0 <= row < len(self.shown_uploads) else None
-
-    def upload_selected(self, *_: Any) -> None:
-        attempt = self.chosen_upload()
-        self.open_upload.setEnabled(bool(attempt and attempt.remote_id))
+        return (
+            f"{activity.title_of(entry.snapshot)}\n"
+            f"{timestamp(entry.completed_at or entry.created_at, weekday=True)}\n"
+            f"{entry.snapshot.get('channel_title', 'YouTube')} · "
+            f"{upload_status(entry.state, entry.processing)}"
+        )
 
     def open_on_youtube(self) -> None:
         attempt = self.chosen_upload()
         if attempt and attempt.remote_id:
             QDesktopServices.openUrl(QUrl(f"https://youtu.be/{attempt.remote_id}"))
 
-    def show_upload(self) -> None:
-        window = self.controller.window
-        attempt = self.chosen_upload()
-        window.show_upload_history()
-        if attempt:
-            for index, item in enumerate(window.uploads.attempts):
-                if item.id == attempt.id:
-                    window.uploads.history.setCurrentRow(index)
-
-    def show_details(self, value: str) -> None:
-        if self.details.toPlainText() != value:  # resetting identical text would jump the view
-            self.details.setPlainText(value)
-
     def selected_changed(self, *_: Any) -> None:
         job = self.selected()
+        attempt = self.chosen_upload()
         busy = self.controller.worker is not None
-        self.edit.setEnabled(bool(job and job.state != "Cancelled") and not busy)
-        self.cancel.setEnabled(bool(job and job.state != "Cancelled") and not busy)
         automatic = getattr(self.controller.window, "automatic", None)
         claimed = bool(job and automatic and automatic.execution(job))
-        self.edit.setEnabled(self.edit.isEnabled() and not claimed)
-        attempt = automatic.attempt(job) if automatic and job else None
-        self.cancel.setEnabled(
-            self.cancel.isEnabled() and (not claimed or bool(attempt and attempt.released))
-        )
-        self.cancel.setText(
-            "Close Reconciled Schedule…" if attempt and attempt.released else "Cancel Schedule…"
-        )
+        open_job = bool(job and job.state != "Cancelled")
+        self.open_upload.setEnabled(bool(attempt and attempt.remote_id))
+        self.open_upload.setVisible(bool(attempt))
+        self.edit.setEnabled(open_job and not claimed and not busy)
+        self.edit.setVisible(bool(job) and not claimed)
+        released = bool(attempt and attempt.released)
+        self.cancel.setEnabled(open_job and not busy and (not claimed or released))
+        self.cancel.setVisible(bool(job) and (not claimed or released))
+        self.cancel.setText("Close Reconciled Upload…" if released else "Cancel Upload…")
         self.activate_job.setEnabled(
             bool(
                 job
@@ -798,8 +777,9 @@ class SchedulePage(QScrollArea):
                 and not busy
             )
         )
-        self.history.setEnabled(claimed)
-        self.history.setVisible(claimed)
+        self.activate_job.setVisible(self.activate_job.isEnabled())
+        self.history.setEnabled(bool(attempt))
+        self.history.setVisible(bool(attempt))
         self.stop_upload.setEnabled(
             bool(
                 automatic
@@ -809,16 +789,28 @@ class SchedulePage(QScrollArea):
         )
         self.stop_upload.setVisible(self.stop_upload.isEnabled())
         self.refresh.setEnabled(not busy)
-        self.show_details(
-            (
-                f"UTC: {job.scheduled_utc}\nLocal ISO: {job.local_time}\n{automatic.description(job) if automatic else 'Execution disabled'}\n\nJob: {job.id}\nPlan timing/state: {job.state} · Revision {job.revision}\n{job.reason}\nApproved: {timestamp(job.approved_at, job.timezone, empty='Not approved')}\nCancelled: {timestamp(job.cancelled_at, job.timezone, empty='No')}\n\n"
+        if job:
+            self.diagnostics = (
+                f"UTC: {job.scheduled_utc}\nLocal ISO: {job.local_time}\n"
+                f"{automatic.description(job) if automatic else 'Execution disabled'}\n\n"
+                f"Job: {job.id}\nPlan timing/state: {job.state} · Revision {job.revision}\n"
+                f"{job.reason}\n"
+                f"Approved: {timestamp(job.approved_at, job.timezone, empty='Not approved')}\n"
+                f"Cancelled: {timestamp(job.cancelled_at, job.timezone, empty='No')}\n\n"
                 + details(
                     job.snapshot, job.channel_id, job.local_time, job.timezone, job.scheduled_utc
                 )
             )
-            if job
-            else "Select a saved plan to inspect its approved content and schedule."
-        )
+        elif attempt:
+            self.diagnostics = (
+                f"Upload: {attempt.id} · {upload_status(attempt.state, attempt.processing)}\n"
+                f"Video ID: {attempt.remote_id or 'Not returned'}\n{attempt.error}"
+            )
+        else:
+            self.diagnostics = "Select an upload to see its details."
+        item = self.list.currentItem()
+        if item and item.toolTip() != self.diagnostics:
+            item.setToolTip(self.diagnostics)
 
     def execution_label(self, job: Job) -> str:
         automatic = getattr(self.controller.window, "automatic", None)
@@ -828,11 +820,11 @@ class SchedulePage(QScrollArea):
             if automatic and attempt
             else f"{job.state} · "
             + (
-                "Automatic posting paused"
+                "Waits for Auto uploading to be On"
                 if job.execution_enabled and automatic and automatic.data.get("paused", True)
-                else "Automatic posting on"
+                else "Uploads automatically"
                 if job.execution_enabled
-                else "Awaiting activation"
+                else "Needs your approval"
             )
         )
 
@@ -843,8 +835,7 @@ class SchedulePage(QScrollArea):
 
     def open_history(self) -> None:
         window = self.controller.window
-        job = self.selected()
-        attempt = window.automatic.attempt(job) if job else None
+        attempt = self.chosen_upload()
         window.show_upload_history()
         window.uploads.receive({"attempts": window.automatic.data.get("attempts", [])})
         if attempt:
@@ -863,8 +854,9 @@ class SchedulePage(QScrollArea):
             job
             and QMessageBox.question(
                 self,
-                "Cancel schedule?",
-                f"Cancel this plan for {job.snapshot['metadata']['title']}? The source and remote videos are unchanged.",
+                "Cancel this upload?",
+                f"Cancel the YouTube upload of {job.snapshot['metadata']['title']}? Your file and "
+                "anything already on YouTube are unchanged.",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No,
             )
@@ -891,6 +883,13 @@ class ScheduleController(QObject):
         self.timer.setInterval(30000)
         self.timer.timeout.connect(self.refresh_if_idle)
         self.pending: dict[str, Any] = {}
+        # A click made while a refresh runs waits for it instead of being dropped.
+        self.waiting: Callable[[], None] | None = None
+        # The Upload step's YouTube schedule: its time is already chosen, so no editor opens.
+        self.direct: dict[str, Any] | None = None
+        # Chosen in the approval: turn on this video's automatic upload (and, optionally,
+        # background and Auto uploading) once the plan is saved.
+        self.activation: tuple[int, bool, bool] | None = None
 
     def activate(self) -> None:
         self.timer.start()
@@ -903,13 +902,71 @@ class ScheduleController(QObject):
     def open_editor(
         self, video_id: int, channel_id: str, job: Job | None = None, when: datetime | None = None
     ) -> None:
-        """when: a time already chosen (the all-platforms Upload step); still approved here."""
-        if self.worker or self.editor:
+        """when: a suggested time; the person still picks and approves it here."""
+        if self.editor or self.direct:
+            return
+        if self.worker:
+            self.waiting = lambda: self.open_editor(video_id, channel_id, job, when)
             return
         self.editor = ScheduleEditor(self, video_id, channel_id, job, when)
         self.editor.exec()
         self.editor.deleteLater()
         self.editor = None
+
+    def schedule(self, video_id: int, channel_id: str, when: datetime) -> None:
+        """The Upload step's YouTube schedule: one approval of the exact plan at `when`, which
+        also turns on its automatic upload."""
+        if self.editor or self.direct:
+            return
+        if self.worker:
+            self.waiting = lambda: self.schedule(video_id, channel_id, when)
+            return
+        zone = system_zone()
+        aware = when.astimezone(ZoneInfo(zone)).replace(microsecond=0)
+        self.draft_mode = False
+        self.direct = dict(
+            video_id=video_id,
+            channel_id=channel_id,
+            local=aware.replace(tzinfo=None).isoformat(),
+            zone=zone,
+            # The exact instant is known, so a clock-change day's repeated hour needs no question.
+            occurrence=aware.fold,
+            job_id="",
+            expected_revision=0,
+        )
+        self.start("preview", self.direct)
+
+    def confirm(self, proposal: Proposal, activate: bool, parent: QWidget) -> None:
+        paused = bool(self.window.automatic.data.get("paused", 1))
+        dialog = ScheduleConfirmation(proposal, parent, activate, paused)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.activation = (
+                (proposal.video_id, dialog.background.isChecked(), dialog.turn_on.isChecked())
+                if activate
+                else None
+            )
+            self.start("approve", proposal)
+        dialog.deleteLater()
+
+    def activate_saved(self) -> None:
+        """After an approval that included it: this video's automatic upload, then (if ticked)
+        Auto uploading. Each still goes through the publisher's own checks."""
+        if self.activation is None:
+            return
+        video_id, background, turn_on = self.activation
+        self.activation = None
+        job = next(
+            (
+                j
+                for j in self.jobs
+                if j.video_id == video_id and j.state == "Scheduled" and not j.execution_enabled
+            ),
+            None,
+        )
+        if job:
+            self.window.automatic.control("authorize", (job.id, job.revision, background))
+        if turn_on:
+            self.window.automatic.control("control", (False, None))
 
     def preview(self, editor: ScheduleEditor, draft: bool) -> None:
         self.draft_mode = draft
@@ -952,35 +1009,34 @@ class ScheduleController(QObject):
             for page in (self.queue, self.calendar):
                 page.jobs = self.jobs
                 page.render()
+            if action == "approve":
+                self.activate_saved()
             if self.editor and not self.closing:
-                if self.editor.activate_after.isChecked() and not self.draft_mode:
-                    job = next(
-                        (
-                            j
-                            for j in self.jobs
-                            if j.video_id == self.editor.video_id and j.state == "Scheduled"
-                        ),
-                        None,
-                    )
-                    if job:
-                        self.window.automatic.authorize(job)
                 self.editor.dirty = False
                 self.editor.accept()
+            self.direct = None
         if "error" in result:
             for page in (self.queue, self.calendar):
                 page.status.setText(result["error"])
                 page.selected_changed()
             if self.editor:
                 self.editor.feedback.setText(result["error"])
-        if "proposal" in result and self.editor and not self.closing:
+            elif self.direct:
+                self.direct = None
+                QMessageBox.warning(self.window, "Couldn't schedule on YouTube", result["error"])
+        if "proposal" in result and not self.closing:
             proposal = result["proposal"]
-            if self.draft_mode:
+            if self.editor and self.draft_mode:
                 self.start("draft", proposal)
-            else:
-                dialog = ScheduleConfirmation(proposal, self.editor)
-                if dialog.exec() == QDialog.DialogCode.Accepted:
-                    self.start("approve", proposal)
-                dialog.deleteLater()
+            elif self.editor:
+                self.confirm(proposal, self.editor.activate_after.isChecked(), self.editor)
+            elif self.direct:
+                self.confirm(proposal, True, self.window)
+                if not self.worker:
+                    self.direct = None  # declined
+        if self.waiting and not self.worker and not self.closing:
+            waiting, self.waiting = self.waiting, None
+            waiting()
         self.idle.emit()
 
     def request_close(self) -> bool:

@@ -495,6 +495,26 @@ class VideosPage(QScrollArea):
         self.tabs.setCurrentIndex(self.upload_page())
         self.sync_steps()
 
+    def import_files(self, paths: list[str], done: Callable[[], None] | None = None) -> None:
+        """Import now, or as soon as the current work ends: the request is never dropped.
+        The first new video opens on its Details step; `done` runs once the import ends."""
+        if self.worker is None:
+            self.start("import_many", paths)
+            if done and self.worker is not None:
+
+                def finished() -> None:
+                    self.idle.disconnect(finished)
+                    done()
+
+                self.idle.connect(finished)
+            return
+
+        def later() -> None:
+            self.idle.disconnect(later)
+            self.import_files(paths, done)
+
+        self.idle.connect(later)
+
     def open_upload(self, video_id: int) -> None:
         """Select one video and show its Upload step (its Details while it isn't ready)."""
         self.upload_next = (video_id, self.worker is None)

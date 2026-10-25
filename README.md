@@ -101,10 +101,14 @@ If a Buffer or Cloudinary account reaches its plan's limits, add more accounts i
 
 1. **Videos → Add Videos** and pick your video files. Originals are never moved or changed.
 2. **1 Details:** title, description, tags, and each platform's own settings (YouTube visibility,
-   made for kids, AI-generated content label…).
+   made for kids, AI-generated content label…). **Reuse Details…** copies everything but the title
+   from another video; **Save as Upload Defaults** makes every new video you add start with this
+   description, these tags and settings (see or clear them in **Settings → Upload defaults**).
 3. **2 Review:** check everything and choose **Mark as Ready**.
 4. **3 Upload:** every ready platform is ticked. Untick any you don't want, choose **Now** or
-   **Schedule**, and press **Upload to N Platforms…**. You confirm before anything is sent.
+   **Schedule**, and press **Upload to N Platforms…**. You confirm before anything is sent; a
+   scheduled YouTube upload is approved once, in YouTube's own confirmation, and then goes out at
+   its time by itself. **Schedule** lists every upload, with one card per platform.
 
 **Auto Upload** (sidebar):
 
@@ -138,6 +142,8 @@ off (or **Remove Service…**) in Settings first.
 - YouTube's API can't set the 18+ age restriction; TikTok privacy, Duet/Stitch and music can't be
   set through Buffer; Instagram needs a Business or Creator account; Facebook posts go to Pages.
 - Cloudinary's free plan accepts videos up to 100 MB.
+- **Settings → Limits & usage** shows each platform's limit, how much of it is used and when it
+  frees up (Cloudinary's credits after **Check Cloudinary Usage**).
 - Snapchat is not supported yet.
 - More detail: [current status and limits](docs/current-status.md) and the
   [detailed guide](docs/detailed-guide.md).

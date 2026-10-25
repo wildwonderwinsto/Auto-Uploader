@@ -40,12 +40,14 @@ from .autoupload import AutoUploadEditor
 from .background import BackgroundPage
 from .components import card, divider, icon_button, tidy_buttons
 from .dashboard import DashboardPage
+from .defaults import DefaultsController
 from .execution import ExecutionController
 from .recurring import RecurringController
 from .scheduling import ScheduleController
 from .social import SocialController
 from .upload_all import UploadAll
 from .uploads import UploadPanel
+from .usage import UsagePanel
 from .videos import VideosPage
 from .watching import WatchPanel
 
@@ -190,7 +192,7 @@ class MainWindow(QMainWindow):
             # One set of details: a platform's own setting sits with them, and its caption
             # follows them.
             if social.spec.ai_label:
-                slots[social.key].insertWidget(0, social.ai_field)
+                slots[social.key].insertWidget(1, social.ai_field)  # under the platform's name
             self.videos.editor.changed.connect(
                 lambda s=social: s.follow_details(self.videos.editor.value())
             )
@@ -225,6 +227,18 @@ class MainWindow(QMainWindow):
         self.accounts.setup_requested.connect(lambda: self.open_setup(self.accounts.setup_guide))
         self.accounts.hold_refresh = self.upload_due_soon
         self.uploads.fix_button.clicked.connect(lambda: self.navigate("accounts"))
+        # Reuse Details and Upload Defaults (Details step), with their card in Settings.
+        self.defaults = DefaultsController(self)
+        upload_defaults, defaults_body = card(20, 12)
+        defaults_heading = QHBoxLayout()
+        defaults_heading.setSpacing(10)
+        defaults_heading.addWidget(icons.image(icons.pixmap("bookmark", 20, theme.ACCENT_TEXT)))
+        defaults_heading.addWidget(label("Upload defaults", "Heading"), 1)
+        defaults_body.addLayout(defaults_heading)
+        defaults_body.addWidget(self.defaults.settings)
+        self.background.defaults_slot.addWidget(upload_defaults)
+        self.usage = UsagePanel(self)
+        self.background.limits_slot.addWidget(self.usage.card)
         # Settings: one card per topic, each with a plain explanation.
         connections, connections_body = card(20, 14)
         connections_body.addWidget(label("Connections · one-time setup", "Heading"))
@@ -442,6 +456,8 @@ class MainWindow(QMainWindow):
         button = self.buttons[next(p.nav or p.key for p in PAGES if p.key == key)]
         button.setChecked(True)
         button.setFocus(Qt.FocusReason.OtherFocusReason)
+        if key in ("videos", "settings"):
+            self.defaults.activate()
         if key == "videos":
             self.videos.activate()
             self.watching.activate()
@@ -456,6 +472,7 @@ class MainWindow(QMainWindow):
             self.watching.activate()
         elif key == "settings":
             self.background.activate()
+            self.usage.activate()
         elif key == "accounts":
             self.accounts.activate()
         elif key == "dashboard":
@@ -505,7 +522,8 @@ class MainWindow(QMainWindow):
             and self.accounts.view is not None
             and self.accounts.view.connection is not None
         )
-        self.schedule_button.setEnabled(eligible and self.schedules.worker is None)
+        # A refresh running now doesn't matter: the click waits for it.
+        self.schedule_button.setEnabled(eligible)
         self.schedule_reason.setText(
             "Pick the day and time the public upload starts. You'll see the exact plan and approve it before anything is scheduled."
             if eligible
@@ -530,6 +548,8 @@ class MainWindow(QMainWindow):
             and self.background.request_close()
             and self.watching.request_close()
             and all([social.request_close() for social in self.socials])
+            and self.defaults.request_close()
+            and self.usage.request_close()
         ):
             event.accept()
         else:

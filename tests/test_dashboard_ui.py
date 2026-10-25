@@ -169,6 +169,14 @@ class DashboardTests(unittest.TestCase):
         self.page.refresh()
         self.assertIn("2.1K views", self.texts(self.page.recent))
 
+    def test_every_platform_card_shows_the_same_numbers_in_the_same_places(self):
+        self.page.refresh()
+        cards = [self.page.youtube, *self.page.buffer_cards.values()]
+        captions = [[label.text() for _value, label in card.values] for card in cards]
+        self.assertEqual(captions[0], ["UPLOADED", "SCHEDULED", "VIEWS", "SUBSCRIBERS"])
+        for other in captions[1:]:
+            self.assertEqual(other, ["UPLOADED", "SCHEDULED", "VIEWS", "FOLLOWERS"])
+
     def test_auto_upload_shortcut(self):
         self.page.auto.click()
         self.assertEqual(self.window.stack.currentWidget().objectName(), "automation")

@@ -59,6 +59,8 @@ class BackgroundPage(QScrollArea):
         super().__init__()
         self.manager, self.host = manager, window
         self.worker: ServiceWorker | None = None
+        # A click made during the regular status check runs right after it, never dropped.
+        self.queued: tuple[str, bool] | None = None
         self.closing = False
         self.quit_after_stop = False
         self.setObjectName("settings")
@@ -83,7 +85,8 @@ class BackgroundPage(QScrollArea):
         body.addWidget(
             text(
                 "Keeps scheduled and auto uploads going while ShortsScheduler is closed. Your Mac "
-                "must stay awake, logged in and online.",
+                "must stay logged in and online; while an upload is planned, it is kept awake "
+                "(closing the lid still puts it to sleep).",
                 "Muted",
             )
         )
@@ -154,6 +157,10 @@ class BackgroundPage(QScrollArea):
         body.addWidget(self.advanced)
         layout.addWidget(service)
         # Sections from other pages are placed in these slots by the window.
+        self.defaults_slot = QVBoxLayout()
+        layout.addLayout(self.defaults_slot)
+        self.limits_slot = QVBoxLayout()
+        layout.addLayout(self.limits_slot)
         self.connections_slot = QVBoxLayout()
         layout.addLayout(self.connections_slot)
         self.hosting_slot = QVBoxLayout()
@@ -220,7 +227,11 @@ class BackgroundPage(QScrollArea):
             self.start("stop")
 
     def start(self, action: str, *, consent: bool = False) -> None:
-        if self.worker or self.closing:
+        if self.closing:
+            return
+        if self.worker:
+            if action != "status" and self.worker.action == "status":
+                self.queued = (action, consent)
             return
         if action != "status":
             self.feedback.show()
@@ -236,8 +247,10 @@ class BackgroundPage(QScrollArea):
             )
         worker = ServiceWorker(self.manager, action, consent, self.login.isChecked(), self)
         self.worker = worker
-        for button in (*self.buttons.values(), self.quit_button):
-            button.setEnabled(False)
+        if action != "status":
+            # The regular check (every five seconds) leaves the buttons alone: no flashing.
+            for button in (*self.buttons.values(), self.quit_button):
+                button.setEnabled(False)
         worker.result.connect(self.receive)
         worker.finished.connect(self.finished)
         worker.start()
@@ -313,6 +326,11 @@ class BackgroundPage(QScrollArea):
         self.worker = None
         for button in (*self.buttons.values(), self.quit_button):
             button.setEnabled(True)
+        if self.queued and not self.closing:
+            action, consent = self.queued
+            self.queued = None
+            self.start(action, consent=consent)
+            return
         self.idle.emit()
         if self.quit_after_stop:
             self.host.close()
