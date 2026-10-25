@@ -245,6 +245,7 @@ class SocialController(QObject):
         self.video_id: int | None = None
         self.usage: dict[str, str] = {}  # last checked usage per Cloudinary account
         self.host_usage: dict[str, dict[str, Any]] = {}  # the same, as numbers (Settings meters)
+        self.hosts_checked: datetime | None = None  # when that usage was last read
         self.summary = text(f"{self.name} · checking…", "Muted")
         self.build_card()
         self.build_hosting()
@@ -398,7 +399,6 @@ class SocialController(QObject):
             self.test_hosting_button,
             self.remove_hosting_button,
             self.add_host_button,
-            self.check_hosts_button,
             self.save_draft_button,
             self.publish_button,
             self.schedule_button,
@@ -725,7 +725,6 @@ class SocialController(QObject):
                 )
             )
         self.add_host_button.setEnabled(bool(self.data["hosting"]) and idle)
-        self.check_hosts_button.setVisible(bool(self.data["hosts"]))
 
     def add_buffer_account(self) -> None:
         dialog = AddBufferAccount(self.window, len(self.data["accounts"]) + 1)
@@ -1078,10 +1077,8 @@ class SocialController(QObject):
         body.addLayout(self.host_rows)
         self.add_host_button = icon_button("Add Cloudinary Account…", "plus")
         self.add_host_button.clicked.connect(self.add_host)
-        self.check_hosts_button = icon_button("Check Usage", "refresh", role="Ghost")
-        self.check_hosts_button.setAccessibleName("Check Every Cloudinary Account")
-        self.check_hosts_button.clicked.connect(self.check_hosts)
-        body.addWidget(row(self.add_host_button, self.check_hosts_button))
+        # Usage is checked automatically by Settings → Limits & usage; no button here.
+        body.addWidget(row(self.add_host_button))
 
     def save_hosting(self) -> None:
         cloud, key, secret = self.cloud_name.text(), self.cloud_key.text(), self.cloud_secret.text()
@@ -1147,8 +1144,12 @@ class SocialController(QObject):
 
         self.run(lambda c: self.service.add_host(cloud, key, secret), added)
 
-    def check_hosts(self) -> None:
+    def check_hosts(self, *, quiet: bool = False) -> None:
+        """Every Cloudinary account's usage (a read-only request; nothing is uploaded). Quiet
+        when Settings checks by itself: no busy buttons, no message."""
+
         def checked(results: list[dict[str, Any]]) -> None:
+            self.hosts_checked = datetime.now(UTC)
             for result in results:
                 usage = result.get("usage")
                 self.host_usage[result["credential_key"]] = usage or {
@@ -1159,9 +1160,11 @@ class SocialController(QObject):
                     if usage
                     else str(result.get("error", ""))
                 )
-            self.reload("Checked every Cloudinary account. Nothing was uploaded.")(None)
+            self.reload("" if quiet else "Checked every Cloudinary account. Nothing was uploaded.")(
+                None
+            )
 
-        self.run(lambda c: self.service.check_hosts(), checked)
+        self.run(lambda c: self.service.check_hosts(), checked, quiet=quiet)
 
     def remove_host(self, key: str) -> None:
         if (

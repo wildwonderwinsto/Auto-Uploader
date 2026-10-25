@@ -1,11 +1,19 @@
 """Settings → Limits & usage counts, read from a real isolated library (no network)."""
 
+import os
 import tempfile
 import unittest
 from contextlib import closing
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from unittest.mock import patch
 
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+from PySide6.QtWidgets import QPushButton
+from support import shutdown
+
+from shortspublisher.app import build
 from shortspublisher.library import Library
 from shortspublisher.usage import snapshot
 
@@ -67,6 +75,31 @@ class UsageTests(unittest.TestCase):
             db.execute("UPDATE buffer_control SET retry_after=? WHERE id=1", (until.isoformat(),))
         self.assertEqual(snapshot(self.library, NOW)["waits"], [("Buffer", until)])
         self.assertEqual(snapshot(self.library, until + timedelta(seconds=1))["waits"], [])
+
+
+class UsagePanelTests(unittest.TestCase):
+    """Settings checks Cloudinary's usage by itself; there is no button for it anywhere."""
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.app, self.w = build(Path(temp.name))
+        self.w.show()
+        self.addCleanup(lambda: shutdown(self.app, self.w))
+
+    def test_cloudinary_usage_is_checked_automatically_and_quietly(self):
+        social = self.w.tiktok
+        social.data["hosts"] = [{"credential_key": "k", "cloud_name": "demo", "main": 1}]
+        with patch.object(social, "check_hosts") as check:
+            self.w.navigate("settings")
+            check.assert_called_once_with(quiet=True)
+            self.w.usage.refresh()  # within 30 minutes: not asked again
+            check.assert_called_once()
+            social.hosts_checked = datetime.now(UTC) - timedelta(minutes=31)
+            self.w.usage.refresh()
+            self.assertEqual(check.call_count, 2)
+        labels = [b.text() for b in self.w.background.findChildren(QPushButton)]
+        self.assertFalse([t for t in labels if "Usage" in t])
 
 
 if __name__ == "__main__":

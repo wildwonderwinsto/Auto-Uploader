@@ -143,7 +143,7 @@ off (or **Remove Service…**) in Settings first.
   set through Buffer; Instagram needs a Business or Creator account; Facebook posts go to Pages.
 - Cloudinary's free plan accepts videos up to 100 MB.
 - **Settings → Limits & usage** shows each platform's limit, how much of it is used and when it
-  frees up (Cloudinary's credits after **Check Cloudinary Usage**).
+  frees up (Cloudinary's credits are checked automatically while Settings is open).
 - Snapchat is not supported yet.
 - More detail: [current status and limits](docs/current-status.md) and the
   [detailed guide](docs/detailed-guide.md).

@@ -1,26 +1,29 @@
 """Settings → Limits & usage: one meter per limit, how much is used and when it frees up.
 
-Counts are read locally (`usage.snapshot`); Cloudinary's monthly credits come from its last
-check, which only runs when the person asks (Check Usage). Rows are built once and updated in
-place, so the regular refresh never flickers."""
+Counts are read locally (`usage.snapshot`). Cloudinary's monthly credits are asked of
+Cloudinary automatically (a read-only request; nothing is uploaded): when Settings opens and
+every 30 minutes while it stays open. Rows are built once and updated in place, so the regular
+refresh never flickers."""
 
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from PySide6.QtCore import QObject, Qt, QThread, QTimer, Signal
 from PySide6.QtWidgets import QGridLayout, QLabel, QProgressBar, QVBoxLayout
 
 from .. import usage
-from .components import card, icon_button, restyle, row
+from .components import card, restyle
 from .formatting import timestamp
 from .icons import PLATFORM_NAMES, image, logo, pixmap
 from .videos import text
 
 if TYPE_CHECKING:
     from .window import MainWindow
+
+CLOUDINARY_EVERY = timedelta(minutes=30)  # Cloudinary's usage changes slowly
 
 
 class Meter:
@@ -121,10 +124,6 @@ class UsagePanel(QObject):
         self.hosts: dict[str, Meter] = {}
         self.buffer_note = text("", "Subtle")
         body.addWidget(self.buffer_note)
-        self.check = icon_button("Check Cloudinary Usage", "refresh", role="Ghost")
-        self.check.setToolTip("Asks Cloudinary for each account's monthly credits (no upload)")
-        self.check.clicked.connect(lambda: self.window.tiktok.check_hosts())
-        body.addWidget(row(self.check))
         self.timer = QTimer(self)
         self.timer.setInterval(60_000)
         self.timer.timeout.connect(self.refresh)
@@ -144,6 +143,13 @@ class UsagePanel(QObject):
         if self.window.stack.currentWidget() is not self.window.background:
             self.timer.stop()  # only while Settings is shown
             return
+        social = self.window.tiktok
+        last = social.hosts_checked
+        if social.data.get("hosts") and (
+            last is None or datetime.now(UTC) - last >= CLOUDINARY_EVERY
+        ):
+            social.hosts_checked = datetime.now(UTC)  # one check at a time, even if it fails
+            social.check_hosts(quiet=True)
         if self.reader:
             return
         library = self.window.videos.service.library
@@ -236,6 +242,11 @@ class UsagePanel(QObject):
                 self.lines += Meter.ROWS
                 self.hosts[key] = meter
             found = social.host_usage.get(key)
+            checked = (
+                f" Checked {timestamp(social.hosts_checked, weekday=True)}."
+                if social.hosts_checked and found
+                else ""
+            )
             if found and "error" not in found and found.get("credits_limit"):
                 used, limit = float(found["credits_used"] or 0), float(found["credits_limit"])
                 meter.show(
@@ -243,15 +254,14 @@ class UsagePanel(QObject):
                     limit,
                     f"{used:g} of {limit:g} credits",
                     f"Monthly credits on plan {found.get('plan') or 'unknown'}; they start over "
-                    "each month. At 100 % the next Cloudinary account takes new videos.",
+                    "each month. At 100 % the next Cloudinary account takes new videos." + checked,
                 )
             else:
                 meter.show(
                     0,
                     1,
-                    "Not checked",
-                    str(found["error"])
+                    "Checking…" if not found else "Unavailable",
+                    str(found["error"]) + checked
                     if found and found.get("error")
-                    else "Choose Check Cloudinary Usage to see this month's credits.",
+                    else "Asking Cloudinary for this month's credits…",
                 )
-        self.check.setVisible(bool(hosts))
