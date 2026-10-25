@@ -13,7 +13,7 @@ from unittest.mock import patch
 import test_scheduling as fixtures
 from upload_support import REMOTE_ID
 
-from shortspublisher.awake import Keeper
+from shortspublisher.awake import Activity, Keeper
 from shortspublisher.execution import AutomaticPublisher, binding
 from shortspublisher.library import SCHEMA_VERSION, Library
 from shortspublisher.scheduling import ScheduleError
@@ -64,7 +64,9 @@ class ExecutionTests(unittest.TestCase):
         self.assertFalse(self.a.status()["awake"])  # nothing uploads while paused
 
     def test_keeper_holds_and_releases(self):
-        keeper = Keeper((sys.executable, "-c", "import time; time.sleep(60)"))
+        activity = Activity()
+        activity.runtime = None  # the real exemption is tested on its own below
+        keeper = Keeper((sys.executable, "-c", "import time; time.sleep(60)"), activity)
         keeper.hold(True)
         process = keeper.process
         self.assertTrue(keeper.holding)
@@ -74,6 +76,35 @@ class ExecutionTests(unittest.TestCase):
         self.assertFalse(keeper.holding)
         assert process is not None
         self.assertIsNotNone(process.poll())
+
+    def test_keeper_exempts_from_app_nap_only_while_holding(self):
+        class Fake:
+            active = False
+
+            def begin(self):
+                self.active = True
+
+            def end(self):
+                self.active = False
+
+        fake = Fake()
+        keeper = Keeper((sys.executable, "-c", "import time; time.sleep(60)"), fake)
+        keeper.hold(True)
+        self.assertTrue(fake.active)
+        keeper.hold(False)
+        self.assertFalse(fake.active)
+
+    @unittest.skipUnless(sys.platform == "darwin", "macOS only")
+    def test_app_nap_exemption_is_registered_and_released(self):
+        activity = Activity()
+        activity.begin()
+        try:
+            self.assertTrue(activity.active)
+            activity.begin()  # once only
+        finally:
+            activity.end()
+        self.assertFalse(activity.active)
+        activity.end()  # harmless when not active
 
     def test_disabled_plan_never_uploads(self):
         job = self.f.approve()

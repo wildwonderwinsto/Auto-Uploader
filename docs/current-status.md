@@ -24,7 +24,7 @@
 | **Schedule, Details and Settings fixes** (2026-10-25): Schedule shows one "YouTube uploads" card (scheduled and done, like the other platforms; the Calendar's extra YouTube card is gone); scheduling YouTube from the Upload step needs one approval (the plan and its automatic upload together; no separate "Approve Automatic Upload", and clicks made during a background refresh wait instead of being dropped); a YouTube-scheduled video can't be uploaded to YouTube again; "One video → Add Videos From Your Mac…" imports even while the Videos page is busy; Now / Schedule / Upload are even; Details has **Reuse Details…** and **Save as Upload Defaults** (description, tags, YouTube settings, TikTok/Instagram AI labels; never the title; kept in `upload-defaults.json`, no schema change); Dashboard platform cards share four columns (Uploaded · Scheduled · Views · Followers/Subscribers); Settings no longer flashes (the 5-second service check and the 5-minute YouTube re-check are quiet) its **Background uploading** card is plain On/Off (one line on what it's doing, **Turn On…** sets it up and starts it, **Restart** when it stopped or after an update, **Turn Off…**; details in the status tooltip), and it has **Upload defaults** and **Limits & usage** (YouTube per UTC day, Buffer per 24 h and scheduled-at-once, Buffer waits, Cloudinary credits checked automatically, read-only, when Settings opens and every 30 minutes while it is open; the old Check Usage buttons are gone) | Automated + offscreen screenshots; not yet used live |
 | **Instagram Reels and Facebook Page Reels via Buffer** (Stage 20): one shared Buffer sign-in, per-platform limits ("Fits on"), Post Now / Schedule (editor pages 6–7), status, duplicates, reconciliation, Auto Upload (folder uploads and upload queues) with separate approvals, Dashboard cards and views | Automated + native Cocoa harness with controlled Buffer/Cloudinary; **not yet used live** |
 
-Tests: 935 automated, plus 28 native macOS harness commands, `native_tiktok.py` and `native_social.py`. See
+Tests: 937 automated, plus 28 native macOS harness commands, `native_tiktok.py` and `native_social.py`. See
 `docs/stage-19-buffer-tiktok-verification.md` and `docs/stage-20-verification.md`.
 
 ## Pending / not verified
@@ -50,7 +50,9 @@ Tests: 935 automated, plus 28 native macOS harness commands, `native_tiktok.py` 
   its running code, then needs **Settings → Restart…**), the open app uploads on time instead and
   the sidebar says so; with the app closed, nothing uploads until the service is restarted. While auto uploading is on and an upload is planned (activated schedule, queued video,
   active watched folder or an upload running), the app and the background service each hold
-  `caffeinate -dis` (`awake.py`), keeping the Mac and display awake; closing the lid still sleeps.
+  `caffeinate -dis` (`awake.py`), keeping the Mac and display awake, and the app also takes a
+  latency-critical NSProcessInfo activity so App Nap never slows it behind other windows; closing
+  the lid still sleeps.
 - YouTube's upload API cannot set the 18+ age restriction; such content needs manual handling.
 - Daily limits: ShortsScheduler sets none of its own (no setting or field); the schedule decides.
   Only the platforms' own ceilings apply: YouTube 100 uploads a day (its API), TikTok 25, Instagram
