@@ -76,7 +76,7 @@ class ActivationDialog(QDialog):
         content.appendPlainText(f"\nUTC: {job.scheduled_utc}\nLocal ISO: {job.local_time}")
         diagnostics.body.addWidget(content)
         layout.addWidget(diagnostics)
-        self.background = QCheckBox("Also allow this exact upload while the interface is closed")
+        self.background = QCheckBox("Also upload it while ShortsScheduler is closed")
         self.background.setToolTip(BACKGROUND_CONSENT)
         layout.addWidget(self.background)
         layout.addWidget(text(BACKGROUND_CONSENT))

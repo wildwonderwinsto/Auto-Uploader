@@ -149,3 +149,55 @@ class BackgroundUiTests(unittest.TestCase):
         c.render_switch()
         self.assertIn("go out on time", c.state.text())
         self.assertEqual(c.rail.objectName(), "RailStatus")
+
+    def state(self, **values):
+        owner = {"heartbeat": "", "kind": "background", "state": "Running", "error": ""}
+        base = dict(status="Not Installed", enabled=0, installed=0, login=0, pid=None, requested=0)
+        self.page.receive({**base, **values, "owner": owner})
+        return [a for a, b in self.page.buttons.items() if not b.isHidden()]
+
+    def test_one_plain_next_step_per_state(self):
+        self.assertEqual(self.state(), ["enable"])
+        self.assertIn("Off", self.page.status.text())
+        running = dict(status="Running", enabled=1, installed=1, pid=7, requested=1)
+        self.assertEqual(self.state(**running), ["restart", "disable"])
+        self.assertIn("Running", self.page.status.text())
+        stopped = dict(status="Not Running", enabled=1, installed=1, requested=1)
+        self.assertEqual(self.state(**stopped), ["restart", "disable"])
+        self.assertIn("Stopped unexpectedly", self.page.status.text())
+        self.assertEqual(self.page.buttons["restart"].objectName(), "Primary")
+        self.assertEqual(
+            self.state(status="Not Running", enabled=1, installed=1), ["start", "disable"]
+        )
+        self.assertTrue(self.page.quit_button.isHidden())
+
+    def test_turn_on_starts_it_in_one_click(self):
+        calls = []
+
+        def perform(action, **_):
+            calls.append(action)
+            owner = {"heartbeat": "", "kind": "background", "state": "Stopped", "error": ""}
+            return {
+                "status": "Not Running",
+                "enabled": 1,
+                "installed": 1,
+                "login": 0,
+                "pid": None,
+                "requested": int(action == "start"),
+                "owner": owner,
+            }
+
+        with (
+            patch.object(self.page.manager, "perform", side_effect=perform),
+            patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes),
+        ):
+            self.page.buttons["enable"].click()
+            settle(self.f.app, self.page)
+            settle(self.f.app, self.page)
+        self.assertEqual(calls, ["enable", "start"])
+
+    def test_a_cleared_problem_stops_showing(self):
+        self.page.receive({"error": "controlled problem"})
+        self.assertFalse(self.page.feedback.isHidden())
+        self.state()
+        self.assertTrue(self.page.feedback.isHidden())
