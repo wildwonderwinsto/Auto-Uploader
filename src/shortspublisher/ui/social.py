@@ -15,7 +15,7 @@ from datetime import UTC, datetime
 from threading import Event
 from typing import TYPE_CHECKING, Any
 
-from PySide6.QtCore import QDateTime, QObject, Qt, QThread, QTime, QTimer, Signal
+from PySide6.QtCore import QObject, Qt, QThread, QTime, QTimer, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -79,7 +79,7 @@ from .components import (
     restyle,
     row,
 )
-from .formatting import handle, system_zone, time_pattern, timestamp
+from .formatting import handle, in_an_hour, picked, system_zone, time_pattern, timestamp
 from .icons import PLATFORM_NAMES, image, logo
 from .videos import text
 from .watching import FolderConsent
@@ -1231,7 +1231,7 @@ class SocialController(QObject):
         field.setSpacing(6)
         field.addWidget(text("AI-generated content label", "Muted"))
         field.addWidget(self.ai)
-        self.when = QDateTimeEdit(QDateTime.currentDateTime().addSecs(3600))
+        self.when = QDateTimeEdit(in_an_hour())
         self.when.setDisplayFormat("ddd, MMM d, yyyy · " + time_pattern())
         self.when.setCalendarPopup(True)
         self.when.setAccessibleName(f"{self.name} post time")
@@ -1285,7 +1285,7 @@ class SocialController(QObject):
             self.caption.setPlainText(caption)
 
     def when_utc(self) -> datetime:
-        return datetime.fromtimestamp(self.when.dateTime().toSecsSinceEpoch(), UTC)
+        return picked(self.when.dateTime())
 
     def caption_changed(self) -> None:
         value = self.caption.toPlainText()

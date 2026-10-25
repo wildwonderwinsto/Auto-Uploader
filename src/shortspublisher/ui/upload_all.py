@@ -10,7 +10,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import QDateTime, Qt
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox,
     QDateTimeEdit,
@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (
 from ..social import HOSTING_CONSENT
 from . import theme
 from .components import icon_button, platform_choice, row, set_choice
-from .formatting import handle, time_pattern, timestamp, upload_status
+from .formatting import handle, in_an_hour, picked, time_pattern, timestamp, upload_status
 from .icons import PLATFORM_NAMES, icon
 from .videos import text
 
@@ -90,7 +90,7 @@ class UploadAll(QWidget):
         self.now.setChecked(True)
         when.addWidget(self.now)
         when.addWidget(self.later)
-        self.when = QDateTimeEdit(QDateTime.currentDateTime().addSecs(3600))
+        self.when = QDateTimeEdit(in_an_hour())
         self.when.setDisplayFormat("ddd, MMM d, yyyy · " + time_pattern())
         self.when.setCalendarPopup(True)
         self.when.setAccessibleName("Upload time on every platform")
@@ -277,7 +277,7 @@ class UploadAll(QWidget):
     def due(self) -> datetime | None:
         if not self.later.isChecked():
             return None
-        return datetime.fromtimestamp(self.when.dateTime().toSecsSinceEpoch(), UTC)
+        return picked(self.when.dateTime())
 
     def upload(self) -> None:
         w = self.window_

@@ -1,11 +1,11 @@
 """Display-only formatting. Never round-trip these strings into approved plans."""
 
-from datetime import datetime
+from datetime import UTC, datetime
 from math import isfinite
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from PySide6.QtCore import QDate, QLocale, QTime, QTimeZone
+from PySide6.QtCore import QDate, QDateTime, QLocale, QTime, QTimeZone
 
 # The user's macOS Region, captured before the English default replaces it; supplies the clock.
 _region: QLocale | None = None
@@ -30,6 +30,22 @@ def use_english_interface() -> None:
 
 def system_zone() -> str:
     return bytes(QTimeZone.systemTimeZoneId().data()).decode() or "UTC"
+
+
+def whole_minute(value: QDateTime) -> QDateTime:
+    """Upload times are picked to the minute: the pickers show no seconds, so none are kept."""
+    time = value.time()
+    return QDateTime(value.date(), QTime(time.hour(), time.minute()), value.timeZone())
+
+
+def in_an_hour() -> QDateTime:
+    """A picker's starting time: an hour from now, on the minute."""
+    return whole_minute(QDateTime.currentDateTime().addSecs(3600))
+
+
+def picked(value: QDateTime) -> datetime:
+    """The UTC moment a picker shows, without hidden seconds."""
+    return datetime.fromtimestamp(whole_minute(value).toSecsSinceEpoch(), UTC)
 
 
 def time_pattern(locale: QLocale | None = None, *, seconds: bool = False) -> str:

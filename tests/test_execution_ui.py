@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 import test_scheduling_ui as fixtures
 from account_support import CHANNEL
-from PySide6.QtCore import QDate
+from PySide6.QtCore import QDate, QDateTime, QTime
 from PySide6.QtWidgets import QDialog, QMessageBox, QPlainTextEdit
 from support import settle
 
@@ -117,6 +117,25 @@ class ExecutionUiTests(unittest.TestCase):
         self.assertFalse(ready)
         self.assertIn("Scheduled", words)
         self.assertIn(timestamp(job.scheduled_utc, job.timezone, weekday=True), words)
+
+    def test_upload_times_are_whole_minutes(self):
+        step = self.window.upload_all
+        self.assertEqual(step.when.dateTime().time().second(), 0)
+        self.assertEqual(step.when.dateTime().time().msec(), 0)
+        for social in self.window.socials:
+            self.assertEqual(social.when.dateTime().time().second(), 0)
+        # Seconds the picker can't show are never kept: 10:40 means 10:40:00.
+        step.when.setDateTime(QDateTime(QDate(2030, 1, 2), QTime(10, 40, 40, 500)))
+        step.later.click()
+        due = step.due()
+        self.assertEqual((due.second, due.microsecond), (0, 0))
+        social = self.window.socials[0]
+        social.when.setDateTime(QDateTime(QDate(2030, 1, 2), QTime(10, 40, 40, 500)))
+        self.assertEqual(social.when_utc().second, 0)
+        editor = fixtures.ScheduleEditor(self.f.c, self.f.ui.fixture.video.id, CHANNEL.id)
+        self.addCleanup(editor.deleteLater)
+        editor.time.setTime(QTime(10, 40, 40))
+        self.assertTrue(editor.values()["local"].endswith("T10:40:00"))
 
     def test_default_global_pause_visible(self):
         self.assertIn("Automatic publishing is paused", self.c.summary.text())

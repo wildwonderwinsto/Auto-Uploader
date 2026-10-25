@@ -247,7 +247,7 @@ class ScheduleEditor(QDialog):
             .replace(tzinfo=None)
         )
         self.date.setDate(QDate(initial.year, initial.month, initial.day))
-        self.time.setTime(QTime(initial.hour, initial.minute, initial.second))
+        self.time.setTime(QTime(initial.hour, initial.minute))  # on the minute: no seconds
         self.occurrence = QComboBox()
         self.occurrence.addItem("Choose one", None)
         self.occurrence.addItem("The first time (before the clocks change)", 0)
@@ -309,7 +309,8 @@ class ScheduleEditor(QDialog):
             channel_id=self.channel_id,
             local=self.date.date().toString("yyyy-MM-dd")
             + "T"
-            + self.time.time().toString("HH:mm:ss"),
+            + self.time.time().toString("HH:mm")
+            + ":00",  # the picker shows no seconds, so none are kept
             zone=self.zone.currentText(),
             occurrence=self.occurrence.currentData(),
             job_id=self.job.id if self.job else "",
