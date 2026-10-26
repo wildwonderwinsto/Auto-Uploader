@@ -364,13 +364,19 @@ class ExecutionController(QObject):
             if i["state"] == "Queued" and i["plan_id"] in plans
         ]
         automation = getattr(w, "automation", None)
-        folders = sum(
-            bool(p["enabled"] and not p["revoked"] and not p["removed"])
-            for p in (automation.data["profiles"] if automation else [])
-        ) + sum(
-            bool(p["enabled"] and not p["revoked"])
-            for s in getattr(w, "socials", ())
-            for p in s.data["profiles"]
+        # One auto upload covers several platforms (a profile each): count its folder once.
+        folders = len(
+            {
+                p["folder_id"]
+                for p in (automation.data["profiles"] if automation else [])
+                if p["enabled"] and not p["revoked"] and not p["removed"]
+            }
+            | {
+                p["folder_id"]
+                for s in getattr(w, "socials", ())
+                for p in s.data["profiles"]
+                if p["enabled"] and not p["revoked"] and not p.get("removed")
+            }
         )
 
         def count(n: int, word: str) -> str:

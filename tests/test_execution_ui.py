@@ -292,3 +292,19 @@ class ExecutionUiTests(unittest.TestCase):
         self.assertTrue(
             self.c.data["attempts"][0].state in ("Paused", "Interrupted", "Public Verified")
         )
+
+    def test_one_auto_upload_on_four_platforms_is_one_watched_folder(self):
+        def profile(folder):
+            return {"folder_id": folder, "enabled": 1, "revoked": 0, "removed": 0}
+
+        automation = self.window.automation
+        saved = (automation.data, [dict(s.data) for s in self.window.socials])
+        self.addCleanup(lambda: setattr(automation, "data", saved[0]))
+        for social, data in zip(self.window.socials, saved[1], strict=True):
+            self.addCleanup(lambda s=social, d=data: setattr(s, "data", d))
+        automation.data = {**automation.data, "profiles": [profile("f")]}
+        for social in self.window.socials:
+            social.data = {**social.data, "profiles": [profile("f")]}
+        self.assertIn("1 watched folder", self.c.waiting())
+        self.window.socials[0].data["profiles"].append(profile("g"))
+        self.assertIn("2 watched folders", self.c.waiting())

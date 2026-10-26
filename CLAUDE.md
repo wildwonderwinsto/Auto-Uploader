@@ -31,7 +31,7 @@ Never start a new stage without explicit instruction.
 .venv/bin/python -m shortspublisher --data-dir /tmp/sp-test        # isolated run
 ./install.sh                                                        # env + FFmpeg + ShortsScheduler.app
 open ShortsScheduler.app        # the USER's real data (~/Library/Application Support/ShortsPublisher/ShortsPublisher) — don't run
-QT_QPA_PLATFORM=offscreen .venv/bin/python -m unittest discover -s tests   # 942 tests, ~12 min
+QT_QPA_PLATFORM=offscreen .venv/bin/python -m unittest discover -s tests   # 943 tests, ~12 min
 cd tests && QT_QPA_PLATFORM=offscreen PYTHONPATH=../src ../.venv/bin/python -m unittest test_shell  # focused
 .venv/bin/ruff check . && .venv/bin/ruff format --check . && .venv/bin/mypy
 ```
