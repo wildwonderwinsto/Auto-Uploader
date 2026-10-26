@@ -366,7 +366,7 @@ class AutomaticPublisher:
                             "A quota or channel limit was reported today. Automatic initiation is blocked; investigate and deliberately reschedule after the restriction clears."
                         )
                     self.schedules._conflicts(
-                        db, job.video_id, job.channel_id, job.source_hash, job.id
+                        db, job.video_id, job.channel_id, job.source_hash, job.id, starting=True
                     )
                     snap = self.schedules._snapshot(
                         db,

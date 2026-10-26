@@ -73,6 +73,12 @@ def resolve_time(local: str, zone: str, occurrence: int | None, now: datetime) -
     return chosen
 
 
+CONFLICT = (
+    "Upload history contains a completed or unresolved conflict. Inspect and deliberately "
+    "reconcile it in Upload History first."
+)
+
+
 def due_state(instant: datetime, now: datetime) -> str:
     if now < instant:
         return "Scheduled"
@@ -216,7 +222,12 @@ class ScheduleService:
         digest: str,
         excluding: str = "",
         queue: str = "",
+        *,
+        starting: bool = False,
     ) -> None:
+        """The same video or identical content already uploaded or planned on this channel is
+        always a conflict. Another video's unfinished upload only matters when this one is
+        about to start (`starting`): a plan for later must not be blocked by it."""
         from .recurring import reservation_conflict
 
         reservation_conflict(db, channel, video_id, digest, excluding, queue)
@@ -234,10 +245,8 @@ class ScheduleService:
             same = row["channel_id"] == channel and (
                 row["video_id"] == video_id or json.loads(row["snapshot"])["sha256"] == digest
             )
-            if same or row["state"] not in SETTLED:
-                raise ScheduleError(
-                    "Upload history contains a completed or unresolved conflict. Inspect and deliberately reconcile it in Upload History first."
-                )
+            if same or (starting and row["state"] not in SETTLED):
+                raise ScheduleError(CONFLICT)
 
     def preview(
         self,
@@ -420,7 +429,11 @@ class ScheduleService:
                     "SELECT 1 FROM scheduled_executions WHERE job_id=?", (old.id,)
                 ).fetchone():
                     continue
-                if old.state in ("Draft", "Cancelled", "Needs Attention"):
+                if old.state in ("Draft", "Cancelled") or (
+                    # Checked again only when it was blocked by an upload conflict, which
+                    # can clear (another video's upload finishing); a real duplicate stays.
+                    old.state == "Needs Attention" and old.reason != CONFLICT
+                ):
                     continue
                 state, reason = old.state, old.reason
                 try:

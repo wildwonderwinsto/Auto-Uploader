@@ -532,15 +532,9 @@ class AccountsPage(QScrollArea):
                 # Check again on its own, so uploads never wait for a manual "Check Again".
                 self.start("refresh", quiet=True)
                 return
-            self.freshness.start(60_000)  # an upload is about to use the account; try later
-            self.present(
-                AccountView(
-                    "Verification pending",
-                    "Checking again shortly, once the upload that is due has started.",
-                    self.view.configured,
-                    self.view.connection,
-                )
-            )
+            # An upload is using (or about to use) the account: check again in a minute. The
+            # connection is shown unchanged meanwhile; each upload checks it again first anyway.
+            self.freshness.start(60_000)
 
     def request_close(self) -> bool:
         self.closing = True

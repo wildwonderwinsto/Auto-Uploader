@@ -5,6 +5,7 @@ import os
 import shutil
 import sqlite3
 import unittest
+from contextlib import closing
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -165,6 +166,57 @@ class SchedulingTests(unittest.TestCase):
         self.f.prepare()
         with self.assertRaisesRegex(ScheduleError, "Upload history"):
             self.preview()
+
+    def second_video(self):
+        from support import make_video
+
+        from shortspublisher.media import Inspector
+
+        path = self.f.root / "other.mp4"
+        make_video(path, duration=1)
+        video, _ = self.f.library.save(str(path), Inspector().inspect(path, Event()))
+        original = self.f.preps.get(self.f.video.id)
+        saved = self.f.preps.save(video.id, original.metadata, 0)
+        self.f.preps.complete(video.id, saved.revision, video.inspection_revision)
+        return video
+
+    def test_another_videos_unfinished_upload_never_blocks_a_later_plan(self):
+        other = self.second_video()
+        self.f.prepare()  # the first video's upload is not finished
+        job = self.s.commit(self.preview(video_id=other.id), approve=True)
+        self.assertEqual(self.s.evaluate()[0].state, "Scheduled")
+        # Starting still waits for it: one upload at a time.
+        with closing(self.f.library.connect()) as db:
+            with self.assertRaisesRegex(ScheduleError, "Upload history"):
+                self.s._conflicts(db, other.id, CHANNEL.id, job.source_hash, job.id, starting=True)
+
+    def test_plan_flagged_by_an_upload_conflict_recovers_when_it_clears(self):
+        from shortspublisher.scheduling import CONFLICT
+
+        other = self.second_video()
+        job = self.s.commit(self.preview(video_id=other.id), approve=True)
+        self.f.prepare()
+        with closing(self.f.library.connect()) as db, db:
+            self.s._write(
+                db,
+                replace(job, state="Needs Attention", reason=CONFLICT, revision=job.revision + 1),
+            )
+        recovered = self.s.get(job.id)
+        self.assertEqual(self.s.evaluate()[0].state, "Scheduled")
+        self.assertGreater(self.s.get(job.id).revision, recovered.revision)
+
+    def test_real_duplicate_stays_flagged(self):
+        from shortspublisher.scheduling import CONFLICT
+
+        self.f.confirm()  # this same video is already on the channel
+        with patch.object(self.s, "_conflicts"):  # a plan that was flagged for it
+            job = self.approve()
+        with closing(self.f.library.connect()) as db, db:
+            self.s._write(
+                db,
+                replace(job, state="Needs Attention", reason=CONFLICT, revision=job.revision + 1),
+            )
+        self.assertEqual(self.s.evaluate()[0].state, "Needs Attention")
 
     def test_manual_upload_blocks_active_plan(self):
         self.approve()

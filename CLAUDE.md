@@ -31,7 +31,7 @@ Never start a new stage without explicit instruction.
 .venv/bin/python -m shortspublisher --data-dir /tmp/sp-test        # isolated run
 ./install.sh                                                        # env + FFmpeg + ShortsScheduler.app
 open ShortsScheduler.app        # the USER's real data (~/Library/Application Support/ShortsPublisher/ShortsPublisher) — don't run
-QT_QPA_PLATFORM=offscreen .venv/bin/python -m unittest discover -s tests   # 937 tests, ~12 min
+QT_QPA_PLATFORM=offscreen .venv/bin/python -m unittest discover -s tests   # 940 tests, ~12 min
 cd tests && QT_QPA_PLATFORM=offscreen PYTHONPATH=../src ../.venv/bin/python -m unittest test_shell  # focused
 .venv/bin/ruff check . && .venv/bin/ruff format --check . && .venv/bin/mypy
 ```
@@ -96,7 +96,9 @@ migration of the user's real library needs the user's explicit approval and a fr
   automatic profile bound to folder/channel/rules/cadence. Folder-watching consent is not publishing
   consent. Don't guess Made for Kids or synthetic-content declarations.
 - Duplicate prevention: SHA-256 content registry, channel-aware history, queue reservations,
-  execution claims. An uncertain previous upload needs reconciliation, never a blind retry.
+  execution claims. `ScheduleService._conflicts`: the same video/content is always a conflict;
+  another video's unfinished upload only blocks the moment of starting (`starting=True`, the
+  claim), never a plan for later; a plan flagged with `CONFLICT` is re-checked and recovers. An uncertain previous upload needs reconciliation, never a blind retry.
 - Never install, enable or modify the production LaunchAgent (`com.shortspublisher.publisher`)
   unprompted. Background-service consent is separate from global publishing consent.
   The dispatcher OS lock decides who dispatches: a live worker holds it for its whole life, so

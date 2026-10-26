@@ -103,12 +103,16 @@ class AccountsUiTests(unittest.TestCase):
         self.assertEqual(self.youtube.calls, 3)
         self.assertTrue(self.page.status.text().startswith("Connected"))
         # ...but never while an upload is due, because uploads need the account first.
+        # The connection stays shown as it is (uploads allowed): a postponed check must never
+        # look like a disconnect or ask to allow uploads again.
         self.page.hold_refresh = lambda: True
+        status, allowed = self.page.status.text(), self.page.view.upload_allowed
         self.page.expire_verification()
         self.assertIsNone(self.page.worker)
         self.assertEqual(self.youtube.calls, 3)
-        self.assertEqual(self.page.status.text(), "Checking…")
-        self.assertIn("shortly", self.page.feedback.text())
+        self.assertEqual(self.page.status.text(), status)
+        self.assertEqual(self.page.view.upload_allowed, allowed)
+        self.assertTrue(self.page.freshness.isActive())  # tried again in a minute
 
     def test_connect_cancellation_responsive_repeated_clicks(self):
         self.configure()
