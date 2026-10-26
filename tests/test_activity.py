@@ -268,3 +268,39 @@ class GroupTests(unittest.TestCase):
         (group,) = activity.grouped([later, soon])
         self.assertEqual(group.when, soon.when)
         self.assertEqual(group.status, "Scheduled")
+
+
+class FolderWaitingTests(unittest.TestCase):
+    def profile(self, **values):
+        return {"id": "p", "enabled": 1, "revoked": 0, "removed": 0, "revision": 2, **values}
+
+    def decision(self, name, video_id, state="Waiting for next opportunity", revision=2):
+        return {
+            "name": name,
+            "video_id": video_id,
+            "state": state,
+            "profile_revision": revision,
+        }
+
+    def test_buffer_platforms_join_youtube_in_the_waiting_row(self):
+        decisions = {
+            "p": [  # newest first, as stored
+                self.decision("b.mp4", 2),
+                self.decision("a.mp4", 1),
+                self.decision("sent.mp4", 9, state="Enrolled"),
+                self.decision("old.mp4", 8, revision=1),
+            ]
+        }
+        waiting = activity.folder_waiting("tiktok", [self.profile()], decisions)
+        self.assertEqual([(e.title, e.video_id) for e in waiting], [("a", 1), ("b", 2)])
+        youtube = activity.Entry(
+            "youtube", "a", "", activity.UPCOMING, "Waiting in queue", video_id=1
+        )
+        groups = activity.grouped([youtube, *waiting])
+        self.assertEqual(groups[0].platforms, ("youtube", "tiktok"))
+        self.assertEqual(groups[0].status, "Waiting in queue")
+
+    def test_paused_or_removed_auto_uploads_are_not_listed(self):
+        decisions = {"p": [self.decision("a.mp4", 1)]}
+        for profile in (self.profile(enabled=0), self.profile(removed=1), self.profile(revoked=1)):
+            self.assertEqual(activity.folder_waiting("tiktok", [profile], decisions), [])

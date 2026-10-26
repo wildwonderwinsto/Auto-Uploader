@@ -360,7 +360,13 @@ class DashboardPage(QScrollArea):
             w.recurring.data or {},
             w.tiktok.data.get("posts", []),
             {s.key: s.data.get("posts", []) for s in w.socials if s is not w.tiktok},
-        )
+        ) + [
+            entry
+            for s in w.socials
+            for entry in activity.folder_waiting(
+                s.key, s.data.get("profiles", []), s.data.get("decisions", {})
+            )
+        ]
 
     def load_stats(self, *, force: bool = False) -> None:
         view = self.window_.accounts.view

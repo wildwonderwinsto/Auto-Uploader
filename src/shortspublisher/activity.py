@@ -184,6 +184,36 @@ def queued_posts(recurring: dict[str, Any]) -> list[Entry]:
     ]
 
 
+def folder_waiting(
+    platform: str,
+    profiles: Iterable[dict[str, Any]],
+    decisions: dict[str, list[dict[str, Any]]],
+) -> list[Entry]:
+    """Watched-folder videos still waiting their turn for a Buffer platform (each goes to
+    Buffer once the one before it has posted), oldest first, like YouTube's queue."""
+    entries = []
+    for profile in profiles:
+        if not profile["enabled"] or profile["revoked"] or profile.get("removed"):
+            continue
+        for decision in reversed(decisions.get(profile["id"], [])):
+            if (
+                decision["state"] == "Waiting for next opportunity"
+                and decision["profile_revision"] == profile["revision"]
+            ):
+                name = str(decision.get("name") or "Video")
+                entries.append(
+                    Entry(
+                        platform,
+                        name.rsplit(".", 1)[0],
+                        "",
+                        UPCOMING,
+                        "Waiting in queue",
+                        video_id=decision.get("video_id"),
+                    )
+                )
+    return entries
+
+
 def tiktok_posts(posts: Iterable[dict[str, Any]]) -> list[Entry]:
     return buffer_posts("tiktok", posts)
 
