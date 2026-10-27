@@ -9,6 +9,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Event
 
+import requests
 from buffer_support import CHANNELS, FakeBuffer, FakeCloudinary, Response, Secrets
 from support import make_video
 
@@ -221,6 +222,26 @@ class HostingTests(Fixture):
             self.service.publish(self.video().id, "One", False, None, Event())
         self.assertEqual(self.service.posts()[0]["state"], "Hosting failed")
         self.assertEqual(self.buffers.main.creates, [])
+
+    def test_interrupted_hosting_stays_pending_and_retries(self):
+        self.connect()
+        account = self.clouds.accounts["demo"]
+        upload = account.post
+
+        def dropped(url, data=None, files=None, timeout=None):
+            account.post = upload
+            raise requests.ConnectionError("connection reset")
+
+        account.post = dropped
+        with self.assertRaisesRegex(SocialError, "interrupted"):
+            self.service.publish(self.video().id, "One", False, None, Event())
+        post = self.service.posts()[0]
+        self.assertEqual(post["state"], "Uploading to media host")
+        self.assertIn("Trying again", post["error"])
+        self.assertEqual(self.buffers.main.creates, [])
+        self.service.host_and_submit(post["id"], Event())
+        self.assertEqual(self.service.get(post["id"])["state"], "Publishing")
+        self.assertIn(post["hosted_id"], account.stored)
 
     def test_copies_are_removed_from_the_account_that_holds_them(self):
         self.connect()

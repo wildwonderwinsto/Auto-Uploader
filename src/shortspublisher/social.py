@@ -76,6 +76,8 @@ UNSENT = (
     "Needs reconciliation",
 )
 CHECK_BACKOFF = (2, 5, 15, 60)  # minutes after the due time; then hourly
+HOSTING_RETRY = timedelta(minutes=30)  # wait before copying a failed video to the host again
+RETRY_NOTE = " Trying again shortly; if its time passes it moves to the next upload time."
 GIVE_UP_HOURS = 48
 RETENTION_GRACE = timedelta(hours=24)
 INSIGHTS_KEY = "buffer-insights-key"  # optional personal API key, only for view counts
@@ -1247,6 +1249,14 @@ class BufferPostService:
                         # Refused before anything was stored: the next account may take it.
                         self.mark_full(key)
                         continue
+                    if exc.kind == "uncertain" or (
+                        post["profile_id"] and exc.kind not in ("source", "size")
+                    ):
+                        # Nothing reached Buffer, and the same public_id with overwrite=false
+                        # makes another upload safe: stay pending and try again later, like a
+                        # YouTube schedule (a queue or auto upload moves to its next time).
+                        self.write(post_id, error=str(exc) + RETRY_NOTE)
+                        raise SocialError(str(exc)) from exc
                     self.write(post_id, state="Hosting failed", error=str(exc))
                     raise SocialError(str(exc)) from exc
             if hosted is None:
@@ -1254,6 +1264,9 @@ class BufferPostService:
                     "Every Cloudinary account is over its plan's limits. Add another account in "
                     "Settings → Video hosting, or wait for the limits to reset."
                 )
+                if post["profile_id"]:
+                    self.write(post_id, error=message + RETRY_NOTE)
+                    raise SocialError(message)
                 self.write(post_id, state="Hosting failed", error=message)
                 raise SocialError(message)
             self.write(post_id, hosted_url=hosted.url, state="Hosted and ready", error="")
@@ -1958,6 +1971,22 @@ class BufferPostService:
                     file["video_id"],
                 )
 
+    def retry_pending(
+        self, post: Any, rule: Rule, used: list[str], cap: int, cancel: Event
+    ) -> None:
+        """A video that could not be copied to the host waits a while, then tries again; once
+        its time has passed it takes the next free upload time instead of being dropped."""
+        if post["state"] == "Uploading to media host" and post["error"]:
+            now = self.clock()
+            if parse(post["updated_at"]) > now - HOSTING_RETRY:
+                return
+            if post["due_at"] and parse(post["due_at"]) < now + timedelta(minutes=5):
+                slot = self.next_slot(rule, [d for d in used if d != post["due_at"]], cap)
+                if slot is None:
+                    return
+                self.write(post["id"], due_at=stamp(slot))
+        self.host_and_submit(post["id"], cancel)
+
     def next_slot(self, rule: Rule, used: list[str], cap: int) -> datetime | None:
         """The first posting time after the last one used (and at least five minutes away) on
         a day that still has room under `cap`."""
@@ -2019,7 +2048,9 @@ class BufferPostService:
                 "Waiting for Buffer limit",
                 self.spec.reconnect_state,
             ):
-                self.host_and_submit(pending["id"], cancel)
+                self.retry_pending(
+                    pending, Rule.decode(queue["rule"]), used, self.spec.daily_max, cancel
+                )
             return  # the next video waits until this one has posted
         if paused or not items:
             return
@@ -2105,7 +2136,13 @@ class BufferPostService:
                 "Waiting for Buffer limit",
                 self.spec.reconnect_state,
             ):
-                self.host_and_submit(pending["id"], cancel)
+                self.retry_pending(
+                    pending,
+                    Rule.decode(p["settings"]["rule"]),
+                    used,
+                    p["settings"]["daily_cap"],
+                    cancel,
+                )
             return
         if paused and paused[0]:
             self.status(
