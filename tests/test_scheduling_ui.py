@@ -2,6 +2,7 @@
 
 import unittest
 from datetime import datetime, timedelta
+from threading import Event
 from unittest.mock import patch
 
 import test_uploads_ui as fixtures
@@ -11,7 +12,8 @@ from PySide6.QtWidgets import QDialog, QMessageBox, QPlainTextEdit
 from support import settle
 from test_scheduling import NOW
 
-from shortspublisher.ui.scheduling import ScheduleConfirmation, ScheduleEditor
+from shortspublisher.cadence import Rule
+from shortspublisher.ui.scheduling import QueuedUpload, ScheduleConfirmation, ScheduleEditor
 
 
 class SchedulingUiTests(unittest.TestCase):
@@ -193,3 +195,48 @@ class SchedulingUiTests(unittest.TestCase):
             settle(self.ui.app, self.c)
         self.assertEqual(self.c.queue.list.count(), 1)
         self.assertIn("failure", self.c.queue.status.text())
+
+    def test_unstarted_queue_shows_in_youtube_and_can_retry_next_time(self):
+        recurring = self.ui.window.recurring
+        settle(self.ui.app, recurring)
+        recurring.service.clock = lambda: NOW
+        proposal = recurring.service.preview(
+            [self.ui.fixture.video.id],
+            CHANNEL.id,
+            Rule("UTC", tuple(range(7)), "09:00", "21:00", 2),
+            "Queue",
+            Event(),
+        )
+        recurring.service.approve(proposal, Event(), consent=True, restrictions_resolved=True)
+        with recurring.service.library.connect() as db:
+            db.execute("UPDATE recurring_items SET state='Needs Attention',reason='Source changed'")
+        recurring.start("load")
+        settle(self.ui.app, recurring)
+        page = self.c.queue
+        self.assertEqual(page.list.count(), 1)
+        queued = page.chosen()
+        self.assertIsInstance(queued, QueuedUpload)
+        self.assertIn("Needs attention", page.list.item(0).text())
+        self.assertIn("Source changed", page.diagnostics)
+        self.assertFalse(page.retry_queue.isHidden())
+        self.assertTrue(page.retry_queue.isEnabled())
+        self.assertTrue(page.edit.isHidden())
+        self.assertTrue(page.history.isHidden())
+        self.assertIsNone(page.chosen_upload())
+        with patch.object(self.ui.window.videos, "open_upload") as opened:
+            page.open_video.click()
+            opened.assert_called_once_with(queued.video_id)
+        page.retry_queue.click()
+        settle(self.ui.app, recurring)
+        self.assertEqual(page.chosen().id, queued.id)
+        self.assertEqual(page.chosen().state, "Queued")
+        self.assertIn("Video verified and queued", page.status.text())
+        self.assertFalse(self.ui.fixture.store.all())
+        original_row = page.list.item(0)
+        recurring.render()
+        self.assertIs(page.list.item(0), original_row)
+        first = recurring.data["items"][0]
+        recurring.render({**recurring.data, "items": [first, {**first, "id": "second-in-line"}]})
+        self.assertEqual(len(page.rows), 2)
+        self.assertNotEqual(page.rows[0].next_slot, page.rows[1].next_slot)
+        self.assertIn("Estimated:", page.list.item(1).text())

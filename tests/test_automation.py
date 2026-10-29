@@ -1,5 +1,6 @@
 """Standing authorization is distinct from human review; real SQLite, FFprobe and uploader."""
 
+import os
 import shutil
 import sqlite3
 import unittest
@@ -698,3 +699,89 @@ class AutomationTests(unittest.TestCase):
         self.f.dispatch()
         self.assertEqual(self.u.http.initiations, 1)
         self.assertEqual(len(self.f.r.state()["items"]), 1)
+
+    def changed_attribute_item(self):
+        self.approve()
+        path = self.arrival()
+        self.scan()
+        info = path.stat()
+        os.utime(path, ns=(info.st_atime_ns, info.st_mtime_ns))
+        return path, self.f.r.state()["items"][0]
+
+    def test_retry_unchanged_bytes_recovers_attention_for_next_slot(self):
+        path, item = self.changed_attribute_item()
+        self.a.control(False)
+        self.due()
+        self.f.dispatch()
+        self.assertEqual(self.f.r.state()["items"][0]["state"], "Needs Attention")
+        self.assertFalse(self.u.store.all())
+        following = self.f.r.retry(item["id"], Event())
+        saved = self.f.r.state()["items"][0]
+        self.assertEqual(saved["state"], "Queued")
+        self.assertEqual(saved["position"], item["position"])
+        self.assertGreater(datetime.fromisoformat(following), self.s.clock())
+        self.assertIsNone(self.u.preps.get(item["video_id"]).reviewed_revision)
+        self.f.dispatch()
+        self.assertFalse(self.u.store.all())
+        self.due()
+        self.f.dispatch()
+        self.assertEqual(self.u.store.all()[0].state, "Public Verified")
+        self.assertEqual(bytes(self.u.http.received), path.read_bytes())
+        with self.assertRaises(ScheduleError):
+            self.f.r.retry(item["id"], Event())
+        self.assertEqual(self.u.http.initiations, 1)
+
+    def test_retry_also_checks_queued_video_before_it_becomes_attention(self):
+        _, item = self.changed_attribute_item()
+        self.f.r.retry(item["id"], Event())
+        self.assertEqual(self.f.r.state()["items"][0]["state"], "Queued")
+        self.assertTrue(self.a.status()["paused"])
+        self.assertFalse(self.u.store.all())
+
+    def test_retry_rejects_changed_bytes_even_with_same_size_and_mtime(self):
+        path, item = self.changed_attribute_item()
+        info = path.stat()
+        data = path.read_bytes()
+        path.write_bytes(data[:-1] + bytes([data[-1] ^ 1]))
+        os.utime(path, ns=(info.st_atime_ns, info.st_mtime_ns))
+        with self.assertRaisesRegex(ScheduleError, "contents changed"):
+            self.f.r.retry(item["id"], Event())
+        self.assertEqual(self.f.r.state()["items"][0], item)
+
+    def test_retry_metadata_edit_rolls_back_provisional_binding(self):
+        _, item = self.changed_attribute_item()
+        before = self.state()["decisions"]
+        prep = self.u.preps.get(item["video_id"])
+        self.u.preps.save(item["video_id"], replace(prep.metadata, title="Edited"), prep.revision)
+        with self.assertRaises(ScheduleError):
+            self.f.r.retry(item["id"], Event())
+        self.assertEqual(self.state()["decisions"], before)
+        self.assertEqual(self.f.r.state()["items"][0], item)
+
+    def test_retry_revoked_profile_and_upload_history_cannot_be_bypassed(self):
+        _, item = self.changed_attribute_item()
+        before = self.state()["decisions"]
+        with self.u.library.connect() as db:
+            db.execute("UPDATE automation_profiles SET revoked=1")
+        with self.assertRaises(ScheduleError):
+            self.f.r.retry(item["id"], Event())
+        self.assertEqual(self.state()["decisions"], before)
+        with self.u.library.connect() as db:
+            db.execute("UPDATE automation_profiles SET revoked=0")
+            db.execute("UPDATE recurring_items SET state='Removed'")
+        self.u.store.create(item["video_id"], item["channel_id"], item["snapshot"])
+        with self.u.library.connect() as db:
+            db.execute("UPDATE recurring_items SET state='Queued'")
+        with self.assertRaises(ScheduleError):
+            self.f.r.retry(item["id"], Event())
+        self.assertEqual(self.state()["decisions"], before)
+        self.assertEqual(self.f.r.state()["items"][0], item)
+
+    def test_retry_cancelled_before_commit_preserves_queue(self):
+        _, item = self.changed_attribute_item()
+        before = self.state()["decisions"]
+        with patch("shortspublisher.recurring.checkpoint", side_effect=Cancelled):
+            with self.assertRaises(Cancelled):
+                self.f.r.retry(item["id"], Event())
+        self.assertEqual(self.state()["decisions"], before)
+        self.assertEqual(self.f.r.state()["items"][0], item)

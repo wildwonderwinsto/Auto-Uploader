@@ -966,6 +966,8 @@ class RecurringWorker(QThread):
                 )
             elif self.action == "control":
                 self.service.control(*self.argument)
+            elif self.action == "retry":
+                result["retried"] = self.service.retry(self.argument, self.cancel)
             elif self.action == "queue_save":
                 result["saved"] = self.save(**self.argument)
             elif self.action == "queue_control":
@@ -1162,6 +1164,15 @@ class RecurringController(QObject):
         if "saved" in result and self.editor:
             self.editor.finish()
             self.say("Queue saved. Its videos upload one at a time at the times you chose.")
+        if action == "retry":
+            message = result.get("error") or (
+                "Video verified and queued. Next posting time: "
+                + timestamp(result["retried"], weekday=True)
+                + ". It keeps its queue order; Auto uploading and the queue must be on."
+            )
+            self.say(message)
+            self.window.schedules.queue.status.setText(message)
+            self.window.schedules.queue.selected_changed()
         if "proposal" in result and self.editor:
             dialog = BatchConfirmation(result["proposal"], self.editor)
             if (
@@ -1199,6 +1210,8 @@ class RecurringController(QObject):
 
         if isinstance(data, dict):
             self.data = data
+        if hasattr(self.window, "schedules"):
+            self.window.schedules.queue.render()
         queued = sum(i["state"] == "Queued" for i in self.data.get("items", []))
         self.summary.setText(
             "Recurring posting · "

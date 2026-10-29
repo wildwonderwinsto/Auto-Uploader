@@ -852,6 +852,8 @@ class VideosPage(QScrollArea):
             status, tone = "Scheduled", "Info"
         elif entry.results or self.posted_through_buffer(video.id):
             status, tone = "Uploaded", "Good"
+        elif entry.auto_queued:
+            status, tone = "Queued for auto upload", "Info"
         elif entry.reviewed:
             status, tone = "Ready", "Good"
         else:

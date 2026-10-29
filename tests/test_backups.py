@@ -243,6 +243,21 @@ class HostingTests(Fixture):
         self.assertEqual(self.service.get(post["id"])["state"], "Publishing")
         self.assertIn(post["hosted_id"], account.stored)
 
+    def test_try_again_after_hosting_failed_sends_the_post(self):
+        self.connect()
+        self.clouds.accounts["demo"].full = True
+        with self.assertRaises(SocialError):
+            self.service.publish(self.video().id, "One", False, None, Event())
+        post = self.service.posts()[0]
+        self.assertEqual(post["state"], "Hosting failed")
+        self.now += timedelta(hours=25)
+        self.clouds.accounts["demo"].full = False
+        self.service.retry(post["id"], Event())
+        self.assertEqual(self.service.get(post["id"])["state"], "Publishing")
+        self.assertEqual(len(self.buffers.main.creates), 1)
+        with self.assertRaisesRegex(SocialError, "Only a post"):
+            self.service.retry(post["id"], Event())
+
     def test_copies_are_removed_from_the_account_that_holds_them(self):
         self.connect()
         self.add_spare()

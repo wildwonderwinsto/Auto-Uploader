@@ -407,6 +407,7 @@ class SocialController(QObject):
             self.release_button,
             self.queue_refresh,
             self.queue_cancel,
+            self.queue_retry,
         ]
 
     def request_close(self) -> bool:
@@ -1403,6 +1404,28 @@ class SocialController(QObject):
                 self.reload(f"{self.name} post cancelled."),
             )
 
+    def retry(self, view: QListWidget) -> None:
+        post = self.selected_post(view)
+        if not post:
+            return
+        late = post["mode"] == "customScheduled" and (
+            datetime.fromisoformat(post["due_at"]) <= datetime.now(UTC)
+        )
+        when = "Its time has passed, so it will post now." if late else "It keeps its time."
+        if (
+            QMessageBox.question(
+                self.window,
+                f"Try this {self.name} post again?",
+                f"The video never reached Buffer, so nothing was posted. Copy it again and send "
+                f"it to {self.name}? {when}",
+            )
+            == QMessageBox.StandardButton.Yes
+        ):
+            self.run(
+                lambda c: self.service.retry(post["id"], c),
+                self.reload(f"Trying the {self.name} post again."),
+            )
+
     def release(self) -> None:
         post = self.selected_post(self.video_history)
         if (
@@ -1579,9 +1602,14 @@ class SocialController(QObject):
         self.queue_cancel = icon_button("Cancel Post…", "x", role="Danger")
         self.queue_cancel.setAccessibleName(f"Cancel Selected {self.name} Post…")
         self.queue_cancel.clicked.connect(lambda: self.cancel_post(self.queue_list))
+        self.queue_retry = icon_button("Try Again…", "refresh")
+        self.queue_retry.setAccessibleName(f"Try Selected {self.name} Post Again…")
+        self.queue_retry.clicked.connect(lambda: self.retry(self.queue_list))
         self.queue_feedback = text("", "Muted")
         self.queue_feedback.hide()
-        self.queue_actions = flow(self.queue_open, self.queue_cancel, self.queue_refresh)
+        self.queue_actions = flow(
+            self.queue_open, self.queue_retry, self.queue_cancel, self.queue_refresh
+        )
         for widget in (self.queue_empty, self.queue_list, self.queue_actions, self.queue_feedback):
             body.addWidget(widget)
 
@@ -1620,6 +1648,9 @@ class SocialController(QObject):
         )
         self.queue_cancel.setVisible(
             bool(post and post["state"] in CANCELLABLE and not post["released"])
+        )
+        self.queue_retry.setVisible(
+            bool(post and post["state"] == "Hosting failed" and not post["released"])
         )
 
     def open_post(self) -> None:

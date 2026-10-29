@@ -5,11 +5,12 @@ from dataclasses import replace
 from threading import Event
 from unittest.mock import patch
 
+import test_automation
 import test_uploads_ui as fixtures
 from PySide6.QtCore import Qt
 from PySide6.QtMultimedia import QMediaPlayer
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QMessageBox
+from PySide6.QtWidgets import QLabel, QMessageBox
 from support import settle
 from test_library import MEDIA
 
@@ -198,6 +199,25 @@ class BrowseUiTests(unittest.TestCase):
         self.assertEqual(before, f.preps.get(f.video.id))
         self.assertEqual(f.http.initiations, 0)
 
+    def test_auto_upload_row_does_not_ask_for_details(self):
+        identity = self.p.selected.id
+        entry = self.p.entries[identity]
+        self.p.entries[identity] = replace(
+            entry,
+            preparation=replace(entry.preparation, reviewed_revision=None, reviewed_at=""),
+            auto_queued=True,
+        )
+        self.p.render_library()
+        item = self.p.list.item(0)
+        row = self.p.list.itemWidget(item)
+        labels = [label.text() for label in row.findChildren(QLabel)]
+        self.assertIn("Queued for auto upload", labels)
+        self.assertNotIn("Needs details", labels)
+        self.assertIn("Queued for auto upload", item.toolTip())
+        self.assertIn("Queued for auto upload", item.data(Qt.ItemDataRole.AccessibleTextRole))
+        self.p.filter.setCurrentIndex(self.p.filter.findData("needs_review"))
+        self.assertEqual(self.p.list.count(), 0)
+
     def test_preview_new_source_clears_frame_time_and_audio(self):
         preview = self.p.preview
         preview.toggle_mute()
@@ -300,3 +320,68 @@ class BrowsePersistenceTests(unittest.TestCase):
         self.assertEqual(entry.results, 2)
         self.assertEqual(entry.attempts, 2)
         self.assertEqual(entry.plans, 0)
+
+
+class BrowseAutomationTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        test_automation.AutomationTests.setUpClass()
+
+    @classmethod
+    def tearDownClass(cls):
+        test_automation.AutomationTests.tearDownClass()
+
+    def setUp(self):
+        self.f = test_automation.AutomationTests()
+        self.f.setUp()
+        self.addCleanup(self.f.doCleanups)
+
+    def enroll(self, **settings):
+        self.f.approve(**settings)
+        self.f.arrival()
+        self.f.scan()
+        return self.f.state()["decisions"][0]["video_id"]
+
+    def entry(self, identity):
+        return read_entries(self.f.u.library, Event())[identity]
+
+    def test_automatic_details_are_queued_without_fabricating_review(self):
+        identity = self.enroll()
+        before = self.f.u.preps.get(identity)
+        entry = self.entry(identity)
+        self.assertTrue(entry.auto_queued)
+        self.assertFalse(entry.reviewed)
+        self.assertEqual(entry.label, "Queued for auto upload")
+        self.assertEqual(browse({identity: entry}, "", "needs_review", "newest"), [])
+        self.assertEqual(browse({identity: entry}, "", "reviewed", "newest"), [])
+        self.assertEqual(before, self.f.u.preps.get(identity))
+        self.assertFalse(self.f.u.store.all())
+
+    def test_review_mode_still_needs_review(self):
+        identity = self.enroll(mode="review")
+        self.assertFalse(self.entry(identity).auto_queued)
+        self.assertIn("Needs details or review", self.entry(identity).label)
+
+    def test_stale_or_removed_approval_does_not_hide_missing_review(self):
+        identity = self.enroll()
+        for statement in (
+            "UPDATE preparations SET revision=revision+1",
+            "UPDATE automation_profiles SET revision=revision+1",
+            "UPDATE automation_profiles SET revoked=1",
+            "UPDATE automation_profiles SET removed=1",
+            "UPDATE recurring_items SET state='Needs Attention'",
+            "UPDATE recurring_items SET state='Removed'",
+        ):
+            with self.subTest(statement=statement):
+                with self.f.u.library.connect() as db:
+                    db.execute(statement)
+                    db.commit()
+                    self.assertFalse(self.entry(identity).auto_queued)
+                    # Restore the fixture before checking the next invalidation independently.
+                    if "+1" in statement:
+                        db.execute(statement.replace("+1", "-1"))
+                    elif "SET state=" in statement:
+                        db.execute("UPDATE recurring_items SET state='Queued'")
+                    else:
+                        db.execute(statement.replace("=1", "=0"))
+                self.assertTrue(self.entry(identity).auto_queued)

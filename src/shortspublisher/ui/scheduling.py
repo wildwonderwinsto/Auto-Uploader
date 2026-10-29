@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from threading import Event
 from typing import TYPE_CHECKING, Any
@@ -46,6 +47,7 @@ from PySide6.QtWidgets import (
 from .. import activity
 from ..activity import Entry
 from ..background_state import BACKGROUND_CONSENT
+from ..cadence import Rule
 from ..execution import CONSENT
 from ..scheduling import Job, Proposal, ScheduleService, local_choices
 from ..upload_store import Attempt
@@ -69,6 +71,18 @@ if TYPE_CHECKING:
 from .components import Section, card, flow, icon_button
 
 NOTICE = "Saved plans require separate automatic Public activation and the global switch. Background execution also requires job permission and a running, explicitly enabled service. Older approvals remain desktop-only."
+
+
+@dataclass(frozen=True)
+class QueuedUpload:
+    id: str
+    video_id: int
+    snapshot: dict[str, Any]
+    state: str
+    reason: str
+    next_slot: str
+    timezone: str
+    enabled: bool
 
 
 def details(
@@ -510,7 +524,13 @@ class SchedulePage(QScrollArea):
         self.refresh = icon_button("Refresh Status", "refresh", role="Ghost")
         self.refresh.setAccessibleName("Refresh YouTube Status")
         self.refresh.clicked.connect(lambda: controller.start("load"))
+        self.retry_queue = icon_button("Retry at Next Posting Time", "refresh")
+        self.retry_queue.clicked.connect(self.retry_selected)
+        self.open_video = icon_button("Open Video…", "film", role="Ghost")
+        self.open_video.clicked.connect(self.open_queued_video)
         self.action_row = flow(
+            self.retry_queue,
+            self.open_video,
             self.open_upload,
             self.activate_job,
             self.edit,
@@ -523,7 +543,7 @@ class SchedulePage(QScrollArea):
         # Developer details of the chosen row: its tooltip, not a box on the page.
         self.diagnostics = ""
         self.attempts: list[Attempt] = []
-        self.rows: list[Job | Attempt] = []
+        self.rows: list[Job | Attempt | QueuedUpload] = []
         self.youtube.hide()  # an empty platform card isn't shown
         if not calendar:
             # The calendar's day agenda already lists every platform's uploads.
@@ -633,7 +653,7 @@ class SchedulePage(QScrollArea):
         if self.calendar and self.next_date:
             self.calendar.setSelectedDate(self.next_date)
 
-    def chosen(self) -> Job | Attempt | None:
+    def chosen(self) -> Job | Attempt | QueuedUpload | None:
         row = self.list.currentRow()
         return self.rows[row] if 0 <= row < len(self.rows) else None
 
@@ -646,7 +666,7 @@ class SchedulePage(QScrollArea):
         if isinstance(chosen, Attempt):
             return chosen
         automatic = getattr(self.controller.window, "automatic", None)
-        return automatic.attempt(chosen) if automatic and chosen else None
+        return automatic.attempt(chosen) if automatic and isinstance(chosen, Job) else None
 
     def render_uploads(self, attempts: list[Attempt]) -> None:
         """Uploads started now (not from a schedule) join the scheduled ones in the list."""
@@ -686,7 +706,35 @@ class SchedulePage(QScrollArea):
             key=lambda e: datetime.fromisoformat(moment(e)).astimezone(UTC),
             reverse=True,
         )
-        rows: list[Job | Attempt] = [*coming, *rest]
+        recurring = getattr(self.controller.window, "recurring", None)
+        data = recurring.data if recurring else {}
+        plans = {p["id"]: p for p in data.get("plans", [])}
+        next_slots = {p["id"]: p["next_slot"] for p in plans.values()}
+        waiting = []
+        for i in data.get("items", []) if not self.calendar_mode else []:
+            if i["job_id"] or i["state"] not in ("Queued", "Needs Attention"):
+                continue
+            plan = plans.get(i["plan_id"])
+            if not plan:
+                continue
+            slot = next_slots[plan["id"]]
+            waiting.append(
+                QueuedUpload(
+                    i["id"],
+                    i["video_id"],
+                    i["snapshot"],
+                    i["state"],
+                    i["reason"],
+                    slot,
+                    plan["rule"]["zone"],
+                    bool(plan["enabled"]),
+                )
+            )
+            if i["state"] == "Queued":
+                next_slots[plan["id"]] = (
+                    Rule.decode(plan["rule"]).next(datetime.fromisoformat(slot), 1)[0].isoformat()
+                )
+        rows: list[Job | Attempt | QueuedUpload] = [*waiting, *coming, *rest]
         labels = [self.label(entry) for entry in rows]
         key = (rows, labels)
         if key == self.rendered:
@@ -704,7 +752,7 @@ class SchedulePage(QScrollArea):
             item.setData(Qt.ItemDataRole.UserRole, entry.id)
             if isinstance(entry, Job):
                 item.setToolTip("Time zone: " + entry.timezone)
-            elif entry.error:
+            elif isinstance(entry, Attempt) and entry.error:
                 item.setToolTip(entry.error)
             self.list.addItem(item)
             if entry.id == identity:
@@ -734,8 +782,21 @@ class SchedulePage(QScrollArea):
         automatic = getattr(self.controller.window, "automatic", None)
         return {j.id for j in self.jobs if automatic and automatic.execution(j)}
 
-    def label(self, entry: Job | Attempt) -> str:
+    def label(self, entry: Job | Attempt | QueuedUpload) -> str:
         """Three lines, like every platform's card: title, time, channel · where it is now."""
+        if isinstance(entry, QueuedUpload):
+            when = (
+                "Waiting for retry"
+                if entry.state == "Needs Attention"
+                else "Estimated: " + timestamp(entry.next_slot, entry.timezone, weekday=True)
+            )
+            return (
+                f"{activity.title_of(entry.snapshot)}\n"
+                f"{when}\n"
+                f"{entry.snapshot['channel_title']} · "
+                + ("Needs attention" if entry.state == "Needs Attention" else "Queued")
+                + (" · Queue paused" if not entry.enabled else "")
+            )
         if isinstance(entry, Job):
             return (
                 f"{entry.snapshot['metadata']['title']}\n"
@@ -755,6 +816,13 @@ class SchedulePage(QScrollArea):
             QDesktopServices.openUrl(QUrl(f"https://youtu.be/{attempt.remote_id}"))
 
     def selected_changed(self, *_: Any) -> None:
+        queued = self.chosen()
+        queued = queued if isinstance(queued, QueuedUpload) else None
+        recurring = getattr(self.controller.window, "recurring", None)
+        self.retry_queue.setVisible(queued is not None)
+        self.retry_queue.setEnabled(bool(queued and recurring and not recurring.worker))
+        self.open_video.setVisible(queued is not None)
+        self.open_video.setEnabled(queued is not None)
         job = self.selected()
         attempt = self.chosen_upload()
         busy = self.controller.worker is not None
@@ -807,11 +875,30 @@ class SchedulePage(QScrollArea):
                 f"Upload: {attempt.id} · {upload_status(attempt.state, attempt.processing)}\n"
                 f"Video ID: {attempt.remote_id or 'Not returned'}\n{attempt.error}"
             )
+        elif queued:
+            self.diagnostics = (
+                f"{queued.reason or 'Waiting for its turn in the queue.'}\n"
+                "Retry verifies the approved video contents and details, then returns it to "
+                "its place in the queue for a future posting time. Auto uploading and the queue "
+                "must be on. Changed contents or details need review and approval again."
+            )
         else:
             self.diagnostics = "Select an upload to see its details."
         item = self.list.currentItem()
         if item and item.toolTip() != self.diagnostics:
             item.setToolTip(self.diagnostics)
+
+    def retry_selected(self) -> None:
+        chosen = self.chosen()
+        if isinstance(chosen, QueuedUpload):
+            self.controller.window.recurring.start("retry", chosen.id)
+            self.selected_changed()
+
+    def open_queued_video(self) -> None:
+        chosen = self.chosen()
+        if isinstance(chosen, QueuedUpload):
+            self.controller.window.navigate("videos")
+            self.controller.window.videos.open_upload(chosen.video_id)
 
     def execution_label(self, job: Job) -> str:
         automatic = getattr(self.controller.window, "automatic", None)

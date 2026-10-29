@@ -1625,6 +1625,26 @@ class BufferPostService:
         self.write(post_id, state="Cancelled", released=1, next_check_at=None, error="")
         self.remove_hosted(post_id)
 
+    def retry(self, post_id: str, cancel: Event) -> None:
+        """An explicit Try Again for a post whose copy to the host failed: nothing reached
+        Buffer, so it is safe. A time that has already passed becomes Post Now."""
+        post = self.get(post_id)
+        if post["state"] != "Hosting failed" or post["released"]:
+            raise SocialError("Only a post whose video could not be copied can be tried again.")
+        values: dict[str, Any] = {"state": "Uploading to media host", "error": ""}
+        if post["mode"] == "customScheduled" and parse(post["due_at"]) <= self.clock() + timedelta(
+            minutes=5
+        ):
+            values.update(mode="shareNow", due_at=None)
+        try:
+            with FileLock(str(self.lock), timeout=60):
+                self.write(post_id, **values)
+                self.host_and_submit(post_id, cancel)
+        except Timeout:
+            raise SocialError(
+                f"Another {self.spec.name} operation is running. Try again shortly."
+            ) from None
+
     def release(self, post_id: str) -> None:
         """Explicit acknowledgement that a failed/uncertain post may be attempted again."""
         post = self.get(post_id)

@@ -7,10 +7,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sqlite3
 import uuid
 from contextlib import closing
 from datetime import datetime, timedelta
+from pathlib import Path
 from threading import Event
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -18,7 +20,9 @@ from zoneinfo import ZoneInfo
 from .cadence import Rule
 from .library import LibraryError
 from .media import checkpoint
+from .preparation import media_token
 from .scheduling import Job, ScheduleError, ScheduleService, stamp
+from .source import fingerprint, signature
 
 CONSENT = (
     "Authorize automatic PUBLIC YouTube uploads of only the specifically listed reviewed videos, "
@@ -134,6 +138,76 @@ class RecurringService:
                 raise ScheduleError(
                     "Publishing history already covers these bytes on this channel. Inspect its result; recurring approval cannot bypass it."
                 )
+
+    def retry(self, identity: str, cancel: Event) -> str:
+        """Requeue an unstarted item after verifying the exact approved bytes and details.
+
+        A filesystem attribute change can alter ctime without changing the video. Explicit
+        retry may refresh that file binding, never the approved content, metadata or scope.
+        No upload starts here and no missed opportunity is replayed.
+        """
+        with closing(self.library.connect()) as db:
+            row = db.execute("SELECT * FROM recurring_items WHERE id=?", (identity,)).fetchone()
+            if not row or row["job_id"] or row["state"] not in ("Queued", "Needs Attention"):
+                raise ScheduleError("Only an unstarted queued video can retry at the next time.")
+            original = dict(row)
+            snap = json.loads(row["snapshot"])
+        # Hash outside the write transaction; recheck the row and file identity under its lock.
+        with Path(snap["path"]).open("rb") as source:
+            digest = fingerprint(source, cancel)
+            observed = list(signature(os.fstat(source.fileno())))
+        if digest != original["source_hash"]:
+            raise ScheduleError("Video contents changed. Review and approve this video again.")
+        with closing(self.library.connect()) as db, db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT * FROM recurring_items WHERE id=?", (identity,)).fetchone()
+            if not row or dict(row) != original:
+                raise ScheduleError("The queued video changed during retry. Refresh and try again.")
+            plan = self.plan(db, row["plan_id"])
+            if item_binding(plan, row["video_id"], snap) != row["binding"]:
+                raise ScheduleError("Queue approval changed. Review the queue again.")
+            if automation := snap.get("automation"):
+                video_row = db.execute(
+                    "SELECT * FROM videos WHERE id=?", (row["video_id"],)
+                ).fetchone()
+                if not video_row:
+                    raise ScheduleError("The video is no longer in the library.")
+                video = self.library.decode(video_row)
+                # _snapshot still validates the profile, folder, metadata revision and review
+                # mode. This provisional update is rolled back if any check fails.
+                updated = db.execute(
+                    "UPDATE automation_decisions SET media_token=? "
+                    "WHERE id=? AND item_id=? AND source_hash=? AND state='Queued'",
+                    (media_token(video), automation, identity, digest),
+                )
+                if updated.rowcount != 1:
+                    raise ScheduleError("This auto upload no longer approves the queued video.")
+            current = self.schedules._snapshot(
+                db, row["video_id"], row["channel_id"], automation=automation or ""
+            )
+            current["sha256"] = digest
+            current = normalized(current)
+            if current["stat"] != observed:
+                raise ScheduleError("Source changed during retry. Try again once it is stable.")
+            if any(
+                current.get(k) != v for k, v in snap.items() if k not in ("stat", "reviewed_media")
+            ):
+                raise ScheduleError("Approved details changed. Review and approve the queue again.")
+            db.execute("UPDATE recurring_items SET state='Removed' WHERE id=?", (identity,))
+            self.conflict(db, row["video_id"], row["channel_id"], digest)
+            db.execute(
+                "UPDATE recurring_items SET state='Queued',reason='',snapshot=?,binding=? WHERE id=?",
+                (json.dumps(current), item_binding(plan, row["video_id"], current), identity),
+            )
+            if automation:
+                db.execute(
+                    "UPDATE automation_decisions SET snapshot=?,updated_at=? WHERE id=?",
+                    (json.dumps(current), stamp(self.clock()), automation),
+                )
+            self.skip_past(db, plan, "Retry waits for the next future posting time.")
+            self.event(db, plan["id"], stamp(self.clock()), "Retry queued", {"item_id": identity})
+            checkpoint(cancel)
+            return str(self.plan(db, plan["id"])["next_slot"])
 
     def preview(
         self,

@@ -24,6 +24,7 @@ class LibraryEntry:
     plans: int = 0
     results: int = 0
     attempts: int = 0
+    auto_queued: bool = False
 
     @property
     def reviewed(self) -> bool:
@@ -32,6 +33,8 @@ class LibraryEntry:
     @property
     def label(self) -> str:
         state = "Review complete (saved)" if self.reviewed else "Needs details or review"
+        if self.auto_queued:
+            state = "Queued for auto upload"
         if self.video.error:
             state = "File inspection needs attention"
         parts = [state]
@@ -65,17 +68,30 @@ def read_entries(library: Library, cancel: Event) -> dict[int, LibraryEntry]:
                 "FROM upload_attempts GROUP BY video_id"
             )
         }
+        automation: dict[int, set[int]] = {}
+        for row in db.execute(
+            "SELECT d.video_id,d.preparation_revision "
+            "FROM automation_decisions d "
+            "JOIN automation_profiles p ON p.id=d.profile_id "
+            "JOIN recurring_items i ON i.id=d.item_id "
+            "WHERE d.state='Queued' AND d.profile_revision=p.revision "
+            "AND p.removed=0 AND p.revoked=0 AND i.state IN ('Queued','Reserved')"
+        ):
+            automation.setdefault(row["video_id"], set()).add(row["preparation_revision"])
         entries = {}
         for row in db.execute("SELECT * FROM videos"):
             checkpoint(cancel)
             video = library.decode(row)
             attempts, results = history.get(video.id, (0, 0))
+            prep = PreparationStore.read(db, video.id)
             entries[video.id] = LibraryEntry(
                 video,
-                PreparationStore.read(db, video.id),
+                prep,
                 plans.get(video.id, 0),
                 results,
                 attempts,
+                auto_queued=prep.revision in automation.get(video.id, set())
+                and not review_checks(video, prep, "").errors,
             )
         return entries
 
@@ -93,7 +109,7 @@ def browse(
             continue
         if category == "reviewed" and not entry.reviewed:
             continue
-        if category == "needs_review" and entry.reviewed:
+        if category == "needs_review" and (entry.reviewed or entry.auto_queued):
             continue
         if category == "scheduled" and not entry.plans:
             continue
