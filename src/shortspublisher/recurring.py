@@ -150,7 +150,8 @@ class RecurringService:
         next posting time instead of waiting for someone to choose Retry.
 
         A reserved start that never began (it missed its 60-second window, or was blocked
-        before any upload was created) returns to its place in the queue. A queued video that
+        before YouTube was contacted, e.g. while YouTube needed signing in again: its upload
+        record is then Cancelled) returns to its place in the queue. A queued video that
         needs attention is checked again shortly before each posting time, exactly as Retry
         does: unchanged contents and details go back in the queue; anything changed still needs
         review and approval. Uploads that started are never touched here."""
@@ -164,7 +165,9 @@ class RecurringService:
                 JOIN scheduled_jobs j ON j.id=i.job_id
                 WHERE i.state='Reserved' AND j.state IN ('Missed','Needs Attention')
                 AND j.scheduled_utc<=?
-                AND NOT EXISTS(SELECT 1 FROM scheduled_executions e WHERE e.job_id=j.id)""",
+                AND NOT EXISTS(SELECT 1 FROM scheduled_executions e
+                    LEFT JOIN upload_attempts a ON a.id=e.attempt_id
+                    WHERE e.job_id=j.id AND a.state IS NOT 'Cancelled')""",
                 # Only once its 60-second start window is over: a conflict may still clear.
                 (stamp(now - timedelta(seconds=60)),),
             ).fetchall():

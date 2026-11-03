@@ -13,6 +13,7 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from threading import Event, Thread
 
+from . import alerts
 from .accounts import AccountRepository, AccountService
 from .awake import Keeper
 from .background_state import Ownership, read
@@ -152,6 +153,7 @@ def main() -> int:
     if not directory.is_absolute() or not (directory / "library.sqlite3").is_file():
         return 2
     os.umask(0o077)
+    alerts.ENABLED = True  # the person hears about failures while the app is closed
     library = Library(directory / "library.sqlite3")
     # A worker cannot perform a migration or manufacture service consent.
     with closing(library.connect()) as db:

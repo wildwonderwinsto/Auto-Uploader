@@ -55,7 +55,8 @@ isolated Keychain/LaunchAgent identifiers. Python 3.12 in `.venv` (uv), PySide6 
 | Background | `background.py` (LaunchAgent), `background_state.py`, `ui/background.py`, `awake.py` (`caffeinate` + an NSProcessInfo App Nap exemption while an upload is planned) |
 | Folders/recurring/auto | `watching.py`, `recurring.py`, `cadence.py`, `automation.py` (+ `*_schema.py`), matching `ui/*.py`; `queues.py` + `queues_schema.py` (v17: a queue's name, times, platforms, YouTube plan and waiting Buffer videos) |
 | Buffer (TikTok, Instagram, Facebook) | `buffer.py` (PKCE OAuth, rotating refresh under a file lock, GraphQL), `hosting.py` (Cloudinary public copy), `social.py` (`Platform` specs + `BufferPostService`: posts, duplicates, status, automation, shared sign-in), `social_schema.py` (v13), `backups_schema.py` (v15) + `fallback_schema.py` (v16): backup Buffer/Cloudinary accounts, `ui/social.py` (`SocialController` per platform); `tiktok.py`, `tiktok_schema.py`, `ui/tiktok.py` keep Stage 19 names; relay page `docs/buffer-oauth-relay.html` |
-| Dashboard | `activity.py` (pure cross-platform timeline), `ui/dashboard.py`; read-only view counts via `AccountService.statistics` |
+| Dashboard | `activity.py` (pure cross-platform timeline, `plain_reason`), `ui/dashboard.py`; read-only view counts via `AccountService.statistics` |
+| Problems | `alerts.py` (macOS notification per new problem after each owned dispatch, `alerts.json`; `ENABLED` only from `app.main`/`worker.main`), red bar + red rail in `ui/execution.py` (`problem`, `problem_banner`) |
 | Defaults/usage | `defaults.py` + `ui/defaults.py` (Reuse Details, Upload Defaults in `upload-defaults.json` beside the library: no schema change; never the title), `usage.py` + `ui/usage.py` (Settings → Limits & usage: local counts, plus Cloudinary's read-only usage asked automatically when Settings opens and every 30 min while open; no button) |
 | Auto upload | `ui/autoupload.py` (one editor → a YouTube profile and a profile per Buffer platform, each with its own consent, approved in turn; also edits an existing one), `ui/autocards.py` (one card per auto upload: profiles sharing folder + name), `ui/queuecards.py` (one card per video queue) |
 | Shared UI | `ui/window.py`, `ui/theme.py`, `ui/components.py` (cards, pills, `Section`, `CardGrid`, `flow`), `ui/icons.py` (SVG icons + platform logos), `ui/formatting.py` (dates/times) |
@@ -99,6 +100,9 @@ migration of the user's real library needs the user's explicit approval and a fr
   execution claims. `ScheduleService._conflicts`: the same video/content is always a conflict;
   another video's unfinished upload only blocks the moment of starting (`starting=True`, the
   claim), never a plan for later; a plan flagged with `CONFLICT` is re-checked and recovers. An uncertain previous upload needs reconciliation, never a blind retry.
+  A scheduled start blocked while its attempt is still "Awaiting Confirmation" (before the
+  durable "Preparing", so YouTube was never contacted) becomes Cancelled + released: it never
+  blocks the video; its claim is still never reused (Post Now saves a new plan).
 - Never install, enable or modify the production LaunchAgent (`com.shortspublisher.publisher`)
   unprompted. Background-service consent is separate from global publishing consent.
   The dispatcher OS lock decides who dispatches: a live worker holds it for its whole life, so

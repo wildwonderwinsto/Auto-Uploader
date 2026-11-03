@@ -76,6 +76,8 @@ QFrame#Divider {{ background: {BORDER}; border: none; max-height: 1px; min-heigh
 QFrame#RailStatus {{ background: {SURFACE}; border: 1px solid {BORDER}; border-radius: 10px; }}
 QFrame#RailStatusWarn {{ background: {WARN_SOFT}; border: 1px solid {WARN}; border-radius: 10px; }}
 QFrame#Warning {{ background: {WARN_SOFT}; border: 1px solid {WARN}; border-radius: 12px; }}
+QFrame#Problem {{ background: {BAD_SOFT}; border: 1px solid {BAD}; border-radius: 12px; }}
+QFrame#RailStatusBad {{ background: {BAD_SOFT}; border: 1px solid {BAD}; border-radius: 10px; }}
 
 QPushButton {{ background: {RAISED}; border: 1px solid {STRONG}; border-radius: 8px;
     padding: 8px 14px; font-weight: 500; }}

@@ -1,5 +1,6 @@
 import time
 import unittest
+from dataclasses import replace
 from datetime import UTC, datetime
 from unittest.mock import patch
 
@@ -136,6 +137,31 @@ class ExecutionUiTests(unittest.TestCase):
         self.addCleanup(editor.deleteLater)
         editor.time.setTime(QTime(10, 40, 40))
         self.assertTrue(editor.values()["local"].endswith("T10:40:00"))
+
+    def test_red_bar_and_one_notification_when_youtube_needs_signing_in(self):
+        self.active()
+        connected = self.window.accounts.view
+        self.assertIsNotNone(connected.connection)
+        bars = self.c.problem_bars
+        self.assertEqual(len(bars), 4)  # Dashboard, Schedule, Calendar, Auto Upload
+        with patch("shortspublisher.ui.execution.alerts.send") as send:
+            self.window.accounts.present(replace(connected, state="Reconnection required"))
+            self.c.render_switch()
+            self.c.render_switch()
+        frame, label, fix = bars[1]
+        self.assertFalse(frame.isHidden())
+        self.assertIn("sign in again", label.text())
+        self.assertIn("1 scheduled upload", label.text())
+        self.assertIn("nothing needs redoing", label.text())
+        self.assertEqual(fix.text(), "Sign In Again…")
+        self.assertEqual(self.c.rail.objectName(), "RailStatusBad")
+        send.assert_called_once()  # told once per sign-out, not on every refresh
+        with patch.object(self.window.accounts, "confirm_upload_permission") as sign_in:
+            fix.click()
+        sign_in.assert_called_once()
+        self.window.accounts.present(connected)
+        self.c.render_switch()
+        self.assertTrue(all(f.isHidden() for f, _, _ in bars))
 
     def test_default_global_pause_visible(self):
         self.assertIn("Automatic publishing is paused", self.c.summary.text())

@@ -58,6 +58,25 @@ def title_of(snapshot: dict[str, Any]) -> str:
     )
 
 
+def plain_reason(reason: str) -> str:
+    """Why something didn't upload, in a few plain words for a list row (the full reason stays
+    in the row's details)."""
+    text = reason.removeprefix("Didn't start, nothing was sent to YouTube: ")
+    lowered = text.lower()
+    for words, plain in (
+        (("sign in again", "authorization expired", "reconnect"), "YouTube needs you to sign in"),
+        (("network", "offline", "temporarily unavailable"), "No connection to YouTube"),
+        (("quota", "upload limit"), "YouTube's daily limit was reached"),
+        (("app closed", "restarted"), "The app closed before it started"),
+        (("changed",), "The video or its details changed"),
+        (("another upload", "conflict"), "Another upload was in the way"),
+    ):
+        if any(w in lowered for w in words):
+            return plain
+    first = text.split(". ")[0].strip().rstrip(".")
+    return first if len(first) <= 60 else first[:57] + "…"
+
+
 def youtube_uploads(attempts: Iterable[Attempt]) -> list[Entry]:
     entries = []
     for a in attempts:
@@ -125,7 +144,9 @@ def youtube_plans(jobs: Iterable[Job], started: set[str]) -> list[Entry]:
                     title,
                     job.scheduled_utc,
                     ATTENTION,
-                    "Missed its time" if job.state == "Missed" else "Needs attention",
+                    "Missed its time"
+                    if job.state == "Missed"
+                    else "Didn't upload · " + plain_reason(job.reason),
                     video_id=job.video_id,
                     detail=job.reason,
                 )

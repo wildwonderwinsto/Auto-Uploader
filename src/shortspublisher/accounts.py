@@ -161,7 +161,7 @@ class AccountService:
         }.get(error.kind, "Verification pending" if connection else "Disconnected")
         message = str(error)
         if state == "Reconnection required" and connection:
-            message += " Use Disconnect to remove local authorization, then Connect YouTube again."
+            message += " Your scheduled uploads and queues are kept; nothing needs redoing."
         return AccountView(state, message, configured, connection)
 
     def _execute(

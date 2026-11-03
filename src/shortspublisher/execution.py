@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import sqlite3
 import uuid
 from contextlib import closing
@@ -17,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 
 from filelock import Timeout
 
+from . import alerts
 from .auth import AccountError
 from .awake import planned
 from .background_state import BACKGROUND_CONSENT, Ownership, read, validate_owner
@@ -32,6 +34,9 @@ if TYPE_CHECKING:
 # The global cap on scheduled and automatic YouTube uploads a day can go as high as YouTube's own
 # API allows: 100 videos.insert calls a day (developers.google.com, read 2026-10-22).
 DAILY_MAX = 100
+# A scheduled upload blocked before YouTube was contacted: nothing was sent.
+NOT_STARTED = "Didn't start, nothing was sent to YouTube: "
+
 CONSENT = (
     "This video will be uploaded publicly to the selected YouTube channel automatically at the "
     "scheduled time while ShortsPublisher is running. No second confirmation will appear. "
@@ -305,8 +310,32 @@ class AutomaticPublisher:
                     db.execute(
                         "UPDATE scheduled_executions SET phase='Blocked',error='Application restarted before initiation. Inspect the linked attempt.' WHERE phase='Claimed'"
                     )
+                    # Never reached "Preparing" (written before YouTube is contacted): nothing
+                    # was sent, so the video isn't blocked; its plan needs attention instead.
+                    reason = "The app closed before the upload started."
+                    for row in db.execute(
+                        """SELECT e.job_id FROM scheduled_executions e
+                        JOIN upload_attempts a ON a.id=e.attempt_id
+                        WHERE a.state='Awaiting Confirmation'"""
+                    ).fetchall():
+                        job = self.schedules._get(db, row["job_id"])
+                        if job.state == "Cancelled":
+                            continue
+                        self.schedules._write(
+                            db,
+                            replace(
+                                job,
+                                state="Needs Attention",
+                                reason=reason,
+                                revision=job.revision + 1,
+                                updated_at=stamp(self.schedules.clock()),
+                            ),
+                        )
                     db.execute(
-                        "UPDATE upload_attempts SET state='Interrupted',error='Claim interrupted before initiation. Inspect and resolve; no automatic retry.' WHERE id IN (SELECT attempt_id FROM scheduled_executions) AND state='Awaiting Confirmation'"
+                        "UPDATE upload_attempts SET state='Cancelled',released=1,error=? "
+                        "WHERE id IN (SELECT attempt_id FROM scheduled_executions) "
+                        "AND state='Awaiting Confirmation'",
+                        (NOT_STARTED + reason,),
                     )
         except Timeout:
             pass  # Another process owns the live transfer; never interrupt it.
@@ -451,6 +480,11 @@ class AutomaticPublisher:
                 return self._dispatch(cancel, progress, changed)
             finally:
                 self.uploads.owner_token = ""
+                # Whoever dispatches tells the person about anything that didn't go out.
+                try:
+                    alerts.announce(self.library)
+                except Exception:  # noqa: BLE001 - a notification never stops uploading
+                    logging.getLogger(__name__).warning("Problem check failed", exc_info=True)
 
     def _dispatch(
         self,
@@ -488,9 +522,12 @@ class AutomaticPublisher:
                                 "SELECT job_id,attempt_id,phase FROM scheduled_executions WHERE id=?",
                                 (identity,),
                             ).fetchone()
+                            # Still awaiting: "Preparing" is written before YouTube is ever
+                            # contacted, so nothing was sent. It doesn't block this video again.
                             db.execute(
-                                "UPDATE upload_attempts SET state='Interrupted',error=? WHERE id=? AND state='Awaiting Confirmation'",
-                                (result["error"], row["attempt_id"]),
+                                "UPDATE upload_attempts SET state='Cancelled',released=1,error=? "
+                                "WHERE id=? AND state='Awaiting Confirmation'",
+                                (NOT_STARTED + result["error"], row["attempt_id"]),
                             )
                             if row["phase"] == "Blocked":
                                 job = self.schedules._get(db, row["job_id"])

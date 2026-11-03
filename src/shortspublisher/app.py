@@ -12,6 +12,7 @@ from types import TracebackType
 from PySide6.QtCore import QCoreApplication, QStandardPaths, QTimer
 from PySide6.QtWidgets import QApplication, QMessageBox
 
+from . import alerts
 from .accounts import AccountRepository, AccountService
 from .background import LaunchAgent
 from .credentials import KeychainSessions, KeychainStore
@@ -127,6 +128,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.backup:
         backup_library(args.data_dir or default_data_dir())
+    if not args.smoke_test:
+        alerts.ENABLED = True  # notifications from the real app only (tests use `build`)
     app, window = build(args.data_dir, args.ffprobe)
     app.aboutToQuit.connect(window.videos.stop_for_quit)
     directory = (

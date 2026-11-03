@@ -340,11 +340,17 @@ class MainWindow(QMainWindow):
         for schedule in (self.schedules.queue, self.schedules.calendar):
             schedule.body.insertWidget(1, self.automatic.banner())
         self.automation.body.insertWidget(1, self.automatic.banner())
+        # Anything that stops or stopped an upload: a red bar, first, on the same pages.
+        self.dashboard.banner_slot.insertWidget(0, self.automatic.problem_banner())
+        for schedule in (self.schedules.queue, self.schedules.calendar):
+            schedule.body.insertWidget(1, self.automatic.problem_banner())
+        self.automation.body.insertWidget(1, self.automatic.problem_banner())
         for signal in (
             self.recurring.idle,
             self.automation.idle,
             self.automatic.recurring_updated,
             *(social.changed for social in self.socials),
+            self.accounts.state_changed,
         ):
             signal.connect(lambda *_: self.automatic.render_switch())
         navigation = QScrollArea()

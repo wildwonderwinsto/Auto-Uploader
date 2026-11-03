@@ -537,6 +537,27 @@ class RecurringTests(unittest.TestCase):
         self.dispatch()
         self.assertEqual([a.state for a in self.u.store.all()], ["Public Verified"])
 
+    def test_queue_video_blocked_by_a_youtube_sign_out_goes_at_the_next_posting_time(self):
+        self.active()
+        accounts = self.u.service.accounts
+        key = accounts.repository.connection().key
+        accounts.credentials.put(key, replace(accounts.credentials.get(key), expires_at=0))
+        accounts.oauth.error = AccountError("YouTube needs you to sign in again.", "reconnect")
+        self.due()
+        self.dispatch()
+        self.assertEqual(self.u.http.initiations, 0)
+        accounts.oauth.error = None  # signed in again; nothing else is redone
+        self.f.f.now += timedelta(minutes=5)
+        self.dispatch()
+        item = self.r.state()["items"][0]
+        self.assertEqual((item["state"], item["job_id"]), ("Queued", None))
+        self.due()
+        self.dispatch()
+        self.assertEqual(self.u.http.initiations, 1)
+        self.assertEqual(
+            [a.state for a in self.u.store.all() if a.state != "Cancelled"], ["Public Verified"]
+        )
+
     def test_needs_attention_is_checked_again_before_the_next_posting_time(self):
         self.active()
         with closing(self.s.library.connect()) as db, db:  # e.g. the drive was briefly away

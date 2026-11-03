@@ -19,12 +19,14 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
+from .. import activity, alerts
 from ..auth import AccountError
 from ..awake import Keeper
 from ..background_state import BACKGROUND_CONSENT
 from ..execution import CONSENT, AutomaticPublisher
 from ..scheduling import Job, ScheduleError
 from ..upload_store import Attempt
+from . import theme
 from .components import Section, card, icon_button, pill, restyle
 from .formatting import timestamp, upload_status
 from .icons import icon
@@ -166,6 +168,8 @@ class ExecutionController(QObject):
         rail.addWidget(self.button)
         # The same warning on the pages where uploads are planned.
         self.banners: list[tuple[QFrame, QLabel]] = []
+        self.problem_bars: list[tuple[QFrame, QLabel, QPushButton]] = []
+        self.sign_in_told = False
         self.summary = text(
             "Automatic publishing is not running. Open the application normally to start its dispatcher."
         )
@@ -410,7 +414,11 @@ class ExecutionController(QObject):
         stopped = self.service_stopped()
         self.light.setText("Off" if paused else "On")
         restyle(self.light, ("Warn" if waiting else "Neutral") if paused else "Good")
-        restyle(self.rail, "RailStatusWarn" if waiting or stopped else "RailStatus")
+        found = self.problem()
+        restyle(
+            self.rail,
+            "RailStatusBad" if found else "RailStatusWarn" if waiting or stopped else "RailStatus",
+        )
         self.state.setText(
             f"{' · '.join(waiting)} won't upload until you turn this on."
             if waiting
@@ -419,6 +427,8 @@ class ExecutionController(QObject):
             else "Background uploading stopped: uploads go out only while this app is open. "
             "Restart it in Settings."
             if stopped
+            else found[0].split(". ")[0] + "."
+            if found
             else "Scheduled and queued uploads go out on time."
         )
         self.button.setText("Turn On" if paused else "Pause All")
@@ -435,6 +445,95 @@ class ExecutionController(QObject):
         for banner, label in self.banners:
             label.setText(message)
             banner.setVisible(bool(waiting))
+        self.render_problems()
+
+    def problem(self) -> tuple[str, str, str] | None:
+        """The most important thing that stops or stopped uploads, for the red bar: its message,
+        the button's text and what the button does. None when nothing needs the person."""
+        w = self.window
+        view = getattr(getattr(w, "accounts", None), "view", None)
+        if view and view.connection and view.state == "Reconnection required":
+            planned = self.waiting()
+            return (
+                "YouTube needs you to sign in again"
+                + (f", or these won't upload: {', '.join(planned)}" if planned else "")
+                + ". Your schedules and queues are kept; nothing needs redoing.",
+                "Sign In Again…",
+                "youtube",
+            )
+        for social in getattr(w, "socials", ()):
+            if (social.data.get("connection") or {}).get("status") == "Reconnect required":
+                return (
+                    f"{social.name} needs you to reconnect Buffer; nothing posts there until "
+                    "you do.",
+                    "Open Accounts",
+                    "accounts",
+                )
+        dashboard = getattr(w, "dashboard", None)
+        failed = activity.grouped(
+            [
+                e
+                for e in (dashboard.entries if dashboard else [])
+                # A plan still waiting for approval hasn't failed; the Dashboard lists it.
+                if e.kind == activity.ATTENTION and e.status != "Waiting for your approval"
+            ]
+        )
+        if failed:
+            first = failed[0]
+            return (
+                (
+                    f"“{first.title}” didn't go out: {first.status}."
+                    if len(failed) == 1
+                    else f"{len(failed)} uploads didn't go out. The Schedule page says why."
+                ),
+                "Open Schedule",
+                "schedule",
+            )
+        return None
+
+    def problem_banner(self) -> QFrame:
+        """A red bar for a page: shown only while something stops or stopped an upload."""
+        frame, layout = card(16, 8, "Problem")
+        line = QHBoxLayout()
+        line.setSpacing(12)
+        mark = QLabel()
+        mark.setPixmap(icon("alert", theme.BAD).pixmap(20, 20))
+        line.addWidget(mark)
+        label = text("", "")
+        line.addWidget(label, 1)
+        fix = icon_button("Open Schedule", "chevron-right", role="Primary")
+        fix.clicked.connect(self.fix_problem)
+        line.addWidget(fix)
+        layout.addLayout(line)
+        frame.hide()
+        self.problem_bars.append((frame, label, fix))
+        return frame
+
+    def fix_problem(self) -> None:
+        found = self.problem()
+        if not found:
+            return
+        action = found[2]
+        if action == "youtube":
+            self.window.navigate("accounts")
+            self.window.accounts.confirm_upload_permission()
+        elif action == "accounts":
+            self.window.navigate("accounts")
+        else:
+            self.window.navigate("queue")
+
+    def render_problems(self) -> None:
+        found = self.problem()
+        for frame, label, fix in self.problem_bars:
+            frame.setVisible(found is not None)
+            if found:
+                label.setText(found[0])
+                fix.setText(found[1])
+        signing_in = bool(found and found[2] == "youtube")
+        if signing_in and not self.sign_in_told:
+            # Told once per sign-out, also when nothing has failed yet.
+            alerts.send("YouTube needs you to sign in again", found[0] if found else "")
+        self.sign_in_told = signing_in
 
     def banner(self) -> QFrame:
         """A warning bar for a page; shown only while planned uploads are held back."""

@@ -64,8 +64,12 @@ with buttons that open the right web pages.
 
 1. In [Google Cloud Console](https://console.cloud.google.com/), create a project and turn on the
    **YouTube Data API v3**.
-2. Set up the **Google Auth Platform** (consent screen). While it is in *Testing*, add your Google
-   account as a **test user** (sign-ins then expire after seven days; reconnect when asked).
+2. Set up the **Google Auth Platform** (consent screen) and add your Google account as a **test
+   user**. Then open **Google Auth Platform → Audience** and choose **Publish app** (status
+   *In production*). Skip this and Google signs you out of YouTube **every seven days**, and
+   scheduled uploads can't start until you sign in again. Publishing doesn't make the app public:
+   only accounts that sign in can use it, and Google shows a "Google hasn't verified this app"
+   screen when you sign in. Choose **Advanced → Go to … (unsafe)** there; it's your own app.
 3. Create an **OAuth client** of type **Desktop app** and download its JSON file.
 4. In ShortsScheduler: **Settings → Connections → Choose Google Client File…** and pick that file.
 5. **Accounts → YouTube → Connect**, sign in in your browser, confirm your channel, then
@@ -120,8 +124,17 @@ If a Buffer or Cloudinary account reaches its plan's limits, add more accounts i
 - **Individual videos → Upload One Video…** opens a video on its Upload step;
   **Choose Videos…** ticks several videos that then go out one at a time at your times.
 
+**When something doesn't go out**, ShortsScheduler tells you: a Mac notification (also from
+Background uploading while the app is closed), a red bar on the Dashboard, Schedule, Calendar and
+Auto Upload pages with a button that fixes it, and the reason on the video's row in **Schedule**.
+If YouTube needs you to sign in again, the bar says so before anything fails; press
+**Sign In Again…** and your schedules and queues carry on, with nothing to redo. A scheduled video
+that couldn't start (for example while YouTube was signed out) is never blocked: choose it in
+**Schedule** and press **Post Now…**.
+
 If a queued or watched-folder video doesn't go out at its time and nothing was posted (it missed
-its time, or the platform turned it down), it tries again by itself at the next posting time,
+its time, YouTube was signed out or offline, or the platform turned it down), it tries again by
+itself at the next posting time,
 up to three times on TikTok, Instagram and Facebook. A video whose file or details changed
 still waits for you to mark it ready again, and an upload whose result is unknown is checked
 before anything is sent again.

@@ -299,7 +299,7 @@ class GoogleOAuth:
             with response:
                 if response.status_code in (400, 401, 403):
                     raise AccountError(
-                        "Authorization expired, was revoked, or cannot be refreshed. Reconnect YouTube (Testing tokens may expire after seven days).",
+                        "YouTube needs you to sign in again (Accounts → Sign In Again…). If this happens every week, your Google app is still in Testing; publish it in Google Cloud.",
                         "reconnect",
                     )
                 if response.status_code != 200:

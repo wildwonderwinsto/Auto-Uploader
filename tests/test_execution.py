@@ -13,6 +13,8 @@ from unittest.mock import patch
 import test_scheduling as fixtures
 from upload_support import REMOTE_ID
 
+from shortspublisher.activity import plain_reason
+from shortspublisher.auth import AccountError
 from shortspublisher.awake import Activity, Keeper
 from shortspublisher.execution import AutomaticPublisher, binding
 from shortspublisher.library import SCHEMA_VERSION, Library
@@ -669,6 +671,65 @@ print(a.claim())
             self.a.authorize(job.id, job.revision, Event())
         self.assertEqual(self.s.get(job.id).state, "Cancelled")
 
+    def sign_out(self):
+        """Google ends the sign-in (as it does weekly for an app left in Testing)."""
+        accounts = self.u.service.accounts
+        key = accounts.repository.connection().key
+        accounts.credentials.put(key, replace(accounts.credentials.get(key), expires_at=0))
+        accounts.oauth.error = AccountError(
+            "YouTube needs you to sign in again (Accounts → Sign In Again…).", "reconnect"
+        )
+
+    def test_signed_out_at_its_time_never_blocks_the_video_and_post_now_restarts_it(self):
+        job = self.active()
+        self.sign_out()
+        self.due(job)
+        self.dispatch()
+        self.assertEqual(self.u.http.initiations, 0)
+        attempt = self.u.store.all()[0]
+        self.assertEqual((attempt.state, attempt.released), ("Cancelled", True))
+        failed = self.s.get(job.id)
+        self.assertEqual(failed.state, "Needs Attention")
+        self.assertEqual(plain_reason(failed.reason), "YouTube needs you to sign in")
+        # Signed in again: Post Now approves the same video again; the old plan's claim is
+        # history, so a new plan is saved, and it uploads.
+        self.u.service.accounts.oauth.error = None
+        self.f.now += timedelta(minutes=5)
+        when = (self.f.now + timedelta(seconds=30)).replace(microsecond=0, tzinfo=None)
+        proposal = self.s.preview(
+            job.video_id,
+            job.channel_id,
+            when.isoformat(),
+            "UTC",
+            job_id=job.id,
+            expected_revision=failed.revision,
+        )
+        again = self.s.commit(proposal, approve=True)
+        self.assertNotEqual(again.id, job.id)
+        self.assertEqual(self.s.get(job.id).state, "Cancelled")
+        self.a.authorize(again.id, again.revision, Event())
+        self.due(self.s.get(again.id))
+        self.dispatch()
+        self.assertEqual(self.u.http.initiations, 1)
+        self.assertEqual(
+            [a.state for a in self.u.store.all() if a.state != "Cancelled"], ["Public Verified"]
+        )
+
+    def test_a_claim_that_contacted_youtube_is_never_restarted(self):
+        job = self.active()
+        self.due(job)
+        self.u.http.initiation_reply = UploadReply(500, {})  # uncertain: maybe created
+        self.dispatch()
+        with self.assertRaises(ScheduleError):
+            self.s.preview(
+                job.video_id,
+                job.channel_id,
+                (self.f.now + timedelta(hours=1)).replace(tzinfo=None).isoformat(),
+                "UTC",
+                job_id=job.id,
+                expected_revision=self.s.get(job.id).revision,
+            )
+
     def test_database_failure_before_post_never_retries_new_session(self):
         job = self.active()
         self.due(job)
@@ -685,10 +746,15 @@ print(a.claim())
         self.dispatch()
         self.assertEqual(self.u.http.initiations, 0)
         self.assertEqual(len(self.u.store.all()), 1)
-        self.assertEqual(self.u.store.all()[0].state, "Interrupted")
+        # "Preparing" was never written, so YouTube was never contacted: the record says so
+        # and no longer blocks the video, but the claim itself is still never reused.
+        attempt = self.u.store.all()[0]
+        self.assertEqual((attempt.state, attempt.released), ("Cancelled", True))
+        self.assertIn("nothing was sent", attempt.error)
         self.assertIn(
             "error", self.u.run_action("scheduled", self.a.status()["executions"][0]["id"])
         )
+        self.assertEqual(self.u.http.initiations, 0)
 
     def test_source_change_during_transfer_stops_further_chunks(self):
         job = self.active()

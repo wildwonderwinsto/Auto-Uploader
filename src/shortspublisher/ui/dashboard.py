@@ -351,8 +351,13 @@ class DashboardPage(QScrollArea):
     def collect(self) -> list[Entry]:
         w = self.window_
         data = w.automatic.data
-        started = {e["job_id"] for e in data.get("executions", [])}
         attempts = w.uploads.attempts or data.get("attempts", [])
+        # A start blocked before YouTube was contacted (its record Cancelled) is described by
+        # its plan, which says why it didn't upload.
+        never = {a.id for a in data.get("attempts", []) if a.state == "Cancelled"}
+        started = {
+            e["job_id"] for e in data.get("executions", []) if e.get("attempt_id") not in never
+        }
         return activity.timeline(
             data.get("jobs", []),
             attempts,
@@ -475,6 +480,9 @@ class DashboardPage(QScrollArea):
         self.attention_tile.set(
             str(len(attention)), "All clear" if not attention else "See the list below"
         )
+        automatic = getattr(self.window_, "automatic", None)
+        if automatic is not None:
+            automatic.render_problems()  # the red bar follows the same list
         connected = bool(self.window_.accounts.view and self.window_.accounts.view.connection)
         insights = bool(self.window_.tiktok.data.get("insights"))
         self.refresh_stats.setVisible(connected or insights)

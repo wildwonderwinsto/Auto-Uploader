@@ -11,7 +11,7 @@ import sqlite3
 import uuid
 from collections.abc import Callable
 from contextlib import closing
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Event
@@ -150,6 +150,17 @@ class ScheduleService:
                 "Execution already claimed this job. Use Stop, Resume, Verify or Resolve in Upload History; it cannot be rescheduled or cancelled as an unstarted plan."
             )
 
+    @staticmethod
+    def _restartable(db: sqlite3.Connection, identity: str) -> bool:
+        """Claimed, but its upload never contacted YouTube (its record is Cancelled): approving
+        it again (Post Now) closes it and saves the approval as a new plan."""
+        rows = db.execute(
+            """SELECT a.state FROM scheduled_executions e
+            LEFT JOIN upload_attempts a ON a.id=e.attempt_id WHERE e.job_id=?""",
+            (identity,),
+        ).fetchall()
+        return bool(rows) and all(r[0] == "Cancelled" for r in rows)
+
     def _get(self, db: sqlite3.Connection, identity: str) -> Job:
         row = db.execute("SELECT * FROM scheduled_jobs WHERE id=?", (identity,)).fetchone()
         if row is None:
@@ -277,7 +288,7 @@ class ScheduleService:
                     "Video, metadata or channel changed during preparation. Review again."
                 )
             self._conflicts(db, video_id, channel_id, digest, job_id, queue)
-            if job_id:
+            if job_id and not self._restartable(db, job_id):
                 self._unclaimed(db, job_id)
                 old = self._get(db, job_id)
                 if (
@@ -325,8 +336,10 @@ class ScheduleService:
             self._conflicts(
                 db, proposal.video_id, proposal.channel_id, snap["sha256"], proposal.job_id
             )
+            restart = bool(proposal.job_id) and self._restartable(db, proposal.job_id)
             if proposal.job_id:
-                self._unclaimed(db, proposal.job_id)
+                if not restart:
+                    self._unclaimed(db, proposal.job_id)
                 db.execute("DELETE FROM execution_consent WHERE job_id=?", (proposal.job_id,))
             old = self._get(db, proposal.job_id) if proposal.job_id else None
             if old and (old.revision != proposal.expected_revision or old.state == "Cancelled"):
@@ -334,8 +347,25 @@ class ScheduleService:
             if old and not approve and old.state != "Draft":
                 raise ScheduleError("An approved plan can only be changed with renewed approval.")
             now = stamp(self.clock())
+            if old and restart:
+                # Its claim is history and is never reused: the old plan closes, a new one opens.
+                reason = "Approved again as a new plan; this one never started."
+                self._write(
+                    db,
+                    replace(
+                        old,
+                        state="Cancelled",
+                        execution_enabled=0,
+                        reason=reason,
+                        cancellation_reason=reason,
+                        cancelled_at=now,
+                        updated_at=now,
+                        revision=old.revision + 1,
+                    ),
+                )
+                old = None
             job = Job(
-                proposal.job_id or uuid.uuid4().hex,
+                proposal.job_id if old else uuid.uuid4().hex,
                 proposal.video_id,
                 "youtube",
                 proposal.channel_id,

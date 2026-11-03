@@ -870,9 +870,11 @@ class SchedulePage(QScrollArea):
         self.open_upload.setVisible(bool(attempt))
         self.edit.setEnabled(open_job and not claimed and not busy)
         self.edit.setVisible(bool(job) and not claimed)
-        released = bool(attempt and attempt.released)
-        self.cancel.setEnabled(open_job and not busy and (not claimed or released))
-        self.cancel.setVisible(bool(job) and (not claimed or released))
+        never_sent = bool(attempt and attempt.state == "Cancelled")
+        released = bool(attempt and attempt.released) and not never_sent
+        closable = not claimed or released or never_sent
+        self.cancel.setEnabled(open_job and not busy and closable)
+        self.cancel.setVisible(bool(job) and closable)
         self.cancel.setText("Close Reconciled Upload…" if released else "Cancel Upload…")
         self.activate_job.setEnabled(
             bool(
@@ -885,7 +887,8 @@ class SchedulePage(QScrollArea):
         )
         self.activate_job.setVisible(self.activate_job.isEnabled())
         # Post Now: any plan that hasn't started (its time may even have passed).
-        startable = bool(job and job.state in NOW_STATES and not claimed)
+        # A start blocked before YouTube was contacted (record Cancelled) can go again too.
+        startable = bool(job and job.state in NOW_STATES and (not claimed or never_sent))
         self.upload_now.setVisible(startable)
         self.upload_now.setEnabled(startable and not busy)
         self.history.setEnabled(bool(attempt))
@@ -944,6 +947,12 @@ class SchedulePage(QScrollArea):
     def execution_label(self, job: Job) -> str:
         automatic = getattr(self.controller.window, "automatic", None)
         attempt = automatic.attempt(job) if automatic else None
+        if job.state in ("Needs Attention", "Missed") and (
+            not attempt or attempt.state == "Cancelled"
+        ):
+            # Nothing was sent: say why, and that Post Now uploads it.
+            why = "Missed its time" if job.state == "Missed" else activity.plain_reason(job.reason)
+            return f"Didn't upload · {why} · Post Now to upload it"
         return (
             automatic.outcome(attempt)
             if automatic and attempt
