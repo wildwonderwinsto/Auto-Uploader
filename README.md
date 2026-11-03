@@ -108,7 +108,9 @@ If a Buffer or Cloudinary account reaches its plan's limits, add more accounts i
 4. **3 Upload:** every ready platform is ticked. Untick any you don't want, choose **Now** or
    **Schedule**, and press **Upload to N Platforms…**. You confirm before anything is sent; a
    scheduled YouTube upload is approved once, in YouTube's own confirmation, and then goes out at
-   its time by itself. **Schedule** lists every upload, with one card per platform.
+   its time by itself. **Schedule** lists every upload, with one card per platform. To send a
+   scheduled one early, choose it there and press **Post Now…** (on every platform's
+   card); you confirm once and it goes out right away.
 
 **Auto Upload** (sidebar):
 
@@ -117,6 +119,12 @@ If a Buffer or Cloudinary account reaches its plan's limits, add more accounts i
   turn it on are uploaded.
 - **Individual videos → Upload One Video…** opens a video on its Upload step;
   **Choose Videos…** ticks several videos that then go out one at a time at your times.
+
+If a queued or watched-folder video doesn't go out at its time and nothing was posted (it missed
+its time, or the platform turned it down), it tries again by itself at the next posting time,
+up to three times on TikTok, Instagram and Facebook. A video whose file or details changed
+still waits for you to mark it ready again, and an upload whose result is unknown is checked
+before anything is sent again.
 
 Scheduled and automatic uploads only go out while **Auto uploading** (bottom of the sidebar) is
 **On** and ShortsScheduler is open — or turn on **Settings → Background uploading** to keep going

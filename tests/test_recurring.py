@@ -519,6 +519,51 @@ class RecurringTests(unittest.TestCase):
         self.assertFalse(self.u.store.all())
         self.assertEqual(self.r.state()["items"][0]["state"], "Needs Attention")
 
+    def test_reserved_start_that_never_began_returns_to_the_queue(self):
+        self.active()
+        self.due()
+        with closing(self.s.library.connect()) as db, db:  # reserved, but never claimed
+            db.execute("BEGIN IMMEDIATE")
+            self.r.reserve(db, self.a.ownership.kind)
+        self.assertEqual(self.r.state()["items"][0]["state"], "Reserved")
+        self.f.f.now += timedelta(minutes=5)
+        self.dispatch()
+        item = self.r.state()["items"][0]
+        self.assertEqual((item["state"], item["job_id"]), ("Queued", None))
+        self.assertIn("Didn't start", item["reason"])
+        self.assertEqual([j.state for j in self.s.all()], ["Cancelled"])
+        self.assertFalse(self.u.store.all())
+        self.due()  # the queue's next posting time
+        self.dispatch()
+        self.assertEqual([a.state for a in self.u.store.all()], ["Public Verified"])
+
+    def test_needs_attention_is_checked_again_before_the_next_posting_time(self):
+        self.active()
+        with closing(self.s.library.connect()) as db, db:  # e.g. the drive was briefly away
+            db.execute("UPDATE recurring_items SET state='Needs Attention',reason='Unavailable'")
+        slot = datetime.fromisoformat(self.r.state()["plans"][0]["next_slot"])
+        self.f.f.now = slot - timedelta(minutes=5)
+        self.dispatch()
+        self.assertEqual(self.r.state()["items"][0]["state"], "Queued")
+        self.due()
+        self.dispatch()
+        self.assertEqual([a.state for a in self.u.store.all()], ["Public Verified"])
+
+    def test_changed_video_still_needs_review_after_the_automatic_check(self):
+        self.active()
+        self.u.path.write_bytes(self.u.path.read_bytes() + b"changed")
+        self.due()
+        self.dispatch()
+        slot = datetime.fromisoformat(self.r.state()["plans"][0]["next_slot"])
+        self.f.f.now = slot - timedelta(minutes=5)
+        self.dispatch()
+        item = self.r.state()["items"][0]
+        self.assertEqual(item["state"], "Needs Attention")
+        self.assertIn("contents changed", item["reason"])
+        self.due()
+        self.dispatch()
+        self.assertFalse(self.u.store.all())
+
     def test_failed_transfer_is_not_requeued(self):
         from shortspublisher.upload_http import UploadReply
 

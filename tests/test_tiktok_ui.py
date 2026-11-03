@@ -173,6 +173,36 @@ class TikTokUiTests(Fixture):
             self.c.queue_open.click()
         opened.assert_called_once_with("https://www.tiktok.com/@mytiktok/video/123")
 
+    def test_schedule_card_posts_a_scheduled_post_now(self):
+        video = self.ready()
+        post_id = self.service.publish(
+            video.id, "Later", False, self.now + timedelta(hours=3), Event()
+        )
+        self.reload()
+        self.assertIn("Later", self.c.queue_list.item(0).text())
+        self.assertFalse(self.c.queue_now.isHidden())  # scheduled in Buffer: can go now
+        with (
+            patch.object(QMessageBox, "exec", lambda box: 0),
+            patch.object(QMessageBox, "clickedButton", lambda box: None),  # Cancel
+        ):
+            self.c.queue_now.click()
+        settle(self.app, self.c)
+        self.assertEqual(len(self.buffer.creates), 1)
+        with (
+            patch.object(QMessageBox, "exec", lambda box: 0),
+            patch.object(
+                QMessageBox,
+                "clickedButton",
+                lambda box: next(b for b in box.buttons() if "Now" in b.text()),
+            ),
+        ):
+            self.c.queue_now.click()
+        settle(self.app, self.c)
+        settle(self.app, self.c)
+        self.assertEqual(self.buffer.creates[-1]["mode"], "shareNow")
+        self.assertEqual(self.service.get(post_id)["state"], "Publishing")
+        self.assertTrue(self.c.queue_now.isHidden())  # already going out
+
     def test_publish_confirmation_cancel_sends_nothing(self):
         video = self.ready()
         self.reload()

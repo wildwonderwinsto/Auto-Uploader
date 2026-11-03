@@ -459,6 +459,8 @@ class AutomaticPublisher:
         changed: Callable[[dict[str, Any]], None],
     ) -> dict[str, Any]:
         self.schedules.evaluate(cancel)
+        # Queue videos that went nowhere wait for the next posting time by themselves.
+        RecurringService(self.schedules).recover(cancel)
         try:
             # Same lock order as manual transfers. No claim while another upload/account operation runs.
             with (

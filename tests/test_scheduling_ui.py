@@ -52,12 +52,71 @@ class SchedulingUiTests(unittest.TestCase):
         e.activate_after.setChecked(False)
         return e
 
+    def close_editor(self):
+        """The editor the helper opened is closed, as `open_editor` does after it."""
+        self.c.editor.deleteLater()
+        self.c.editor = None
+
     def approve(self):
         e = self.editor()
         with patch.object(ScheduleConfirmation, "exec", return_value=QDialog.DialogCode.Accepted):
             e.review.click()
             settle(self.ui.app, self.c)
         return self.c.jobs[0]
+
+    def test_upload_now_approves_the_saved_plan_for_a_start_in_half_a_minute(self):
+        job = self.approve()
+        self.close_editor()
+        self.c.queue.jobs = self.c.jobs
+        self.c.queue.render()
+        self.c.queue.list.setCurrentRow(0)
+        self.assertFalse(self.c.queue.upload_now.isHidden())
+        # The same button on every platform's card.
+        self.assertEqual(self.c.queue.upload_now.text(), self.ui.window.tiktok.queue_now.text())
+        self.assertEqual(self.c.queue.upload_now.text(), "Post Now…")
+        shown = []
+
+        def confirm(dialog):
+            shown.append(dialog)
+            return QDialog.DialogCode.Accepted
+
+        with (
+            patch.object(ScheduleConfirmation, "exec", confirm),
+            patch.object(self.ui.window.automatic, "control") as control,
+        ):
+            self.c.queue.upload_now.click()
+            settle(self.ui.app, self.c)
+        self.assertEqual(len(shown), 1)  # one approval: the plan and its automatic upload
+        saved = self.c.jobs[0]
+        self.assertEqual(saved.id, job.id)  # the same plan, not a second one
+        self.assertEqual(saved.state, "Scheduled")
+        self.assertEqual(datetime.fromisoformat(saved.scheduled_utc), NOW + timedelta(seconds=30))
+        control.assert_any_call("authorize", (saved.id, saved.revision, False))
+
+    def test_upload_now_left_open_past_its_start_gets_a_fresh_time(self):
+        self.approve()
+        self.close_editor()
+        self.c.queue.jobs = self.c.jobs
+        self.c.queue.render()
+        self.c.queue.list.setCurrentRow(0)
+        clock = {"now": NOW}
+        self.c.service.clock = lambda: clock["now"]
+
+        def slow(dialog):
+            clock["now"] = NOW + timedelta(minutes=2)  # the person read it for two minutes
+            return QDialog.DialogCode.Accepted
+
+        with (
+            patch.object(ScheduleConfirmation, "exec", slow),
+            patch.object(self.ui.window.automatic, "control"),
+        ):
+            self.c.queue.upload_now.click()
+            settle(self.ui.app, self.c)
+            settle(self.ui.app, self.c)
+        self.assertEqual(
+            datetime.fromisoformat(self.c.jobs[0].scheduled_utc),
+            NOW + timedelta(minutes=2, seconds=30),
+        )
 
     def test_schedule_button_public_review(self):
         self.assertTrue(self.ui.window.schedule_button.isEnabled())

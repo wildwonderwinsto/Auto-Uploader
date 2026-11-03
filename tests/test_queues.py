@@ -19,7 +19,9 @@ from shortspublisher.scheduling import ScheduleError
 RULE = Rule("UTC", tuple(range(7)), "09:00", "21:00", 2)
 
 
-class QueueTests(Fixture):
+class QueueFixture(Fixture):
+    """Queue helpers, without tests of its own (other modules build on it)."""
+
     def setUp(self):
         super().setUp()
         self.connect()
@@ -51,6 +53,8 @@ class QueueTests(Fixture):
     def items(self, queue):
         return [i for i in self.queues.state()["items"] if i["queue_id"] == queue]
 
+
+class QueueTests(QueueFixture):
     def test_one_video_in_buffer_at_a_time_in_order(self):
         first, second = self.ready("a.mp4", "First"), self.ready("b.mp4", "Second")
         queue = self.queues.save(name="Clips", rule=RULE, videos={"tiktok": [first, second]})

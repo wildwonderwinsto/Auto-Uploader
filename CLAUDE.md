@@ -31,7 +31,7 @@ Never start a new stage without explicit instruction.
 .venv/bin/python -m shortspublisher --data-dir /tmp/sp-test        # isolated run
 ./install.sh                                                        # env + FFmpeg + ShortsScheduler.app
 open ShortsScheduler.app        # the USER's real data (~/Library/Application Support/ShortsPublisher/ShortsPublisher) — don't run
-QT_QPA_PLATFORM=offscreen .venv/bin/python -m unittest discover -s tests   # 943 tests, ~12 min
+QT_QPA_PLATFORM=offscreen .venv/bin/python -m unittest discover -s tests   # 968 tests, ~14 min
 cd tests && QT_QPA_PLATFORM=offscreen PYTHONPATH=../src ../.venv/bin/python -m unittest test_shell  # focused
 .venv/bin/ruff check . && .venv/bin/ruff format --check . && .venv/bin/mypy
 ```
@@ -155,7 +155,12 @@ migration of the user's real library needs the user's explicit approval and a fr
   during one are queued.
 - Schedule page: one "YouTube uploads" card (scheduled jobs + uploads, like each Buffer card;
   buttons appear only when the chosen row can use them; diagnostics in `SchedulePage.diagnostics`
-  / the row tooltip). The Calendar shows no YouTube card (its day agenda lists every platform).
+  / the row tooltip). Each card has a primary Post Now… (same label on every platform) for a row that hasn't
+  started (`SchedulePage.upload_now` → `ScheduleController.upload_now`, a fresh approval of the
+  same plan ~30 s ahead; `SocialController.post_now` → `BufferPostService.post_now`). Queue and
+  folder videos that went nowhere retry at the next posting time by themselves
+  (`RecurringService.recover` in each dispatch; Buffer `requeue_queue`/`requeue_automation`,
+  `AUTO_TRIES`); uncertain results never. The Calendar shows no YouTube card (its day agenda lists every platform).
   A YouTube schedule from the Upload step is `ScheduleController.schedule`: one
   `ScheduleConfirmation(activate=True)` approves the plan *and* its automatic upload (the consent
   is shown there; Auto uploading is only turned on if its box is ticked). A YouTube plan for a

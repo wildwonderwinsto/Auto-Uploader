@@ -54,6 +54,7 @@ from ..hosting import HostingError, cloudinary_fields
 from ..social import (
     HOSTING_CONSENT,
     MAIN,
+    POST_NOW_STATES,
     TIKTOK,
     BufferPostService,
     Platform,
@@ -195,6 +196,16 @@ class SocialWorker(QThread):
             self.result.emit({"error": str(exc)})
         except Exception as exc:  # noqa: BLE001 - surfaced, never silently dropped
             self.result.emit({"error": f"{self.name} operation failed safely: {exc}"})
+
+
+def can_post_now(post: dict[str, Any] | None) -> bool:
+    """Post Now: anything Buffer hasn't started publishing, and not already going out now."""
+    return bool(
+        post
+        and not post["released"]
+        and post["state"] in POST_NOW_STATES
+        and not (post["state"] == "Scheduled in Buffer" and post["mode"] == "shareNow")
+    )
 
 
 def label_for(post: dict[str, Any]) -> str:
@@ -408,6 +419,7 @@ class SocialController(QObject):
             self.queue_refresh,
             self.queue_cancel,
             self.queue_retry,
+            self.queue_now,
         ]
 
     def request_close(self) -> bool:
@@ -1426,6 +1438,37 @@ class SocialController(QObject):
                 self.reload(f"Trying the {self.name} post again."),
             )
 
+    def post_now(self, view: QListWidget) -> None:
+        post = self.selected_post(view)
+        if not can_post_now(post):
+            return
+        assert post is not None
+        connection = self.data["connection"] or {}
+        box = QMessageBox(
+            QMessageBox.Icon.Question,
+            f"Post to {self.name} now?",
+            f"Post this video PUBLICLY to {self.name} {handle(self.key, connection)} through "
+            "Buffer now instead of at its time? It keeps its caption"
+            + (
+                f" and its scheduled time in Buffer ({timestamp(post['due_at'], weekday=True)}) is "
+                "removed first"
+                if post["state"] == "Scheduled in Buffer" and post["due_at"]
+                else ""
+            )
+            + f".\n\nCaption: {post['caption'] or '(none)'}",
+            QMessageBox.StandardButton.Cancel,
+            self.window,
+        )
+        go = box.addButton("Post Publicly Now", QMessageBox.ButtonRole.AcceptRole)
+        box.setDefaultButton(QMessageBox.StandardButton.Cancel)
+        box.exec()
+        if box.clickedButton() is not go:
+            return
+        self.run(
+            lambda c: self.service.post_now(post["id"], c),
+            self.reload(f"Sent to {self.name} through Buffer now."),
+        )
+
     def release(self) -> None:
         post = self.selected_post(self.video_history)
         if (
@@ -1605,10 +1648,13 @@ class SocialController(QObject):
         self.queue_retry = icon_button("Try Again…", "refresh")
         self.queue_retry.setAccessibleName(f"Try Selected {self.name} Post Again…")
         self.queue_retry.clicked.connect(lambda: self.retry(self.queue_list))
+        self.queue_now = icon_button("Post Now…", "send", role="Primary")
+        self.queue_now.setAccessibleName(f"Post Selected {self.name} Post Now…")
+        self.queue_now.clicked.connect(lambda: self.post_now(self.queue_list))
         self.queue_feedback = text("", "Muted")
         self.queue_feedback.hide()
         self.queue_actions = flow(
-            self.queue_open, self.queue_retry, self.queue_cancel, self.queue_refresh
+            self.queue_now, self.queue_open, self.queue_retry, self.queue_cancel, self.queue_refresh
         )
         for widget in (self.queue_empty, self.queue_list, self.queue_actions, self.queue_feedback):
             body.addWidget(widget)
@@ -1652,6 +1698,7 @@ class SocialController(QObject):
         self.queue_retry.setVisible(
             bool(post and post["state"] == "Hosting failed" and not post["released"])
         )
+        self.queue_now.setVisible(can_post_now(post))
 
     def open_post(self) -> None:
         post = self.selected_post(self.queue_list)

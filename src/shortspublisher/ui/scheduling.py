@@ -70,7 +70,15 @@ if TYPE_CHECKING:
 
 from .components import Section, card, flow, icon_button
 
+# Post Now: a saved YouTube plan is approved again for a start this far ahead (the
+# dispatcher checks every few seconds); a confirmation left open longer gets a fresh time.
+NOW_LEAD = timedelta(seconds=30)
+
 NOTICE = "Saved plans require separate automatic Public activation and the global switch. Background execution also requires job permission and a running, explicitly enabled service. Older approvals remain desktop-only."
+
+
+# A saved plan Post Now can start: approved or not, and also once its time was missed.
+NOW_STATES = ("Draft", "Scheduled", "Due", "Missed", "Needs Attention")
 
 
 @dataclass(frozen=True)
@@ -113,15 +121,40 @@ class ScheduleConfirmation(QDialog):
     automatic Public upload (the consent is shown here), so no second window follows."""
 
     def __init__(
-        self, proposal: Proposal, parent: QWidget, activate: bool = False, paused: bool = False
+        self,
+        proposal: Proposal,
+        parent: QWidget,
+        activate: bool = False,
+        paused: bool = False,
+        now: bool = False,
     ):
         super().__init__(parent)
         self.setWindowTitle("Approve Public Publishing Plan")
         self.resize(580, 560 if activate else 510)
         layout = QVBoxLayout(self)
         layout.addWidget(
-            text("Approve this Public upload?" if activate else "Approve this schedule?", "Heading")
+            text(
+                "Post this video publicly now?"
+                if now
+                else "Approve this Public upload?"
+                if activate
+                else "Approve this schedule?",
+                "Heading",
+            )
         )
+        if now:
+            layout.addWidget(
+                text(
+                    "It starts within about a minute instead of at its scheduled time, with the "
+                    "same video, details and channel."
+                    + (
+                        " Auto uploading is off: tick the box below, or it won't start."
+                        if paused
+                        else ""
+                    ),
+                    "Muted",
+                )
+            )
         if activate:
             layout.addWidget(text(CONSENT, "Muted"))
         # With activation in this same approval, the "activate separately" note doesn't apply.
@@ -528,7 +561,11 @@ class SchedulePage(QScrollArea):
         self.retry_queue.clicked.connect(self.retry_selected)
         self.open_video = icon_button("Open Video…", "film", role="Ghost")
         self.open_video.clicked.connect(self.open_queued_video)
+        self.upload_now = icon_button("Post Now…", "send", role="Primary")
+        self.upload_now.setAccessibleName("Post Selected YouTube Video Now…")
+        self.upload_now.clicked.connect(self.upload_selected_now)
         self.action_row = flow(
+            self.upload_now,
             self.retry_queue,
             self.open_video,
             self.open_upload,
@@ -847,6 +884,10 @@ class SchedulePage(QScrollArea):
             )
         )
         self.activate_job.setVisible(self.activate_job.isEnabled())
+        # Post Now: any plan that hasn't started (its time may even have passed).
+        startable = bool(job and job.state in NOW_STATES and not claimed)
+        self.upload_now.setVisible(startable)
+        self.upload_now.setEnabled(startable and not busy)
         self.history.setEnabled(bool(attempt))
         self.history.setVisible(bool(attempt))
         self.stop_upload.setEnabled(
@@ -916,6 +957,11 @@ class SchedulePage(QScrollArea):
             )
         )
 
+    def upload_selected_now(self) -> None:
+        job = self.selected()
+        if job:
+            self.controller.upload_now(job)
+
     def activate_selected(self) -> None:
         job = self.selected()
         if job:
@@ -978,6 +1024,9 @@ class ScheduleController(QObject):
         # Chosen in the approval: turn on this video's automatic upload (and, optionally,
         # background and Auto uploading) once the plan is saved.
         self.activation: tuple[int, bool, bool] | None = None
+        # Post Now: the saved plan being started now, and (once approved) what was approved.
+        self.now_job: Job | None = None
+        self.approved_now: dict[str, Any] | None = None
 
     def activate(self) -> None:
         self.timer.start()
@@ -1001,39 +1050,67 @@ class ScheduleController(QObject):
         self.editor.deleteLater()
         self.editor = None
 
-    def schedule(self, video_id: int, channel_id: str, when: datetime) -> None:
+    def schedule(
+        self, video_id: int, channel_id: str, when: datetime, job: Job | None = None
+    ) -> None:
         """The Upload step's YouTube schedule: one approval of the exact plan at `when`, which
-        also turns on its automatic upload."""
+        also turns on its automatic upload. With `job`: that saved plan, moved to `when`."""
         if self.editor or self.direct:
             return
         if self.worker:
-            self.waiting = lambda: self.schedule(video_id, channel_id, when)
+            self.waiting = lambda: self.schedule(video_id, channel_id, when, job)
             return
+        self.draft_mode = False
+        self.direct = self.timing(video_id, channel_id, when, job)
+        self.start("preview", self.direct)
+
+    @staticmethod
+    def timing(video_id: int, channel_id: str, when: datetime, job: Job | None) -> dict[str, Any]:
         zone = system_zone()
         aware = when.astimezone(ZoneInfo(zone)).replace(microsecond=0)
-        self.draft_mode = False
-        self.direct = dict(
+        return dict(
             video_id=video_id,
             channel_id=channel_id,
             local=aware.replace(tzinfo=None).isoformat(),
             zone=zone,
             # The exact instant is known, so a clock-change day's repeated hour needs no question.
             occurrence=aware.fold,
-            job_id="",
-            expected_revision=0,
+            job_id=job.id if job else "",
+            expected_revision=job.revision if job else 0,
         )
-        self.start("preview", self.direct)
+
+    def upload_now(self, job: Job) -> None:
+        """Post Now for a saved YouTube plan: the same video, details and channel, approved
+        (with its automatic upload) for a start in about half a minute."""
+        if self.editor or self.direct:
+            return
+        self.now_job = job
+        self.schedule(job.video_id, job.channel_id, self.service.clock() + NOW_LEAD, job)
 
     def confirm(self, proposal: Proposal, activate: bool, parent: QWidget) -> None:
         paused = bool(self.window.automatic.data.get("paused", 1))
-        dialog = ScheduleConfirmation(proposal, parent, activate, paused)
+        now = self.now_job is not None
+        dialog = ScheduleConfirmation(proposal, parent, activate, paused, now)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             self.activation = (
                 (proposal.video_id, dialog.background.isChecked(), dialog.turn_on.isChecked())
                 if activate
                 else None
             )
-            self.start("approve", proposal)
+            job = self.now_job
+            start = datetime.fromisoformat(proposal.scheduled_utc)
+            if job and start <= self.service.clock() + NOW_LEAD / 2:
+                # The approval stayed open past its start: the same approved plan, now. It is
+                # saved only if the video, details and channel are still exactly what was shown.
+                self.approved_now = proposal.snapshot
+                self.direct = self.timing(
+                    job.video_id, job.channel_id, self.service.clock() + NOW_LEAD, job
+                )
+                self.start("preview", self.direct)
+            else:
+                self.start("approve", proposal)
+        else:
+            self.now_job = None
         dialog.deleteLater()
 
     def activate_saved(self) -> None:
@@ -1092,6 +1169,8 @@ class ScheduleController(QObject):
             for page in (self.queue, self.calendar):
                 page.rendered = None  # after a user action, always redraw status and buttons
                 page.render()
+        if action == "approve" or "error" in result:
+            self.now_job = self.approved_now = None
         if "jobs" in result:
             self.jobs = result["jobs"]
             for page in (self.queue, self.calendar):
@@ -1118,6 +1197,19 @@ class ScheduleController(QObject):
                 self.start("draft", proposal)
             elif self.editor:
                 self.confirm(proposal, self.editor.activate_after.isChecked(), self.editor)
+            elif self.direct and self.approved_now is not None:
+                approved, self.approved_now = self.approved_now, None
+                if proposal.snapshot == approved:
+                    self.start("approve", proposal)
+                else:
+                    self.now_job = None
+                    self.direct = None
+                    QMessageBox.warning(
+                        self.window,
+                        "Couldn't upload on YouTube",
+                        "The video or its details changed while you were approving. Choose "
+                        "Post Now again to see the current details.",
+                    )
             elif self.direct:
                 self.confirm(proposal, True, self.window)
                 if not self.worker:

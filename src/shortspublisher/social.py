@@ -79,6 +79,20 @@ CHECK_BACKOFF = (2, 5, 15, 60)  # minutes after the due time; then hourly
 HOSTING_RETRY = timedelta(minutes=30)  # wait before copying a failed video to the host again
 RETRY_NOTE = " Trying again shortly; if its time passes it moves to the next upload time."
 GIVE_UP_HOURS = 48
+# What Post Now accepts: nothing Buffer has started publishing.
+POST_NOW_STATES = (
+    "Uploading to media host",
+    "Hosted and ready",
+    "Waiting for Buffer limit",
+    *RECONNECT_STATES,
+    "Hosting failed",
+    "Scheduled in Buffer",
+)
+# A queue's or auto upload's post that definitely went nowhere goes to its next posting time,
+# at most this many times for one video, before it is left for the person to look at.
+AUTO_TRIES = 3
+NOT_POSTED = ("Failed", "Missed — not sent")
+MOVED_NOTE = "Its posting time passed before it reached Buffer; it moves to the next posting time."
 RETENTION_GRACE = timedelta(hours=24)
 INSIGHTS_KEY = "buffer-insights-key"  # optional personal API key, only for view counts
 HOSTING_CONSENT = (
@@ -1333,6 +1347,11 @@ class BufferPostService:
         if post["mode"] == "customScheduled" and parse(post["due_at"]) <= self.clock() + timedelta(
             seconds=60
         ):
+            if post["profile_id"]:
+                # A queue or auto upload: it stays pending and `retry_pending` gives it the
+                # next posting time, instead of being dropped.
+                self.write(post_id, error=MOVED_NOTE)
+                return
             # Never post late in a burst: the approved time passed before Buffer accepted it.
             self.write(
                 post_id,
@@ -1639,6 +1658,52 @@ class BufferPostService:
         try:
             with FileLock(str(self.lock), timeout=60):
                 self.write(post_id, **values)
+                self.host_and_submit(post_id, cancel)
+        except Timeout:
+            raise SocialError(
+                f"Another {self.spec.name} operation is running. Try again shortly."
+            ) from None
+
+    def post_now(self, post_id: str, cancel: Event) -> None:
+        """An explicit Post Now for a post that hasn't started publishing: the same video,
+        caption and account go out now instead of at its time. A post already scheduled in
+        Buffer is first taken off Buffer's schedule (only while Buffer still reports it
+        scheduled), then sent again as Share Now with the same hosted copy."""
+        try:
+            with FileLock(str(self.lock), timeout=60):
+                post = self.get(post_id)
+                if post["released"] or post["state"] not in POST_NOW_STATES:
+                    raise SocialError("Only a post that hasn't started publishing can post now.")
+                if post["state"] == "Scheduled in Buffer":
+                    if post["mode"] == "shareNow" or not post["buffer_post_id"]:
+                        raise SocialError("Buffer is already posting this now.")
+                    api = self.post_api(post)
+                    remote = api.post(post["buffer_post_id"])
+                    if remote is None:
+                        self.write(
+                            post_id,
+                            state="Removed in Buffer",
+                            next_check_at=None,
+                            error="Buffer no longer has this post; it may have been deleted there.",
+                        )
+                        raise SocialError("Buffer no longer has this post; nothing was posted.")
+                    if remote.get("status") not in ("scheduled", "draft"):
+                        self.apply(post_id, remote)
+                        raise SocialError(
+                            "Buffer has already started this post; it can't be moved to now."
+                        )
+                    api.delete_post(post["buffer_post_id"])
+                    self.write(
+                        post_id,
+                        state="Hosted and ready",
+                        buffer_post_id="",
+                        buffer_status="",
+                        next_check_at=None,
+                        checks=0,
+                    )
+                elif post["state"] == "Hosting failed":
+                    self.write(post_id, state="Uploading to media host")
+                self.write(post_id, mode="shareNow", due_at=None, error="")
                 self.host_and_submit(post_id, cancel)
         except Timeout:
             raise SocialError(
@@ -1995,16 +2060,19 @@ class BufferPostService:
         self, post: Any, rule: Rule, used: list[str], cap: int, cancel: Event
     ) -> None:
         """A video that could not be copied to the host waits a while, then tries again; once
-        its time has passed it takes the next free upload time instead of being dropped."""
-        if post["state"] == "Uploading to media host" and post["error"]:
-            now = self.clock()
-            if parse(post["updated_at"]) > now - HOSTING_RETRY:
+        its time has passed (copying, or waiting for Buffer) it takes the next free upload time
+        instead of being dropped."""
+        now = self.clock()
+        hosting = post["state"] == "Uploading to media host"
+        if hosting and post["error"] and parse(post["updated_at"]) > now - HOSTING_RETRY:
+            return
+        # Copying to the host needs a few minutes before its time; sending to Buffer doesn't.
+        margin = timedelta(minutes=5) if hosting else timedelta(seconds=90)
+        if post["due_at"] and parse(post["due_at"]) < now + margin:
+            slot = self.next_slot(rule, [d for d in used if d != post["due_at"]], cap)
+            if slot is None:
                 return
-            if post["due_at"] and parse(post["due_at"]) < now + timedelta(minutes=5):
-                slot = self.next_slot(rule, [d for d in used if d != post["due_at"]], cap)
-                if slot is None:
-                    return
-                self.write(post["id"], due_at=stamp(slot))
+            self.write(post["id"], due_at=stamp(slot))
         self.host_and_submit(post["id"], cancel)
 
     def next_slot(self, rule: Rule, used: list[str], cap: int) -> datetime | None:
@@ -2043,7 +2111,79 @@ class BufferPostService:
             except (SocialError, BufferError, HostingError, LibraryError, OSError):
                 continue  # recorded on the post or item; tried again on the next pass
 
+    def not_posted(self, owner: str, link: str) -> list[dict[str, Any]]:
+        """Posts of a queue or auto upload that definitely went nowhere (Buffer reported a
+        failure, or the time passed before it reached Buffer) and whose queue item or folder
+        decision (`link`: SQL on `q`) still points at them, each with `tries`: how often that
+        video went nowhere for this owner."""
+        t = self.table
+        with closing(self.library.connect()) as db:
+            rows = db.execute(
+                f"""SELECT p.*,(SELECT count(*) FROM {t}_posts o WHERE o.profile_id=p.profile_id
+                AND o.video_id=p.video_id AND o.state IN (?,?)) AS tries FROM {t}_posts p
+                WHERE p.profile_id=? AND p.state IN (?,?) AND EXISTS({link})""",
+                (*NOT_POSTED, owner, *NOT_POSTED),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def try_later(self, post: dict[str, Any]) -> str:
+        """Lets the video of a post that went nowhere go again at the next posting time.
+        Returns the reason to show, or "" once it went nowhere AUTO_TRIES times."""
+        why = post["error"] or post["state"]
+        if post["tries"] >= AUTO_TRIES:
+            return ""
+        if not post["released"]:
+            # Definitely nothing was posted, so another post is no duplicate.
+            self.write(post["id"], released=1, next_check_at=None)
+        return f"Didn't post last time ({why}) Trying again at the next posting time."
+
+    def requeue_queue(self, queue: dict[str, Any]) -> None:
+        for post in self.not_posted(
+            queue["id"],
+            "SELECT 1 FROM queue_items q WHERE q.post_id=p.id AND q.state='Sent'",
+        ):
+            with closing(self.library.connect()) as db:
+                item = db.execute(
+                    "SELECT id FROM queue_items WHERE post_id=? AND state='Sent'", (post["id"],)
+                ).fetchone()
+            reason = self.try_later(post)
+            if reason:
+                self.queue_item(item["id"], "Waiting", reason)
+            else:
+                self.queue_item(
+                    item["id"],
+                    "Needs attention",
+                    f"Didn't post after {post['tries']} tries: {post['error'] or post['state']}",
+                )
+
+    def requeue_automation(self, p: dict[str, Any]) -> None:
+        # Only the current revision's videos: an edit leaves what was already sent as it was.
+        table, revision = f"{self.table}_decisions", int(p["revision"])
+        for post in self.not_posted(
+            p["id"],
+            f"SELECT 1 FROM {table} q WHERE q.post_id=p.id AND q.state='Enrolled' "
+            f"AND q.profile_revision={revision}",
+        ):
+            with closing(self.library.connect()) as db:
+                d = db.execute(
+                    f"SELECT * FROM {table} WHERE post_id=? AND state='Enrolled' "
+                    "AND profile_revision=?",
+                    (post["id"], revision),
+                ).fetchone()
+            reason = self.try_later(post)
+            self.decide(
+                p,
+                d["name"],
+                # Not "Needs review": the folder scan would enroll that again on its own.
+                "Waiting for next opportunity" if reason else "Didn't post",
+                reason
+                or f"Didn't post after {post['tries']} tries: {post['error'] or post['state']}",
+                d["source_sha256"],
+                d["video_id"],
+            )
+
     def advance_queue(self, queue: dict[str, Any], paused: bool, cancel: Event) -> None:
+        self.requeue_queue(queue)
         with closing(self.library.connect()) as db:
             pending = db.execute(
                 f"SELECT * FROM {self.table}_posts WHERE profile_id=? AND released=0 AND state IN ({','.join('?' * len(UNSENT))})",
@@ -2136,6 +2276,7 @@ class BufferPostService:
                 f"{self.spec.account} than the approved {p['channel_name']}.",
             )
             return
+        self.requeue_automation(p)
         with closing(self.library.connect()) as db:
             paused = db.execute("SELECT paused FROM publishing_control WHERE id=1").fetchone()
             pending = db.execute(

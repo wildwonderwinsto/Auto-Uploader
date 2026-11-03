@@ -33,6 +33,12 @@ CONSENT = (
 )
 
 
+# A queued video that needs attention is checked again this long before each posting time,
+# once per posting time (item id → the posting time it was checked for).
+RECHECK = timedelta(minutes=10)
+RECHECKED: dict[str, str] = {}
+
+
 def normalized(value: Any) -> Any:
     return json.loads(json.dumps(value))
 
@@ -138,6 +144,82 @@ class RecurringService:
                 raise ScheduleError(
                     "Publishing history already covers these bytes on this channel. Inspect its result; recurring approval cannot bypass it."
                 )
+
+    def recover(self, cancel: Event) -> None:
+        """Problems where nothing was uploaded clear themselves: the video goes at the queue's
+        next posting time instead of waiting for someone to choose Retry.
+
+        A reserved start that never began (it missed its 60-second window, or was blocked
+        before any upload was created) returns to its place in the queue. A queued video that
+        needs attention is checked again shortly before each posting time, exactly as Retry
+        does: unchanged contents and details go back in the queue; anything changed still needs
+        review and approval. Uploads that started are never touched here."""
+        from dataclasses import replace
+
+        now = self.clock()
+        with closing(self.library.connect()) as db, db:
+            db.execute("BEGIN IMMEDIATE")
+            for row in db.execute(
+                """SELECT i.id,i.plan_id,i.job_id FROM recurring_items i
+                JOIN scheduled_jobs j ON j.id=i.job_id
+                WHERE i.state='Reserved' AND j.state IN ('Missed','Needs Attention')
+                AND j.scheduled_utc<=?
+                AND NOT EXISTS(SELECT 1 FROM scheduled_executions e WHERE e.job_id=j.id)""",
+                # Only once its 60-second start window is over: a conflict may still clear.
+                (stamp(now - timedelta(seconds=60)),),
+            ).fetchall():
+                old = self.schedules._get(db, row["job_id"])
+                reason = "Didn't start at its time; moved to the queue's next posting time."
+                when = stamp(now)
+                db.execute("DELETE FROM execution_consent WHERE job_id=?", (old.id,))
+                self.schedules._write(
+                    db,
+                    replace(
+                        old,
+                        state="Cancelled",
+                        execution_enabled=0,
+                        reason=reason,
+                        cancellation_reason=reason,
+                        cancelled_at=when,
+                        updated_at=when,
+                        revision=old.revision + 1,
+                    ),
+                )
+                # A slot reserves an item only once; the missed one keeps its job, not the item.
+                db.execute(
+                    "UPDATE recurring_slots SET state='Skipped',reason=?,item_id=NULL "
+                    "WHERE job_id=?",
+                    (reason, old.id),
+                )
+                db.execute(
+                    "UPDATE recurring_items SET state='Queued',job_id=NULL,reason=? WHERE id=?",
+                    (
+                        f"Didn't start last time ({old.reason or old.state}); trying again.",
+                        row["id"],
+                    ),
+                )
+                self.event(db, row["plan_id"], when, "Returned to queue", {"item_id": row["id"]})
+            waiting = db.execute(
+                """SELECT i.id,p.next_slot FROM recurring_items i
+                JOIN recurring_plans p ON p.id=i.plan_id
+                WHERE i.state='Needs Attention' AND i.job_id IS NULL AND p.enabled=1"""
+            ).fetchall()
+        for row in waiting:
+            if cancel.is_set():
+                return
+            slot = datetime.fromisoformat(row["next_slot"])
+            # Once per posting time, in the few minutes before it (never while it is due).
+            if not now < slot <= now + RECHECK or RECHECKED.get(row["id"]) == row["next_slot"]:
+                continue
+            RECHECKED[row["id"]] = row["next_slot"]
+            try:
+                self.retry(row["id"], cancel)
+            except (ScheduleError, LibraryError, OSError) as exc:
+                with closing(self.library.connect()) as db, db:
+                    db.execute(
+                        "UPDATE recurring_items SET reason=? WHERE id=? AND state='Needs Attention'",
+                        (str(exc), row["id"]),
+                    )
 
     def retry(self, identity: str, cancel: Event) -> str:
         """Requeue an unstarted item after verifying the exact approved bytes and details.
